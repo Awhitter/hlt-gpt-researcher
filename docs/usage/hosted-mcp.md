@@ -8,6 +8,9 @@ HLT hosts this fork as two Railway services:
 The browser frontend can load publicly, but v1 production research actions are
 for authenticated REST and MCP clients.
 
+For operational guidance, decision rules, and Sidecar/Katailyst use cases, see
+[`docs/usage/owners-manual.md`](./owners-manual.md).
+
 ## MCP Client Config
 
 Claude Code / Cursor `.mcp.json`:

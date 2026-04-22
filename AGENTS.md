@@ -39,7 +39,8 @@ following servers auto-mount from `.mcp.json`:
    URL: `https://gpt-researcher-mcp-production.up.railway.app/mcp`.
    Auth: `Authorization: Bearer ${GPTR_MCP_TOKEN}`. Tools:
    `deep_research`, `quick_search`, `write_report`, `get_research_sources`,
-   `get_research_context`; resource: `research://{topic}`.
+   `get_research_context`; resource: `research://{topic}`. Owner's manual:
+   `docs/usage/owners-manual.md`.
 
 ## Rules of engagement
 
