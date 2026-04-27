@@ -77,6 +77,7 @@ export interface HLTResearchScope {
   qbank: boolean;
   metrics: boolean;
   firecrawl: boolean;
+  media: boolean;
   depth: HLTResearchDepth;
 }
 

@@ -9,7 +9,7 @@ type ResearchScopeSelectorProps = {
   compact?: boolean;
 };
 
-type ScopeKey = "firecrawl" | "qbank" | "codebase" | "cms" | "metrics";
+type ScopeKey = "firecrawl" | "qbank" | "media" | "codebase" | "cms" | "metrics";
 
 const scopeOptions: Array<{
   key: ScopeKey;
@@ -26,6 +26,11 @@ const scopeOptions: Array<{
     label: "QBank",
     title:
       "Use read-only corporate CMS and question-bank context through the protected Katailyst tool path.",
+  },
+  {
+    key: "media",
+    label: "Media",
+    title: "Search the Cloudinary media library through the server-side HLT media connection.",
   },
   {
     key: "codebase",

@@ -6,6 +6,7 @@ export const defaultHLTResearchScope: HLTResearchScope = {
   qbank: false,
   metrics: false,
   firecrawl: false,
+  media: false,
   depth: "balanced",
 };
 
@@ -26,5 +27,6 @@ export function selectedScopeCount(scope?: Partial<HLTResearchScope>): number {
     normalized.qbank,
     normalized.metrics,
     normalized.firecrawl,
+    normalized.media,
   ].filter(Boolean).length;
 }
