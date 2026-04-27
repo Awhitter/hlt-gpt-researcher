@@ -55,6 +55,11 @@ _SCOPE_INSTRUCTIONS = {
         "ecosystem-map context when it is relevant to the question. Do not treat "
         "this as corporate CMS or question-bank access."
     ),
+    "qbank": (
+        "Use read-only corporate CMS and question-bank context through the "
+        "Katailyst hlt-partner-api tool path when it is available. Never write "
+        "to corporate CMS/QBank, and clearly say when that source was not inspected."
+    ),
     "metrics": (
         "Use available metrics/analytics context, including Metabase-backed data, "
         "when it is relevant. Clearly separate measured data from inference."
@@ -71,7 +76,7 @@ _DEPTH_INSTRUCTIONS = {
     "deep": "Go deeper. Compare sources, inspect primary context, and surface tradeoffs.",
 }
 
-_SCOPE_KEYS = ("codebase", "cms", "metrics", "firecrawl")
+_SCOPE_KEYS = ("codebase", "cms", "qbank", "metrics", "firecrawl")
 _MCP_PRESETS = ("katailyst", "github", "metabase")
 
 
@@ -227,6 +232,12 @@ def get_hlt_readiness() -> dict[str, Any]:
             "components": {"katailyst": preset_statuses["katailyst"]["status"]},
             "missing": preset_statuses["katailyst"]["missing"],
         },
+        "qbank": {
+            "status": preset_statuses["katailyst"]["status"],
+            "components": {"katailyst": preset_statuses["katailyst"]["status"]},
+            "missing": preset_statuses["katailyst"]["missing"],
+            "access": "read_only_checked_on_use",
+        },
         "metrics": {
             "status": preset_statuses["metabase"]["status"],
             "components": {
@@ -363,7 +374,7 @@ def resolve_research_scope(
     configs = list(mcp_configs or [])
 
     requested = {key: bool(scope.get(key)) for key in _SCOPE_KEYS}
-    if requested["codebase"] or requested["cms"]:
+    if requested["codebase"] or requested["cms"] or requested["qbank"]:
         _append_unique_mcp_config(configs, {"name": "katailyst", "preset": "katailyst"})
     if requested["codebase"]:
         _append_unique_mcp_config(configs, {"name": "github", "preset": "github"})
