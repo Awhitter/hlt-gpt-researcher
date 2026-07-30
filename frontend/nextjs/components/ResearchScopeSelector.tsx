@@ -35,13 +35,16 @@ const scopeOptions: Array<{
   {
     key: "codebase",
     label: "Code",
-    title: "Search selected code context.",
+    title:
+      "Search the active HLT repositories: ScraperVault (nurse recruiting backend), " +
+      "nursing-mastery (nurse-facing frontend), katailyst2 (AI primitives and creation), " +
+      "and mmm2 (multimedia).",
   },
   {
     key: "cms",
     label: "Registry",
     title:
-      "Search Katailyst entities, playbooks, docs, skills, and knowledge-base context.",
+      "Search Katailyst2 entities, playbooks, docs, skills, and knowledge-base context.",
   },
   {
     key: "metrics",

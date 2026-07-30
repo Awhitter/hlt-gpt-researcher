@@ -31,14 +31,21 @@ research-team`.
 Drop into this repo with Claude Code / Cursor / any MCP client and the
 following servers auto-mount from `.mcp.json`:
 
-1. **`katailyst`** (HTTP, hosted) — the registry. Tools: `discover`, `traverse`,
+1. **`katailyst2`** (HTTP, hosted) — the registry and AI operating layer, at
+   `https://katailyst2.vercel.app/api/mcp`. **Katailyst v1 (`www.katailyst.com`)
+   is reference-only prior art and is no longer mounted here.** Tools:
+   `discover`, `traverse`,
    `get_entity`, `registry_capabilities`, `registry_health`, `registry_agent_context`,
    `katailyst_orchestrate`, `tool_describe`/`tool_execute`, `memory_query`/`memory_write`.
    First call to make in any new task: `discover` with a 2-sentence intent.
-2. **`multimediaMastery`** (HTTP, hosted) — image / video / TTS generation.
-   Live at `multimediamastery.vercel.app/api/media/v1/*`. Default image model:
+2. **`multimediaMastery`** (HTTP, hosted) — image / video / TTS generation,
+   served by **mmm2** at `mmm2-three.vercel.app/api/media/v1/*` (the older
+   `multimedia-mastery` deployment is retired). Default image model:
    FAL nano-banana-2. Cloudinary upload server-side.
-3. **`gpt-researcher`** (HTTP, hosted) — HLT-hosted GPT Researcher MCP server.
+3. **`github`** (HTTP, hosted) — GitHub's remote MCP server at
+   `https://api.githubcopilot.com/mcp/`, used by the `codebase` research scope.
+   Auth: `Authorization: Bearer ${GITHUB_MCP_TOKEN}`.
+4. **`gpt-researcher`** (HTTP, hosted) — HLT-hosted GPT Researcher MCP server.
    URL: `https://gpt-researcher-mcp-production.up.railway.app/mcp`.
    Auth: `Authorization: Bearer ${GPTR_MCP_TOKEN}`. Tools:
    `deep_research`, `quick_search`, `write_report`, `get_research_sources`,
@@ -89,9 +96,9 @@ stays off unless `LANGFUSE_RECORD_IO=true`.
 
 - **Cron status:** `~/hlt/katailyst/.github/workflows/repo-hygiene-nightly.yml`
 - **Registry health:** call `registry_health` MCP tool, or hit
-  `https://www.katailyst.com/mcp` (needs Bearer auth)
-  Katailyst2 is also available at `https://katailyst2.vercel.app/api/mcp`; repo-local agents can
-  choose either because `.mcp.json` exposes both endpoints explicitly.
+  `https://katailyst2.vercel.app/api/mcp` (needs Bearer auth). Katailyst2 is the
+  only registry endpoint mounted in `.mcp.json`; v1 was removed so agents cannot
+  silently research the wrong system.
 - **Drift report:** `bash ~/.openclaw/workspace/system/check-llms-drift.sh`
 
 ## Honest scope of this stub

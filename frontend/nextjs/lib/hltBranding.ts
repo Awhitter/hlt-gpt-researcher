@@ -10,7 +10,7 @@ export const hltBranding = {
     process.env.NEXT_PUBLIC_HLT_HERO_NOTE ||
     "Choose focused context sources, then generate a cited research report.",
   katailystUrl:
-    process.env.NEXT_PUBLIC_KATAILYST_URL || "https://www.katailyst.com",
+    process.env.NEXT_PUBLIC_KATAILYST_URL || "https://katailyst2.vercel.app",
   uiUrl:
     process.env.NEXT_PUBLIC_GPTR_UI_URL ||
     "https://gpt-researcher-ui.vercel.app",

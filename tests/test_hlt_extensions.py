@@ -306,3 +306,84 @@ def test_langfuse_health_status_is_redacted(monkeypatch):
     assert langfuse["base_url"] == "https://us.cloud.langfuse.com"
     assert "pk-test" not in json.dumps(body)
     assert "sk-test" not in json.dumps(body)
+
+
+def test_codebase_repos_default_to_active_hlt_repos(monkeypatch):
+    monkeypatch.delenv("HLT_CODEBASE_REPOS", raising=False)
+
+    assert hlt_extensions.get_codebase_repos() == [
+        "Awhitter/ScraperVault",
+        "Awhitter/nursing-mastery",
+        "Awhitter/katailyst2",
+        "Awhitter/mmm2",
+    ]
+
+
+def test_codebase_repos_override_from_env(monkeypatch):
+    monkeypatch.setenv("HLT_CODEBASE_REPOS", "Awhitter/ScraperVault , Awhitter/mmm2")
+
+    assert hlt_extensions.get_codebase_repos() == [
+        "Awhitter/ScraperVault",
+        "Awhitter/mmm2",
+    ]
+
+
+def test_codebase_scope_names_repos_in_task_instructions(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    monkeypatch.delenv("HLT_CODEBASE_REPOS", raising=False)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST_MCP_TOKEN", "katailyst-secret")
+    monkeypatch.setenv("GITHUB_MCP_TOKEN", "github-secret")
+
+    task, _, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="How does the apply flow work?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={"codebase": True, "depth": "deep"},
+    )
+
+    assert metadata["scope_statuses"]["codebase"]["status"] == "ready"
+    assert metadata["scope_statuses"]["codebase"]["repos"] == [
+        "Awhitter/ScraperVault",
+        "Awhitter/nursing-mastery",
+        "Awhitter/katailyst2",
+        "Awhitter/mmm2",
+    ]
+    # Every in-scope repo is named in the prompt, with its role.
+    for repo in ("Awhitter/ScraperVault", "Awhitter/nursing-mastery",
+                 "Awhitter/katailyst2", "Awhitter/mmm2"):
+        assert repo in task
+    assert "nurse recruiting" in task
+    assert "multimedia" in task
+    # v1 must not be the research target.
+    assert "www.katailyst.com/mcp" not in task
+    # Tokens never leak into the prompt or metadata.
+    assert "github-secret" not in task
+    assert "katailyst-secret" not in json.dumps(metadata)
+
+
+def test_presets_point_at_katailyst_v2_and_github_by_default(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    monkeypatch.setenv("KATAILYST_MCP_TOKEN", "katailyst-secret")
+    monkeypatch.setenv("GITHUB_MCP_TOKEN", "github-secret")
+
+    configs = hlt_extensions.expand_mcp_presets([
+        {"name": "katailyst", "preset": "katailyst"},
+        {"name": "github", "preset": "github"},
+    ])
+
+    by_name = {config["name"]: config for config in configs}
+    assert by_name["katailyst"]["connection_url"] == "https://katailyst2.vercel.app/api/mcp"
+    assert by_name["github"]["connection_url"] == "https://api.githubcopilot.com/mcp/"
+
+
+def test_github_preset_requires_token_not_url(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    monkeypatch.delenv("GITHUB_MCP_TOKEN", raising=False)
+
+    readiness = hlt_extensions.get_hlt_readiness()
+    github = readiness["integrations"]["codebase"]["components"]["github"]
+
+    assert github == "unavailable"
+    assert "GITHUB_MCP_TOKEN" in readiness["integrations"]["codebase"]["missing"]

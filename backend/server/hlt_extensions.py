@@ -50,6 +50,75 @@ _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/static/",    # Any static mounts
 )
 
+# --- HLT endpoint defaults -------------------------------------------------
+# Katailyst2 is the active AI operating layer. Katailyst v1 (www.katailyst.com)
+# is reference-only prior art and must not be the default research target.
+_KATAILYST_MCP_URL_DEFAULT = "https://katailyst2.vercel.app/api/mcp"
+# GitHub's hosted remote MCP server. Defaulting this means the `codebase` scope
+# only needs a token, not a URL, to come online.
+_GITHUB_MCP_URL_DEFAULT = "https://api.githubcopilot.com/mcp/"
+
+# --- HLT codebase scope ----------------------------------------------------
+# The repositories the `codebase` scope should actually research, with the role
+# each one plays. Override the set with HLT_CODEBASE_REPOS (comma-separated
+# "owner/name" entries); unknown repos are still allowed, they just carry no
+# role description.
+_CODEBASE_REPO_ROLES: dict[str, str] = {
+    "Awhitter/ScraperVault": (
+        "backend for nurse recruiting — job/employer supply, candidate identity, "
+        "applications, funnel events, consent, and the Feed v1 contract"
+    ),
+    "Awhitter/nursing-mastery": (
+        "nurse-facing frontend — the public Nursing Mastery career surface, job "
+        "board, content, universal apply flow, and employer pages"
+    ),
+    "Awhitter/katailyst2": (
+        "AI primitives and creation — the governed registry, Create engine, MCP "
+        "verbs, agents, and approval/receipt layer"
+    ),
+    "Awhitter/mmm2": (
+        "multimedia — image, video, and audio generation plus media job handling"
+    ),
+}
+
+_DEFAULT_CODEBASE_REPOS: tuple[str, ...] = (
+    "Awhitter/ScraperVault",
+    "Awhitter/nursing-mastery",
+    "Awhitter/katailyst2",
+    "Awhitter/mmm2",
+)
+
+
+def get_codebase_repos() -> list[str]:
+    """Return the repositories in scope for `codebase` research."""
+
+    raw = os.getenv("HLT_CODEBASE_REPOS")
+    if not raw or not raw.strip():
+        return list(_DEFAULT_CODEBASE_REPOS)
+    repos = [part.strip() for part in raw.split(",") if part.strip()]
+    return repos or list(_DEFAULT_CODEBASE_REPOS)
+
+
+def _codebase_instruction() -> str:
+    """Build the codebase scope instruction, naming the in-scope repositories."""
+
+    lines = [
+        "Use available codebase/repository context. Prefer implementation files, "
+        "repo maps, pull requests, and architecture notes over generic web sources.",
+        "Restrict repository research to these HLT repositories and say so if the "
+        "answer needs one that is not listed:",
+    ]
+    for repo in get_codebase_repos():
+        role = _CODEBASE_REPO_ROLES.get(repo)
+        lines.append(f"  - {repo}" + (f" — {role}" if role else ""))
+    lines.append(
+        "Katailyst2 (Awhitter/katailyst2) is the active AI operating layer; the "
+        "older Katailyst v1 repo and www.katailyst.com are reference-only prior "
+        "art and should not be treated as current truth."
+    )
+    return "\n".join(lines)
+
+
 _SCOPE_INSTRUCTIONS = {
     "codebase": (
         "Use available codebase/repository context. Prefer implementation files, "
@@ -193,12 +262,14 @@ def _preset_readiness(preset: str) -> dict[str, Any]:
             "url_configured": bool(os.getenv("KATAILYST_MCP_URL")),
         }
     if preset == "github":
-        url = os.getenv("GITHUB_MCP_URL")
+        # The URL now defaults to GitHub's hosted remote MCP server, so a token
+        # is the only thing this preset actually needs to come online.
+        token = os.getenv("GITHUB_MCP_TOKEN")
         return {
-            "status": "ready" if url else "unavailable",
-            "configured": bool(url),
-            "missing": [] if url else ["GITHUB_MCP_URL"],
-            "token_configured": bool(os.getenv("GITHUB_MCP_TOKEN")),
+            "status": "ready" if token else "unavailable",
+            "configured": bool(token),
+            "missing": [] if token else ["GITHUB_MCP_TOKEN"],
+            "url_configured": bool(os.getenv("GITHUB_MCP_URL")),
         }
     if preset == "metabase":
         url = os.getenv("METABASE_MCP_URL")
@@ -445,6 +516,7 @@ def get_hlt_readiness() -> dict[str, Any]:
                 preset_statuses["katailyst"]["missing"]
                 + preset_statuses["github"]["missing"]
             )),
+            "repos": get_codebase_repos(),
         },
         "cms": {
             "status": preset_statuses["katailyst"]["status"],
@@ -517,14 +589,14 @@ def _mcp_config_for_preset(preset: str, name: str | None = None) -> dict[str, An
         if readiness["status"] != "ready":
             logger.warning("Skipping Katailyst MCP preset: KATAILYST_MCP_TOKEN is unset")
             return None
-        url = os.getenv("KATAILYST_MCP_URL", "https://www.katailyst.com/mcp")
+        url = os.getenv("KATAILYST_MCP_URL", _KATAILYST_MCP_URL_DEFAULT)
         token = os.getenv("KATAILYST_MCP_TOKEN") or os.getenv("KATAILYST_AUTH_TOKEN")
     elif preset == "github":
         readiness = _preset_readiness("github")
         if readiness["status"] != "ready":
-            logger.warning("Skipping GitHub MCP preset: GITHUB_MCP_URL is unset")
+            logger.warning("Skipping GitHub MCP preset: GITHUB_MCP_TOKEN is unset")
             return None
-        url = os.getenv("GITHUB_MCP_URL")
+        url = os.getenv("GITHUB_MCP_URL", _GITHUB_MCP_URL_DEFAULT)
         token = os.getenv("GITHUB_MCP_TOKEN")
     elif preset == "metabase":
         readiness = _preset_readiness("metabase")
@@ -532,7 +604,7 @@ def _mcp_config_for_preset(preset: str, name: str | None = None) -> dict[str, An
             logger.warning("Skipping metrics MCP preset: METABASE_MCP_URL and Katailyst fallback are unavailable")
             return None
         if readiness.get("provider") == "katailyst_metrics_fallback":
-            url = os.getenv("KATAILYST_MCP_URL", "https://www.katailyst.com/mcp")
+            url = os.getenv("KATAILYST_MCP_URL", _KATAILYST_MCP_URL_DEFAULT)
             token = os.getenv("KATAILYST_MCP_TOKEN") or os.getenv("KATAILYST_AUTH_TOKEN")
         else:
             url = os.getenv("METABASE_MCP_URL")
@@ -576,7 +648,7 @@ def _scope_status(
     status = integration["status"] if requested else "inactive"
     active = requested and status in {"ready", "partial"}
     degraded = requested and status in {"partial", "unavailable"}
-    return {
+    payload = {
         "requested": requested,
         "status": status,
         "active": active,
@@ -585,6 +657,11 @@ def _scope_status(
         "missing": integration.get("missing", []),
         "scraper": integration.get("scraper"),
     }
+    # Surface the in-scope repository list so the UI and report metadata can
+    # show exactly which repos `codebase` research was allowed to read.
+    if "repos" in integration:
+        payload["repos"] = integration["repos"]
+    return payload
 
 
 def resolve_research_scope(
@@ -689,7 +766,7 @@ def prepare_research_request(
 
     instruction_lines = [_DEPTH_INSTRUCTIONS[depth]]
     instruction_lines.extend(
-        _SCOPE_INSTRUCTIONS[key]
+        _codebase_instruction() if key == "codebase" else _SCOPE_INSTRUCTIONS[key]
         for key in hlt_scope_metadata["active_sources"]
         if key in _SCOPE_INSTRUCTIONS
     )

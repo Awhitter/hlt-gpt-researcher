@@ -1,24 +1,24 @@
 {
   "mcpServers": {
-    "katailyst": {
+    "katailyst2": {
       "type": "http",
       "url": "https://katailyst2.vercel.app/api/mcp",
       "headers": {
         "Authorization": "Bearer ${KATAILYST_MCP_TOKEN}"
       }
     },
-    "katailyst-v1": {
-      "type": "http",
-      "url": "https://www.katailyst.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${KATAILYST_MCP_TOKEN}"
-      }
-    },
     "multimediaMastery": {
       "type": "http",
-      "url": "https://multimediamastery.vercel.app/api/media/v1/mcp",
+      "url": "https://mmm2-three.vercel.app/api/media/v1/mcp",
       "headers": {
         "Authorization": "Bearer ${MM_AGENT_TOKEN}"
+      }
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_MCP_TOKEN}"
       }
     },
     "gpt-researcher": {
