@@ -579,6 +579,11 @@ async def quick_search_endpoint(search_request: QuickSearchRequest):
 
     This is a lightweight endpoint for fast fact-checking and lookups,
     as opposed to the full /report/ endpoint for deep research.
+
+    HLT note: this stays web-only. Quick search runs no MCP tools and reads no
+    local corpora, so an estate scope here would be a promise it cannot keep.
+    Estate questions belong on /report/ (or the MCP `quick_search` tool, which
+    escalates to a scoped research pass when it detects one).
     """
     try:
         record_io = should_record_langfuse_io()
