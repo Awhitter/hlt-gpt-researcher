@@ -46,6 +46,12 @@ HLT_ENV_KEYS = [
     "LANGFUSE_HOST",
     "LANGFUSE_RECORD_IO",
     "AI_SDK_TELEMETRY_RECORD_IO",
+    "HLT_SCOPE_INFERENCE",
+    "HLT_SCOPE_INFERENCE_LLM",
+    "HLT_SCOPE_INFERENCE_MODEL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "FAST_LLM",
 ]
 
 
@@ -747,6 +753,114 @@ def test_prior_research_is_injected_into_related_tasks(monkeypatch, tmp_path):
     )
     assert metadata_off["prior_research"] == []
     assert "Prior internal research" not in task_off
+
+
+def test_auto_scope_activates_estate_presets_for_repo_questions(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
+    monkeypatch.setenv("GITHUB_MCP_URL", "https://github.example/mcp")
+
+    task, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="How does ScraperVault hand applications to nursing-mastery?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope=None,  # no scope pinned -> auto inference
+    )
+
+    assert mcp_enabled is True
+    assert [config["name"] for config in configs] == ["katailyst", "github"]
+    assert metadata["auto_scope"]["requested"] is True
+    assert metadata["auto_scope"]["applied"] == ["codebase"]
+    assert "codebase" in metadata["active_sources"]
+    assert "Awhitter/ScraperVault" in task
+
+
+def test_auto_scope_leaves_generic_queries_web_only(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
+
+    task, mcp_enabled, _, configs, metadata, scraper = hlt_extensions.prepare_research_request(
+        task="What are NCLEX pass rates by state in 2026?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={"auto": True, "depth": "balanced"},
+    )
+
+    assert task == "What are NCLEX pass rates by state in 2026?"
+    assert mcp_enabled is False
+    assert configs == []
+    assert scraper is None
+    assert metadata["auto_scope"]["requested"] is True
+    assert metadata["auto_scope"]["applied"] == []
+    assert metadata["active_sources"] == []
+
+
+def test_auto_scope_never_activates_unready_integrations(monkeypatch):
+    clear_hlt_env(monkeypatch)  # nothing configured at all
+    set_firecrawl_import(monkeypatch, False)
+
+    task, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="Where does the nursing-mastery repo render the apply flow?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope=None,
+    )
+
+    assert mcp_enabled is False
+    assert configs == []
+    assert metadata["auto_scope"]["applied"] == []
+    assert "codebase" in metadata["auto_scope"]["skipped_unready"]
+    # An unready inferred scope must not degrade the task with warnings.
+    assert "HLT research scope instructions" not in task
+    assert metadata["degraded_sources"] == []
+
+
+def test_explicit_scope_pins_win_over_auto(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
+    monkeypatch.setenv("GITHUB_MCP_URL", "https://github.example/mcp")
+
+    _, _, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="How does ScraperVault hand applications to nursing-mastery?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={"auto": True, "cms": True, "depth": "balanced"},
+    )
+
+    # The pinned cms scope wins; inference never runs despite the repo mention.
+    assert metadata["auto_scope"]["requested"] is False
+    assert metadata["auto_scope"]["applied"] == []
+    assert metadata["enabled_sources"] == ["cms"]
+    assert [config["name"] for config in configs] == ["katailyst"]
+
+
+def test_auto_scope_uses_llm_tiebreak_for_weak_signals(monkeypatch):
+    from backend.server import hlt_scope_inference
+
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
+    monkeypatch.setattr(hlt_scope_inference, "_llm_tiebreak", lambda task, candidates: {"metrics"})
+
+    _, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="Are leads improving this month?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope=None,
+    )
+
+    assert mcp_enabled is True
+    assert [config["name"] for config in configs] == ["metabase"]
+    assert metadata["auto_scope"]["applied"] == ["metrics"]
+    assert metadata["auto_scope"]["llm_used"] is True
 
 
 def test_qbank_scope_prefers_dedicated_preset(monkeypatch):

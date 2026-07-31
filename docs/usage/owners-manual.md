@@ -60,8 +60,8 @@ That gives agents these tools:
 
 | Tool | Use it when | Output |
 | --- | --- | --- |
-| `quick_search` | You need a fast cited lookup, topic scan, or "is this worth researching?" check | Search results or summary plus metadata |
-| `deep_research` | You need a serious context packet before writing, planning, or deciding | `research_id`, context, sources, source URLs, source count |
+| `quick_search` | You need a fast cited public-web lookup, topic scan, or "is this worth researching?" check | Search results or summary plus metadata |
+| `deep_research` | You need a serious context packet before writing, planning, or deciding — including anything about the HLT estate (its default `scope="auto"` pulls in estate repos, the Katailyst2 registry, metrics, media, and audience corpora when the query needs them; pin a scope list or pass `"none"` to override) | `research_id`, context, sources, source URLs, source count, `hlt_scope` summary |
 | `write_report` | You already ran `deep_research` and want a polished report from that research state | Report text |
 | `get_research_sources` | You want the source list for an existing `research_id` | Sources and URLs |
 | `get_research_context` | You want the raw research context for an existing `research_id` | Context packet |

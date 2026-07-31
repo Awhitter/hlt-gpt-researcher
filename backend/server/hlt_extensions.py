@@ -38,6 +38,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from gpt_researcher.utils.langfuse_observability import get_langfuse_runtime_status
 
+from .hlt_scope_inference import infer_research_scope
+
 logger = logging.getLogger(__name__)
 _WS_TOKEN_TTL_SECONDS = 120
 
@@ -1404,9 +1406,40 @@ def prepare_research_request(
     This keeps the browser payload token-free. The frontend sends booleans such
     as `codebase` or `cms`; this server-side helper expands them into safe MCP
     presets and adds concise research instructions to the task.
+
+    Auto scope: when the caller pins no scope (research_scope is None, or it
+    carries `auto: true` with no explicit scope keys), circumstantial
+    inference decides which internal scopes the task needs. Explicit scope
+    selections always win, and inference never activates an unready
+    integration.
     """
 
-    scope = research_scope or {}
+    scope = dict(research_scope or {})
+    explicit_keys = [key for key in _SCOPE_KEYS if bool(scope.get(key))]
+    auto_requested = (research_scope is None or bool(scope.get("auto"))) and not explicit_keys
+    auto_scope_metadata: dict[str, Any] = {
+        "requested": auto_requested,
+        "applied": [],
+        "reasons": {},
+        "llm_used": False,
+        "skipped_unready": [],
+    }
+    if auto_requested:
+        readiness_statuses = {
+            key: value["status"]
+            for key, value in get_hlt_readiness()["integrations"].items()
+        }
+        inference = infer_research_scope(task, readiness=readiness_statuses)
+        for key in inference["scopes"]:
+            scope[key] = True
+        auto_scope_metadata.update(
+            applied=inference["scopes"],
+            reasons=inference["reasons"],
+            llm_used=inference["llm_used"],
+            skipped_unready=inference["skipped_unready"],
+        )
+    research_scope = scope
+
     enabled_keys = [key for key in _SCOPE_KEYS if bool(scope.get(key))]
     depth = scope.get("depth") if scope.get("depth") in _DEPTH_INSTRUCTIONS else "balanced"
     mode = scope.get("mode") if scope.get("mode") in _RESEARCH_MODES else "standard"
@@ -1417,6 +1450,7 @@ def prepare_research_request(
         research_scope=research_scope,
     )
     hlt_scope_metadata["mode"] = mode
+    hlt_scope_metadata["auto_scope"] = auto_scope_metadata
 
     prior_reports = search_prior_reports(task, limit=3) if memory_enabled else []
     hlt_scope_metadata["prior_research"] = [

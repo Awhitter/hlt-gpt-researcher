@@ -104,6 +104,26 @@ export default function ResearchScopeSelector({
     onChange({ ...scope, ...patch });
   };
 
+  const setAuto = (auto: boolean) => {
+    if (auto) {
+      // Auto mode releases every pinned scope; the server infers what the
+      // question needs and reports what it activated mid-run.
+      update({
+        auto: true,
+        codebase: false,
+        cms: false,
+        qbank: false,
+        metrics: false,
+        firecrawl: false,
+        media: false,
+        audience: false,
+        recruiting: false,
+      });
+    } else {
+      update({ auto: false });
+    }
+  };
+
   return (
     <section
       className={`mx-auto w-full max-w-[820px] px-4 ${compact ? "mt-4" : "mt-0"}`}
@@ -151,6 +171,31 @@ export default function ResearchScopeSelector({
         <div
           className={`flex flex-wrap justify-center gap-1.5 ${compact ? "flex-col" : ""}`}
         >
+          <button
+            type="button"
+            title="Let Mastery decide: estate code, registry, metrics, media, or audience context is pulled in automatically when the question needs it — plain web questions stay web-only. Pin a scope below to take over."
+            onClick={() => setAuto(!scope.auto)}
+            className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition-all ${
+              scope.auto
+                ? "border-teal-400/75 bg-teal-400/15 text-teal-100"
+                : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/20 hover:bg-white/[0.07]"
+            }`}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-3 w-3"
+              aria-hidden="true"
+            >
+              <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" />
+              <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z" />
+            </svg>
+            Auto
+          </button>
           {scopeOptions.map((option) => {
             const selected = scope[option.key];
             return (
@@ -199,8 +244,10 @@ export default function ResearchScopeSelector({
                   className="sr-only"
                   checked={selected}
                   onChange={() =>
+                    // Pinning any scope leaves auto mode; the manual selection wins.
                     update({
                       [option.key]: !selected,
+                      auto: false,
                     } as Partial<HLTResearchScope>)
                   }
                 />

@@ -27,6 +27,83 @@ logger = logging.getLogger(__name__)
 STORE_TTL_SECONDS = 60 * 60
 STORE_MAX_ITEMS = 32
 
+_VALID_SCOPE_KEYS = (
+    "codebase",
+    "cms",
+    "qbank",
+    "metrics",
+    "firecrawl",
+    "media",
+    "audience",
+    "recruiting",
+)
+_VALID_DEPTHS = ("fast", "balanced", "deep")
+
+
+def _build_research_scope(scope: str | list[str] | None, depth: str) -> dict[str, Any]:
+    """Translate the MCP tool's scope/depth params into an HLT research scope."""
+
+    normalized_depth = depth if depth in _VALID_DEPTHS else "balanced"
+    if scope is None or scope == "auto":
+        return {"auto": True, "depth": normalized_depth}
+    if scope == "none":
+        return {"depth": normalized_depth}
+    if isinstance(scope, str):
+        scope = [scope]
+    keys = [key for key in scope if key in _VALID_SCOPE_KEYS]
+    return {**{key: True for key in keys}, "depth": normalized_depth}
+
+
+def _prepare_scoped_request(
+    query: str,
+    research_scope: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]], str | None, str | None, dict[str, Any] | None]:
+    """Run the shared HLT scope pipeline (inference, presets, instructions).
+
+    Falls back to a plain web request when the backend module is unavailable,
+    so the MCP service never hard-fails on scope plumbing.
+    """
+
+    try:
+        from backend.server.hlt_extensions import prepare_research_request
+    except Exception as error:  # noqa: BLE001 - degraded mode is better than no research
+        logger.warning("HLT scope pipeline unavailable: %s", type(error).__name__)
+        return query, [], None, None, None
+
+    try:
+        task, _mcp_enabled, mcp_strategy, configs, metadata, scraper_override = (
+            prepare_research_request(
+                task=query,
+                mcp_enabled=False,
+                mcp_strategy="fast",
+                mcp_configs=[],
+                research_scope=research_scope,
+            )
+        )
+    except Exception as error:  # noqa: BLE001
+        logger.warning("HLT scope resolution failed: %s", type(error).__name__, exc_info=True)
+        return query, [], None, None, None
+    return task, configs, mcp_strategy if configs else None, scraper_override, metadata
+
+
+def _scope_summary(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Browser/agent-safe subset of the HLT scope metadata for tool responses."""
+
+    if not metadata:
+        return None
+    auto = metadata.get("auto_scope") or {}
+    return {
+        "active_sources": metadata.get("active_sources", []),
+        "degraded_sources": metadata.get("degraded_sources", []),
+        "auto": {
+            "requested": auto.get("requested", False),
+            "applied": auto.get("applied", []),
+            "reasons": auto.get("reasons", {}),
+        },
+        "mcp_server_count": metadata.get("mcp_server_count", 0),
+        "depth": metadata.get("depth"),
+    }
+
 
 @dataclass
 class StoredResearch:
@@ -240,23 +317,36 @@ async def _conduct_research(
     report_type: str = "research_report",
     report_source: str = "web",
     tone: str = "Objective",
-) -> StoredResearch:
+    scope: str | list[str] | None = "auto",
+    depth: str = "balanced",
+) -> tuple[StoredResearch, dict[str, Any] | None]:
+    research_scope = _build_research_scope(scope, depth)
+    task, mcp_configs, mcp_strategy, scraper_override, scope_metadata = await asyncio.to_thread(
+        _prepare_scoped_request, query, research_scope
+    )
     researcher = GPTResearcher(
-        query=query,
+        query=task,
         report_type=report_type,
         report_source=report_source,
         tone=_resolve_tone(tone),
+        mcp_configs=mcp_configs or None,
+        mcp_strategy=mcp_strategy,
     )
+    if scraper_override:
+        researcher.cfg.scraper = scraper_override
     await researcher.conduct_research()
-    return StoredResearch(
-        researcher=researcher,
-        query=query,
-        report_type=report_type,
-        report_source=report_source,
-        tone=tone,
-        context=_jsonable(researcher.get_research_context()),
-        sources=_jsonable(researcher.get_research_sources()),
-        source_urls=list(researcher.get_source_urls()),
+    return (
+        StoredResearch(
+            researcher=researcher,
+            query=query,
+            report_type=report_type,
+            report_source=report_source,
+            tone=tone,
+            context=_jsonable(researcher.get_research_context()),
+            sources=_jsonable(researcher.get_research_sources()),
+            source_urls=list(researcher.get_source_urls()),
+        ),
+        scope_metadata,
     )
 
 
@@ -284,7 +374,7 @@ async def research_resource_tool(topic: str) -> str:
         resource_topic=topic,
     )
     try:
-        item = await _conduct_research(topic)
+        item, _scope_metadata = await _conduct_research(topic)
         await _store_research(research_id, item, resource_topic=topic)
         store.complete_run(
             research_id,
@@ -304,6 +394,8 @@ async def deep_research_tool(
     report_type: str = "research_report",
     report_source: str = "web",
     tone: str = "Objective",
+    scope: str | list[str] | None = "auto",
+    depth: str = "balanced",
 ) -> dict[str, Any]:
     research_id = str(uuid.uuid4())
     store = get_research_run_store()
@@ -318,11 +410,13 @@ async def deep_research_tool(
     )
     try:
         logger.info("Conducting deep research for research_id=%s query=%r", research_id, query)
-        item = await _conduct_research(
+        item, scope_metadata = await _conduct_research(
             query,
             report_type=report_type,
             report_source=report_source,
             tone=tone,
+            scope=scope,
+            depth=depth,
         )
         await _store_research(research_id, item, resource_topic=query)
         store.complete_run(
@@ -331,6 +425,7 @@ async def deep_research_tool(
             sources=item.sources,
             source_urls=item.source_urls,
             costs=item.researcher.get_costs(),
+            hlt_research_scope=scope_metadata,
         )
         return _success(
             {
@@ -340,6 +435,7 @@ async def deep_research_tool(
                 "context": item.context,
                 "sources": _format_sources_for_response(item.sources),
                 "source_urls": item.source_urls,
+                "hlt_scope": _scope_summary(scope_metadata),
             }
         )
     except Exception as exc:
@@ -425,10 +521,31 @@ def register_tools(mcp: FastMCP) -> None:
         report_type: str = "research_report",
         report_source: str = "web",
         tone: str = "Objective",
+        scope: str | list[str] | None = "auto",
+        depth: str = "balanced",
     ) -> dict[str, Any]:
-        """Conduct deep research and return a research_id for follow-up calls."""
+        """Conduct deep, cited research and return a research_id for follow-up calls.
 
-        return await deep_research_tool(query, report_type, report_source, tone)
+        With scope="auto" (the default) this routes to internal HLT context when
+        the query is about it, and stays pure public-web research otherwise. It
+        can reach: the estate code repos — nursing-mastery (nurse-facing
+        frontend), ScraperVault (nurse-recruiting backend), katailyst2 (AI
+        primitives + registry), MMM2 (multimedia), EBB (metrics) — plus the
+        Katailyst2 registry (playbooks, skills, knowledge bases), internal
+        business metrics, the Cloudinary media library, and the nurse
+        audience/recruiting corpora. Prefer this tool over quick_search for any
+        question about those systems, our code, our content, or our numbers.
+
+        scope: "auto" infers relevant internal scopes from the query; pass a
+        list such as ["codebase", "cms"] to pin scopes (valid keys: codebase,
+        cms, qbank, metrics, firecrawl, media, audience, recruiting); pass
+        "none" to force pure web research.
+        depth: "fast" | "balanced" | "deep".
+        """
+
+        return await deep_research_tool(
+            query, report_type, report_source, tone, scope=scope, depth=depth
+        )
 
     @mcp.tool()
     async def quick_search(
@@ -436,7 +553,12 @@ def register_tools(mcp: FastMCP) -> None:
         summary: bool = True,
         domains: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Perform a fast web search without creating a research session."""
+        """Perform a fast public-web search without creating a research session.
+
+        Web-only: for questions about the HLT estate (nursing-mastery,
+        ScraperVault, katailyst2, MMM2, EBB, the Katailyst2 registry, internal
+        metrics or media), use deep_research with scope="auto" instead.
+        """
 
         search_id = str(uuid.uuid4())
         researcher = GPTResearcher(query=query, report_type="research_report")
