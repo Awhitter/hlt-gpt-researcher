@@ -1,3 +1,8 @@
+> **HLT operators / agents:** this fork hosts **Mastery Research**.
+> Start at [`docs/usage/START-HERE.md`](docs/usage/START-HERE.md) — what it is,
+> how to use Auto scope, the three doors (UI / MCP / REST), and where HLT code
+> lives. The rest of this README is upstream GPT Researcher (keep it for sync).
+
 <div align="center" id="top">
 
 <img src="https://github.com/assafelovic/gpt-researcher/assets/13554167/20af8286-b386-44a5-9a83-3be1365139c3" alt="Logo" width="80">
