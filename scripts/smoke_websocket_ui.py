@@ -15,7 +15,16 @@ import urllib.request
 import websockets
 
 
-SCOPE_KEYS = {"codebase", "cms", "metrics", "firecrawl"}
+SCOPE_KEYS = {
+    "codebase",
+    "cms",
+    "qbank",
+    "metrics",
+    "firecrawl",
+    "media",
+    "audience",
+    "recruiting",
+}
 
 
 def fetch_ws_token(ui_url: str) -> str:
@@ -50,14 +59,24 @@ async def smoke(args: argparse.Namespace) -> None:
         "mcp_strategy": "fast",
         "mcp_configs": [],
     }
-    if requested_scope:
+    if args.auto or not requested_scope:
         payload["hlt_research_scope"] = {
-            "codebase": "codebase" in requested_scope,
-            "cms": "cms" in requested_scope,
-            "metrics": "metrics" in requested_scope,
-            "firecrawl": "firecrawl" in requested_scope,
+            "auto": True,
             "depth": args.depth,
         }
+    else:
+        payload["hlt_research_scope"] = {
+            **{key: key in requested_scope for key in SCOPE_KEYS},
+            "auto": False,
+            "depth": args.depth,
+        }
+
+    expect_auto = bool(args.auto or not requested_scope)
+    expected_active = {
+        key.strip()
+        for key in (args.expect_active or "").split(",")
+        if key.strip()
+    }
 
     async with websockets.connect(f"{ws_url}/ws?ws_token={token}") as websocket:
         await websocket.send("start " + json.dumps(payload))
@@ -87,12 +106,25 @@ async def smoke(args: argparse.Namespace) -> None:
                 hlt_scope = metadata.get("hlt_research_scope") or {}
                 active = hlt_scope.get("active_sources", [])
                 degraded = hlt_scope.get("degraded_sources", [])
+                auto_meta = hlt_scope.get("auto_scope") or {}
                 print(f"hlt_scope_active={','.join(active) if active else 'none'}")
                 print(f"hlt_scope_degraded={','.join(degraded) if degraded else 'none'}")
+                print(f"hlt_auto_requested={auto_meta.get('requested')}")
+                print(f"hlt_auto_applied={','.join(auto_meta.get('applied') or []) or 'none'}")
+                if expect_auto and not auto_meta.get("requested"):
+                    raise RuntimeError("expected auto scope but auto_scope.requested was false")
+                if expected_active and set(active) != expected_active:
+                    # Allow supersets when other ready scopes also match; require all expected.
+                    if not expected_active.issubset(set(active)):
+                        raise RuntimeError(
+                            f"expected active scopes to include {sorted(expected_active)}, got {active}"
+                        )
+                if args.expect_empty_active and active:
+                    raise RuntimeError(f"expected no active scopes, got {active}")
                 if degraded and not args.allow_degraded_scope:
                     raise RuntimeError(f"scope degraded: {', '.join(degraded)}")
                 return
-            if event_type and not requested_scope:
+            if event_type and not expect_auto and not requested_scope:
                 return
 
     raise RuntimeError("WebSocket closed before any stream event was observed")
@@ -103,7 +135,26 @@ def main() -> None:
     parser.add_argument("--ui-url", default="https://gpt-researcher-ui.vercel.app")
     parser.add_argument("--api-url", default="https://gpt-researcher-api-production.up.railway.app")
     parser.add_argument("--query", default="smoke test: GPT Researcher WebSocket startup")
-    parser.add_argument("--scope", default="", help="Comma-separated HLT scopes: codebase,cms,metrics,firecrawl")
+    parser.add_argument(
+        "--scope",
+        default="",
+        help="Comma-separated pinned HLT scopes. Empty (default) uses auto scope.",
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Force auto scope even when --scope is also provided",
+    )
+    parser.add_argument(
+        "--expect-active",
+        default="",
+        help="Comma-separated scopes that must appear in active_sources",
+    )
+    parser.add_argument(
+        "--expect-empty-active",
+        action="store_true",
+        help="Fail if any internal scope activates",
+    )
     parser.add_argument("--depth", choices=["fast", "balanced", "deep"], default="balanced")
     parser.add_argument("--allow-degraded-scope", action="store_true")
     parser.add_argument("--timeout", type=int, default=20)
