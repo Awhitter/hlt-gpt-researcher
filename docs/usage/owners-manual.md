@@ -1,15 +1,20 @@
 # GPT Researcher Owner's Manual
 
-Last updated: 2026-04-22
+Last updated: 2026-07-31
 
-This is the operator guide for HLT's hosted GPT Researcher setup. It explains
-what exists, who should use each surface, how agents should call it, and where
-it fits with Katailyst and Sidecar.
+> New here? Read [`START-HERE.md`](./START-HERE.md) first (one screen), then
+> come back for agent recipes, Sidecar wiring, and smoke details.
+
+This is the operator guide for HLT's hosted GPT Researcher setup
+(**Mastery Research** / Mastery Brain). It explains what exists, who should
+use each surface, how agents should call it, and where it fits with
+Katailyst and Sidecar.
 
 The main rule: keep this repo close to upstream. Put HLT-specific behavior in
 deployment scripts, docs, registry records, client config, or isolated HLT
-modules. Do not turn the upstream GPT Researcher app into a custom HLT product
-unless there is a clear reason that cannot live outside the fork.
+modules (`backend/server/hlt_*.py`). Do not turn the upstream GPT Researcher
+app into a custom HLT product unless there is a clear reason that cannot live
+outside the fork.
 
 ## Live Surfaces
 

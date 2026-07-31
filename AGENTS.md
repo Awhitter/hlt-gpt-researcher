@@ -6,11 +6,14 @@
 
 ## What this repo is
 
-Research orchestration lane + **Mastery Brain** team surface. Synced with
-upstream `assafelovic/gpt-researcher` (check with
+Research orchestration lane + **Mastery Brain / Mastery Research** team
+surface. Synced with upstream `assafelovic/gpt-researcher` (check with
 `git rev-list --left-right --count upstream/master...HEAD`). Used for deep
 customer/competitive research and for nontechnical teammates to ask
 capability questions across the estate.
+
+**Start here (operators + agents):** [`docs/usage/START-HERE.md`](docs/usage/START-HERE.md)
+— one screen: what it is, three doors, Auto scope, module map, smoke.
 
 PRD: `docs/prd/mastery-brain.md`. UI tabs: Ask / Audience / Codebase /
 Library / Vision / Changelog / Roadmap. Code scope prefers `CODEGRAPH_MCP_*`
@@ -20,6 +23,21 @@ under `my-docs/`: `vision/`, `audience/` (voice-of-nurse quote bank + briefs),
 `recruiting/` (generated nursingmastery.com content inventory —
 `scripts/build_recruiting_inventory.py`), `design/` (Refero notes). All load
 as hybrid-research context via `DOC_PATH`.
+
+### HLT module map (do not dump new logic into one file)
+
+```
+backend/server/hlt_extensions.py      auth · readiness · MCP presets · prepare_research_request · install()
+backend/server/hlt_scope_inference.py Auto scope (heuristics → optional FAST_LLM tiebreak)
+backend/server/hlt_brain.py           /api/brain/* estate context, library, Linear
+backend/server/hlt_media.py           Cloudinary for the media scope
+backend/server/hlt_text.py            shared tokenizer / stopwords
+mcp_server/tools.py                   MCP tools (default scope="auto")
+```
+
+Leaves never import `hlt_extensions`. New Brain/tab work goes in
+`hlt_brain.py`; new Auto signals go in `hlt_scope_inference.py`; the router
+stays the thin compose point.
 
 ## Where it sits in the HLT ecosystem
 
@@ -68,10 +86,10 @@ infers the scopes a query needs (heuristics, then one FAST_LLM tiebreak for
 weak signals, never `qbank`/`firecrawl`, never an unready integration), and the
 phase rail shows what auto-fired and why. Pinning any toggle leaves auto mode.
 MCP `deep_research`/`quick_search` default to the same `scope="auto"`; REST
-`/api/quick_search` stays web-only by design. Toggles are
-browser-safe metadata; server-side preset expansion,
-codegraph/GitHub/Katailyst/Apify/QBank MCP, Cloudinary, and `/api/brain/*`
-live in `backend/server/hlt_extensions.py`. Live runs render a Plan/Search/
+`/api/quick_search` stays web-only by design. Toggles are browser-safe
+metadata; `hlt_extensions.prepare_research_request` expands presets
+(codegraph/GitHub/Katailyst/Apify/QBank), `hlt_media` handles Cloudinary,
+and `hlt_brain` owns `/api/brain/*`. Live runs render a Plan/Search/
 Read/Write phase rail (`components/brain/ResearchProgress.tsx`); raw agent
 logs are collapsed by default.
 

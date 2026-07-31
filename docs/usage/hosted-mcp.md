@@ -1,5 +1,7 @@
 # Hosted GPT Researcher MCP
 
+> Operator front door: [`START-HERE.md`](./START-HERE.md).
+
 HLT hosts this fork as two Railway services:
 
 - API/frontend: `https://gpt-researcher-api-production.up.railway.app`
