@@ -703,6 +703,90 @@ def test_standard_mode_leaves_task_untouched(monkeypatch):
     assert task == "Plain question"
 
 
+def test_mentions_estate_matches_estate_names():
+    for task in (
+        "what is nursing mastery?",
+        "How does HLT make money?",
+        "Where does ScraperVault store enriched jobs?",
+        "compare nursing-mastery to indeed",
+    ):
+        assert hlt_extensions._mentions_estate(task), task
+
+
+def test_mentions_estate_ignores_generic_questions():
+    for task in (
+        "What are NCLEX pass rates 2024?",
+        "Best pizza in Chicago",
+        "How do hospitals hire new grad nurses?",
+        "",
+        None,
+    ):
+        assert not hlt_extensions._mentions_estate(task), task
+
+
+def test_estate_mention_injects_glossary_without_scopes(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+
+    task, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="what is nursing mastery?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={},
+    )
+
+    assert mcp_enabled is False
+    assert configs == []
+    assert hlt_extensions._ESTATE_GLOSSARY in task
+    assert "nursingmastery.com" in task
+    # The glossary is ground truth, not a degradation warning.
+    assert "do not imply unavailable internal data" not in task
+    assert metadata["degraded_sources"] == []
+
+
+def test_sanitize_client_mcp_configs_drops_stdio_keeps_hosted():
+    safe, dropped = hlt_extensions._sanitize_client_mcp_configs(
+        [
+            {"name": "local-files", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"]},
+            {"name": "hosted", "connection_url": "https://mcp.example.com/mcp"},
+            {"name": "hosted-ws", "connection_url": "wss://mcp.example.com/ws"},
+            {"preset": "katailyst"},
+            "not-a-dict",
+            {"name": "hosted-but-spawns", "connection_url": "https://mcp.example.com/mcp", "command": "npx"},
+        ]
+    )
+
+    assert [c.get("name") or c.get("preset") for c in safe] == ["hosted", "hosted-ws", "katailyst"]
+    assert dropped == ["local-files", "hosted-but-spawns"]
+
+
+def test_sanitize_client_mcp_configs_handles_empty_input():
+    assert hlt_extensions._sanitize_client_mcp_configs(None) == ([], [])
+    assert hlt_extensions._sanitize_client_mcp_configs([]) == ([], [])
+
+
+def test_dropped_client_mcp_configs_surface_in_metadata(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+
+    _, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="Plain question",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[
+            {"name": "local-stdio", "command": "npx", "args": ["-y", "some-server"]},
+            {"name": "hosted", "connection_url": "https://mcp.example.com/mcp"},
+        ],
+        research_scope={},
+    )
+
+    assert metadata["dropped_mcp_configs"] == ["local-stdio"]
+    assert [c["name"] for c in configs] == ["hosted"]
+    assert all("command" not in c for c in configs)
+    assert mcp_enabled is True  # the surviving hosted config keeps MCP on
+
+
 def _seed_report_store(tmp_path, monkeypatch, reports):
     path = tmp_path / "reports.json"
     path.write_text(json.dumps(reports), encoding="utf-8")
@@ -815,8 +899,10 @@ def test_auto_scope_never_activates_unready_integrations(monkeypatch):
     assert configs == []
     assert metadata["auto_scope"]["applied"] == []
     assert "codebase" in metadata["auto_scope"]["skipped_unready"]
-    # An unready inferred scope must not degrade the task with warnings.
-    assert "HLT research scope instructions" not in task
+    # The estate glossary still lands (the task names an estate repo), but an
+    # unready inferred scope must not degrade the task with warnings.
+    assert hlt_extensions._ESTATE_GLOSSARY in task
+    assert "do not imply unavailable internal data" not in task
     assert metadata["degraded_sources"] == []
 
 
