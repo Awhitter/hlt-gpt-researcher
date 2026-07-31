@@ -56,7 +56,10 @@ const Hero: FC<THeroProps> = ({
   };
 
   return (
-    <div className="relative mt-[-56px] flex items-start overflow-visible pb-2 pt-[74px]">
+    // No negative top margin here: this renders inside the Brain tab shell,
+    // and pulling the container up made it overlap (and swallow clicks on)
+    // the tab bar above it.
+    <div className="relative flex items-start overflow-visible pb-2 pt-[18px]">
       <motion.div
         initial="hidden"
         animate={isVisible ? "visible" : "hidden"}
