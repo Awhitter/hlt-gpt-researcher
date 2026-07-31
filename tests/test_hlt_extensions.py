@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from backend.report_type.basic_report import basic_report
 from backend.report_type.detailed_report import detailed_report
-from backend.server import hlt_extensions
+from backend.server import hlt_brain, hlt_extensions, hlt_media
 
 
 HLT_ENV_KEYS = [
@@ -309,7 +309,7 @@ def test_media_scope_searches_cloudinary_without_leaking_secrets(monkeypatch):
     monkeypatch.setenv("CLOUDINARY_API_SECRET", "cloudinary-secret")
 
     monkeypatch.setattr(
-        hlt_extensions,
+        hlt_media,
         "_cloudinary_list_assets",
         lambda: (
             [
@@ -496,8 +496,8 @@ def _mock_linear_graphql(monkeypatch, payload_by_query_marker):
                 return payload
         return None
 
-    monkeypatch.setattr(hlt_extensions, "_linear_graphql", fake_graphql)
-    hlt_extensions._linear_cache.clear()
+    monkeypatch.setattr(hlt_brain, "_linear_graphql", fake_graphql)
+    hlt_brain._linear_cache.clear()
 
 
 def test_roadmap_uses_live_linear_projects(monkeypatch):
@@ -588,7 +588,7 @@ def test_changelog_prepends_linear_completions(monkeypatch):
 
 def test_changelog_seed_only_without_linear(monkeypatch):
     clear_hlt_env(monkeypatch)
-    hlt_extensions._linear_cache.clear()
+    hlt_brain._linear_cache.clear()
 
     entries = hlt_extensions.get_brain_changelog()
 
