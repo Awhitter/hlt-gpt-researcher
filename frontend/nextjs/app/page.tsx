@@ -633,7 +633,14 @@ export default function Home() {
           if (isNewResearch) {
             isUpdatingRef.current = true;
             try {
-              const newId = await saveResearch(question, answer, orderedData);
+              // Reuse the backend run's research_id (stamped on websocket
+              // events) so this save merges with the server-side library
+              // entry instead of duplicating it under a fresh uuid.
+              const backendRunId = [...orderedData]
+                .reverse()
+                .map((item: any) => item.research_id || item.run_id)
+                .find((value) => typeof value === "string" && value.length > 0);
+              const newId = await saveResearch(question, answer, orderedData, backendRunId);
               setCurrentResearchId(newId);
               
               // Don't navigate to the research page URL anymore

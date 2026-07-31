@@ -835,3 +835,39 @@ def test_brain_audience_and_library_endpoints(monkeypatch, tmp_path):
     empty = client.get("/api/brain/library", params={"q": "quantum chromodynamics"})
     assert empty.status_code == 200
     assert empty.json()["reports"] == []
+
+
+def test_run_completion_upsert_reaches_library(monkeypatch, tmp_path):
+    """Pins the deep-run persistence contract: a report written through the
+    shared store (as handle_start_command does at run completion) must show up
+    in the library, so long runs survive the browser tab closing."""
+    import asyncio
+
+    from backend.server import report_store as report_store_module
+
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    path = tmp_path / "reports.json"
+    monkeypatch.setenv("REPORT_STORE_PATH", str(path))
+    monkeypatch.setattr(report_store_module, "_default_store", None)
+
+    store = report_store_module.get_report_store()
+    assert report_store_module.get_report_store() is store  # singleton
+
+    asyncio.run(
+        store.upsert_report(
+            "research_abc",
+            {
+                "id": "research_abc",
+                "question": "Deep run about nurse residencies",
+                "answer": "Residency programs cluster around large systems.",
+                "orderedData": [],
+                "chatMessages": [],
+                "timestamp": 1753000000000,
+            },
+        )
+    )
+
+    library = hlt_extensions.get_brain_library()
+    assert library["total"] == 1
+    assert library["reports"][0]["id"] == "research_abc"

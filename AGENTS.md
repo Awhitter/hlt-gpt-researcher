@@ -70,8 +70,12 @@ Read/Write phase rail (`components/brain/ResearchProgress.tsx`); raw agent
 logs are collapsed by default.
 
 Research memory: finished reports persist to `REPORT_STORE_PATH`
-(`data/reports.json` on the Railway volume) and are searchable at
-`/api/brain/library` (Library tab). `prepare_research_request` injects the
+(`/data/reports.json` on the Railway volume) and are searchable at
+`/api/brain/library` (Library tab). Run completion persists server-side
+(`server_utils.handle_start_command`) and sends a `report_complete`
+websocket message — pipelines like deep research don't stream `report`
+chunks, so this is what delivers the final answer to the UI; the browser
+then upserts the same research_id with its richer orderedData. `prepare_research_request` injects the
 top related prior reports into new runs (disable per-request with
 `hlt_research_scope.memory: false`).
 
