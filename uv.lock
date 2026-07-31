@@ -951,6 +951,22 @@ wheels = [
 ]
 
 [[package]]
+name = "ddgs"
+version = "9.14.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "fake-useragent" },
+    { name = "httpx", extra = ["brotli", "http2", "socks"] },
+    { name = "lxml" },
+    { name = "primp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/77/24/9d29eeb7dd4852c27c3673adcaf30c4dc55ced76b303c1fbb792ce7cae52/ddgs-9.14.4.tar.gz", hash = "sha256:f7b118a2b709a9e9c04a1dca6e96b98c25d4dfaca1a4b0a244d74454fcca48ef", size = 59742, upload-time = "2026-05-15T06:53:45.946Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/5f/32de4d99220eb559b7b1cd1c529a1856efa8097f7a3e10b6c207aa95e36c/ddgs-9.14.4-py3-none-any.whl", hash = "sha256:acb084c34bf1110c974caf7e5e5a2c1973beb4bd9e170bfd191fe5ed2d2b2d6c", size = 70638, upload-time = "2026-05-15T06:53:44.761Z" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1007,20 +1023,6 @@ wheels = [
 ]
 
 [[package]]
-name = "duckduckgo-search"
-version = "8.1.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "lxml" },
-    { name = "primp" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/10/ef/07791a05751e6cc9de1dd49fb12730259ee109b18e6d097e25e6c32d5617/duckduckgo_search-8.1.1.tar.gz", hash = "sha256:9da91c9eb26a17e016ea1da26235d40404b46b0565ea86d75a9f78cc9441f935", size = 22868, upload-time = "2025-07-06T15:30:59.73Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/72/c027b3b488b1010cf71670032fcf7e681d44b81829d484bb04e31a949a8d/duckduckgo_search-8.1.1-py3-none-any.whl", hash = "sha256:f48adbb06626ee05918f7e0cef3a45639e9939805c4fc179e68c48a12f1b5062", size = 18932, upload-time = "2025-07-06T15:30:58.339Z" },
-]
-
-[[package]]
 name = "emoji"
 version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1045,6 +1047,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ab/d2/22f8e5b83fb7ff1a5b19528b21bb908504c8b6a716309b169801881e64ff/exa_py-2.12.0.tar.gz", hash = "sha256:2cd5fe2d47d8e0221f87dcb2be0f007cc0a1f0a643b16dfc586ab1421998f4fc", size = 58731, upload-time = "2026-04-15T12:55:17.616Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ea/87/e5c458741a34c945d6b612ec54f00088a6869ffc4f3f8a7b06ae080ec6af/exa_py-2.12.0-py3-none-any.whl", hash = "sha256:78b954ca99151228e4b853bd25e58829048a9a601d6187001befa512e0143f8f", size = 73896, upload-time = "2026-04-15T12:55:16.03Z" },
+]
+
+[[package]]
+name = "fake-useragent"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/43/948d10bf42735709edb5ae51e23297d034086f17fc7279fef385a7acb473/fake_useragent-2.2.0.tar.gz", hash = "sha256:4e6ab6571e40cc086d788523cf9e018f618d07f9050f822ff409a4dfe17c16b2", size = 158898, upload-time = "2025-04-14T15:32:19.238Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/37/b3ea9cd5558ff4cb51957caca2193981c6b0ff30bd0d2630ac62505d99d0/fake_useragent-2.2.0-py3-none-any.whl", hash = "sha256:67f35ca4d847b0d298187443aaf020413746e56acd985a611908c73dba2daa24", size = 161695, upload-time = "2025-04-14T15:32:17.732Z" },
 ]
 
 [[package]]
@@ -1656,7 +1667,7 @@ grpc = [
 
 [[package]]
 name = "gpt-researcher"
-version = "0.14.7"
+version = "0.15.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -1679,9 +1690,9 @@ dependencies = [
     { name = "cryptography" },
     { name = "cssselect2" },
     { name = "dataclasses-json" },
+    { name = "ddgs" },
     { name = "distro" },
     { name = "docopt" },
-    { name = "duckduckgo-search" },
     { name = "emoji" },
     { name = "fastapi" },
     { name = "feedparser" },
@@ -1808,7 +1819,7 @@ requirements-txt = [
     { name = "ag2", extra = ["openai"] },
     { name = "arxiv-client" },
     { name = "azure-storage-blob" },
-    { name = "duckduckgo-search" },
+    { name = "ddgs" },
     { name = "exa-py" },
     { name = "firecrawl" },
     { name = "langchain-anthropic" },
@@ -1862,10 +1873,10 @@ requires-dist = [
     { name = "cryptography", specifier = ">=45.0.2" },
     { name = "cssselect2", specifier = ">=0.8.0" },
     { name = "dataclasses-json", specifier = ">=0.6.7" },
+    { name = "ddgs", specifier = ">=9.0.0" },
+    { name = "ddgs", marker = "extra == 'requirements-txt'" },
     { name = "distro", specifier = ">=1.9.0" },
     { name = "docopt", specifier = ">=0.6.2" },
-    { name = "duckduckgo-search", specifier = ">=4.1.1" },
-    { name = "duckduckgo-search", marker = "extra == 'requirements-txt'" },
     { name = "emoji", specifier = ">=2.14.1" },
     { name = "exa-py", marker = "extra == 'requirements-txt'" },
     { name = "fastapi", specifier = ">=0.104.1" },
@@ -1930,8 +1941,8 @@ requires-dist = [
     { name = "markdown2", specifier = ">=2.5.3" },
     { name = "markupsafe", specifier = ">=3.0.2" },
     { name = "marshmallow", specifier = ">=3.26.1" },
-    { name = "mcp", specifier = ">=1.9.1" },
-    { name = "md2pdf", specifier = ">=1.0.1" },
+    { name = "mcp", specifier = ">=1.9.1,<2" },
+    { name = "md2pdf", specifier = ">=3.1.0" },
     { name = "mistune", specifier = ">=3.1.3" },
     { name = "multidict", specifier = ">=6.4.4" },
     { name = "mypy-extensions", specifier = ">=1.1.0" },
@@ -2295,6 +2306,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
+]
+
+[package.optional-dependencies]
+brotli = [
+    { name = "brotli", marker = "platform_python_implementation == 'CPython'" },
+    { name = "brotlicffi", marker = "platform_python_implementation != 'CPython'" },
+]
+http2 = [
+    { name = "h2" },
+]
+socks = [
+    { name = "socksio" },
 ]
 
 [[package]]
@@ -5760,6 +5783,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
+name = "socksio"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/5c/48a7d9495be3d1c651198fd99dbb6ce190e2274d0f28b9051307bdec6b85/socksio-1.0.0.tar.gz", hash = "sha256:f88beb3da5b5c38b9890469de67d0cb0f9d494b78b106ca1845f96c10b91c4ac", size = 19055, upload-time = "2020-04-17T15:50:34.664Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/c3/6eeb6034408dac0fa653d126c9204ade96b819c936e136c5e8a6897eee9c/socksio-1.0.0-py3-none-any.whl", hash = "sha256:95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3", size = 12763, upload-time = "2020-04-17T15:50:31.878Z" },
 ]
 
 [[package]]
