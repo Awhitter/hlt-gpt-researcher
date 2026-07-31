@@ -39,6 +39,7 @@ import hmac
 import importlib.util
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Any, Iterable
@@ -159,6 +160,35 @@ _DEPTH_INSTRUCTIONS = {
     "balanced": "Balance speed and depth. Use enough context to answer confidently.",
     "deep": "Go deeper. Compare sources, inspect primary context, and surface tradeoffs.",
 }
+
+# Identity ground truth for scoped runs. Without it the planner free-associates
+# on estate names — e.g. "nursing mastery" became an NCLEX-app comparison against
+# ATI/Kaplan/UWorld instead of our recruiting platform.
+_ESTATE_GLOSSARY = (
+    "Company context (ground truth — do not re-derive it from the open web): "
+    "HLT / Higher Learning Technologies (hltcorp.com) is a ~25-person healthcare "
+    "education company whose current focus is nurse recruiting. 'Nursing Mastery' "
+    "means www.nursingmastery.com — HLT's own nurse recruiting platform (job "
+    "board, Nurse Pay Check pay-comparison tool, career content; code lives in "
+    "the Awhitter/nursing-mastery repo, data in Awhitter/ScraperVault). HLT also "
+    "ships Mastery-branded exam-prep apps (NCLEX etc.); only interpret a question "
+    "that way when it is explicitly about test prep. Other estate names: "
+    "Katailyst2 (AI registry/orchestration), MMM2 (media generation), EBB "
+    "(metrics). For questions about these properties, treat our own sites, repos, "
+    "and internal corpus as primary sources; third-party review chatter is "
+    "secondary color, not ground truth."
+)
+
+_ESTATE_NAME_PATTERN = re.compile(
+    r"nursing[\s_-]?mastery|katailyst|hltcorp|\bhlt\b|scraper[\s_-]?vault"
+    r"|\bmmm2?\b|multimedia[\s_-]?mastery|evidence[\s_-]?based[\s_-]?business|\bebb\b",
+    re.IGNORECASE,
+)
+
+
+def _mentions_estate(task: str) -> bool:
+    return bool(_ESTATE_NAME_PATTERN.search(task or ""))
+
 
 # "Study what's already working" doctrine as an executable research mode.
 _RESEARCH_MODES = ("standard", "top1")
@@ -651,6 +681,36 @@ def expand_mcp_presets(mcp_configs: list[dict[str, Any]] | None) -> list[dict[st
     return expanded
 
 
+def _sanitize_client_mcp_configs(
+    mcp_configs: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Drop browser-supplied MCP configs that need a local process.
+
+    The upstream Preferences panel offers sample configs like
+    `{"command": "npx", ...}`. This container has no Node runtime, and one
+    failing stdio server poisons tool loading for every MCP server in the
+    run (`Error getting MCP tools: No such file or directory: 'npx'`), so
+    only hosted (http/ws) configs and server-side preset references pass.
+    """
+    safe: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    for config in mcp_configs or []:
+        if not isinstance(config, dict):
+            continue
+        url = str(config.get("connection_url") or "")
+        hosted = url.startswith(("http://", "https://", "ws://", "wss://"))
+        if config.get("preset") or (hosted and not config.get("command")):
+            safe.append(config)
+        else:
+            dropped.append(str(config.get("name") or "unnamed"))
+    if dropped:
+        logger.warning(
+            "Dropped browser MCP configs that require a local process: %s",
+            ", ".join(dropped),
+        )
+    return safe, dropped
+
+
 def _scope_status(
     key: str,
     *,
@@ -681,7 +741,7 @@ def resolve_research_scope(
 
     scope = research_scope or {}
     readiness = get_hlt_readiness()
-    configs = list(mcp_configs or [])
+    configs, dropped_client_configs = _sanitize_client_mcp_configs(mcp_configs)
 
     requested = {key: bool(scope.get(key)) for key in _SCOPE_KEYS}
     if requested["codebase"] or requested["cms"] or requested["qbank"]:
@@ -737,6 +797,7 @@ def resolve_research_scope(
         "preset_statuses": readiness["preset_statuses"],
         "depth": scope.get("depth") if scope.get("depth") in _DEPTH_INSTRUCTIONS else "balanced",
         "mcp_server_count": len(expanded_configs),
+        "dropped_mcp_configs": dropped_client_configs,
         "scraper": {
             "requested": requested["firecrawl"],
             "active": bool(scraper_override),
@@ -832,10 +893,16 @@ def prepare_research_request(
     next_mcp_enabled = bool(mcp_enabled or expanded_configs)
     next_mcp_strategy = "fast" if depth == "fast" else "deep"
 
-    if not enabled_keys and depth == "balanced" and mode == "standard" and not prior_reports:
+    if (
+        not enabled_keys
+        and depth == "balanced"
+        and mode == "standard"
+        and not prior_reports
+        and not _mentions_estate(task)
+    ):
         return task, next_mcp_enabled, mcp_strategy, expanded_configs, hlt_scope_metadata, scraper_override
 
-    instruction_lines = [_DEPTH_INSTRUCTIONS[depth]]
+    instruction_lines = [_ESTATE_GLOSSARY, _DEPTH_INSTRUCTIONS[depth]]
     if mode == "top1":
         instruction_lines.append(_TOP1_MODE_INSTRUCTIONS)
     instruction_lines.extend(
