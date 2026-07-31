@@ -60,12 +60,23 @@ That gives agents these tools:
 
 | Tool | Use it when | Output |
 | --- | --- | --- |
-| `quick_search` | You need a fast cited public-web lookup, topic scan, or "is this worth researching?" check | Search results or summary plus metadata |
+| `quick_search` | You need a fast cited lookup, topic scan, or "is this worth researching?" check | Search results or summary, `hlt_scope`, and `mode` (`web` or `scoped_research`) |
 | `deep_research` | You need a serious context packet before writing, planning, or deciding — including anything about the HLT estate (its default `scope="auto"` pulls in estate repos, the Katailyst2 registry, metrics, media, and audience corpora when the query needs them; pin a scope list or pass `"none"` to override) | `research_id`, context, sources, source URLs, source count, `hlt_scope` summary |
 | `write_report` | You already ran `deep_research` and want a polished report from that research state | Report text |
 | `get_research_sources` | You want the source list for an existing `research_id` | Sources and URLs |
 | `get_research_context` | You want the raw research context for an existing `research_id` | Context packet |
 | `research://{topic}` | You want MCP resource-style access to cached or newly generated context | Research context |
+
+Both `quick_search` and `deep_research` default to `scope="auto"`: the server
+infers whether the query needs estate context (repos, Katailyst2 registry,
+metrics, media, audience/recruiting) and stays pure public web when it does
+not. Pin a list such as `["codebase","cms"]` or pass `"none"` to override.
+`quick_search` stays cheap for web questions (`mode: "web"`), but when auto
+scope activates an MCP preset it escalates to a short scoped research pass
+(`mode: "scoped_research"`) — a web-only answer about our own systems would be
+wrong, so it pays for the tool calls. Expect seconds, not milliseconds, on
+estate questions; call it with `scope="none"` when you need a guaranteed cheap
+web lookup.
 
 The MCP service keeps a bounded hot cache for live `GPTResearcher` objects and a
 SQLite metadata store for completed research context, source metadata, status,
@@ -320,7 +331,12 @@ rubrics, or a human review queue.
 
 ## Operating Guardrails
 
-- Start with `quick_search`; deep research costs more and takes longer.
+- Start with `quick_search`; deep research costs more and takes longer. The
+  exception is an estate question, where `quick_search` escalates to a scoped
+  research pass — pass `scope="none"` if you specifically want a cheap web scan.
+- REST `/api/quick_search` is deliberately web-only and does **not** run scope
+  inference; it is the raw upstream lookup. Use `/report/` (WebSocket) or the
+  MCP tools when a script needs estate-aware research.
 - Completed `research_id` metadata is durable when `RESEARCH_RUN_STORE_PATH` and
   `OUTPUTS_DIR` point at persistent storage. In-flight runs interrupted by a
   restart are marked `failed` with `interrupted_by_restart`; they are not
@@ -388,6 +404,19 @@ UI/WebSocket:
   --api-url https://gpt-researcher-api-production.up.railway.app \
   --scope codebase,metrics,firecrawl \
   --allow-degraded-scope
+```
+
+Auto scope (no `--scope` means auto; assert what should or should not fire):
+
+```bash
+# plain web question must stay web-only
+.venv/bin/python scripts/smoke_websocket_ui.py --auto \
+  --query 'NCLEX pass rates 2026 by state' --expect-empty-active
+
+# estate question must pull the code scope in on its own
+.venv/bin/python scripts/smoke_websocket_ui.py --auto \
+  --query 'How does ScraperVault hand applications to nursing-mastery?' \
+  --expect-active codebase
 ```
 
 ## Taking It To The Next Level

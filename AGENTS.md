@@ -62,7 +62,13 @@ Changelog, Roadmap — each tab has "What can I ask?" starter chips
 scope toggles for Deep web, Audience, Recruiting, QBank, Media, Code,
 Registry, and Metrics, a Fast/Balanced/Deep depth picker, and a
 Standard/Top 1% mode picker (top1 injects the cross-industry
-winners → mechanisms → rhymes → audience-verification doctrine). Toggles are
+winners → mechanisms → rhymes → audience-verification doctrine). An **Auto**
+chip is on by default and pins nothing: `backend/server/hlt_scope_inference.py`
+infers the scopes a query needs (heuristics, then one FAST_LLM tiebreak for
+weak signals, never `qbank`/`firecrawl`, never an unready integration), and the
+phase rail shows what auto-fired and why. Pinning any toggle leaves auto mode.
+MCP `deep_research`/`quick_search` default to the same `scope="auto"`; REST
+`/api/quick_search` stays web-only by design. Toggles are
 browser-safe metadata; server-side preset expansion,
 codegraph/GitHub/Katailyst/Apify/QBank MCP, Cloudinary, and `/api/brain/*`
 live in `backend/server/hlt_extensions.py`. Live runs render a Plan/Search/

@@ -81,9 +81,20 @@ Kill switches: `HLT_SCOPE_INFERENCE=0` (whole feature),
 overrides the tiebreak model (default: `FAST_LLM` when it is an OpenAI
 model, else `gpt-4o-mini`).
 
-The hosted MCP server's `deep_research` tool rides the same pipeline via its
-`scope` parameter (`"auto"` default, a pinned list, or `"none"`), so agents
-inherit Katailyst2/GitHub presets when their query is about the estate.
+The hosted MCP server's `deep_research` and `quick_search` tools ride the same
+pipeline via their `scope` parameter (`"auto"` default, a pinned list, or
+`"none"`), so agents inherit Katailyst2/GitHub presets when their query is
+about the estate. `quick_search` returns `mode: "web"` for plain web lookups
+and escalates to `mode: "scoped_research"` when auto scope activates an MCP
+preset, because a web-only answer about our own systems would be wrong.
+
+Surface coverage, so the routing is not a hidden pocket:
+
+| Surface | Auto scope? |
+| --- | --- |
+| UI / WebSocket `/report` (`server_utils.handle_start_command`) | Yes |
+| MCP `deep_research`, `quick_search` | Yes (default) |
+| REST `/api/quick_search` | No — raw upstream web lookup by design |
 
 | Checkbox | What it does now | Required env for full power |
 | --- | --- | --- |
