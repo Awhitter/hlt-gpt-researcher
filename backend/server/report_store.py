@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -55,3 +56,17 @@ class ReportStore:
                 del data[report_id]
                 await self._write_all_unlocked(data)
             return existed
+
+
+_default_store: "ReportStore | None" = None
+
+
+def get_report_store() -> ReportStore:
+    """Shared store instance so API routes and run completion write through
+    the same asyncio lock instead of racing on the JSON file."""
+    global _default_store
+    if _default_store is None:
+        _default_store = ReportStore(
+            Path(os.getenv("REPORT_STORE_PATH", os.path.join("data", "reports.json")))
+        )
+    return _default_store

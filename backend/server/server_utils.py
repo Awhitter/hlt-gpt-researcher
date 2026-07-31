@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 from .multi_agent_runner import run_multi_agent_task
 from .hlt_extensions import prepare_research_request as prepare_hlt_research_request
+from .report_store import get_report_store
 
 # Import chat agent
 try:
@@ -402,6 +403,36 @@ async def handle_start_command(websocket, data: str, manager):
         docx_path=file_paths.get("docx"),
         hlt_research_scope=hlt_scope_metadata,
     )
+    # Deliver the final report explicitly: pipelines like deep research don't
+    # stream `report` chunks over the websocket, so without this the client
+    # never receives the answer it spent the whole run waiting for.
+    if report.strip():
+        await logs_handler.send_json({
+            "type": "report_complete",
+            "content": "report_complete",
+            "output": report,
+        })
+
+    # Persist server-side so long runs land in the research library even if
+    # the browser tab is closed by the time the run finishes. The frontend
+    # upserts the same research_id with its richer orderedData afterwards.
+    if report.strip():
+        try:
+            await get_report_store().upsert_report(research_id, {
+                "id": research_id,
+                "question": display_task,
+                "answer": report,
+                "orderedData": [],
+                "chatMessages": [],
+                "timestamp": int(time.time() * 1000),
+            })
+        except Exception:
+            logger.warning(
+                "Failed to persist report to the research library",
+                extra={"research_id": research_id},
+                exc_info=True,
+            )
+
     await logs_handler.send_json({
         "type": "logs",
         "content": "research_completed",

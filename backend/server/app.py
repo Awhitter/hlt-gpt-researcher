@@ -35,7 +35,7 @@ from gpt_researcher import GPTResearcher
 from gpt_researcher.utils.enum import Tone
 from chat.chat import ChatAgentWithMemory
 
-from server.report_store import ReportStore
+from server.report_store import get_report_store
 from gpt_researcher.research_run_store import get_outputs_dir, get_research_run_store, jsonable
 from gpt_researcher.utils.langfuse_observability import (
     observe_langfuse,
@@ -227,7 +227,7 @@ app.add_middleware(
 # WebSocket manager
 manager = WebSocketManager()
 
-report_store = ReportStore(Path(os.getenv('REPORT_STORE_PATH', os.path.join('data', 'reports.json'))))
+report_store = get_report_store()
 research_run_store = get_research_run_store()
 
 # Constants

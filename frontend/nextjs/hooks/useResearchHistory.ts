@@ -153,11 +153,17 @@ export const useResearchHistory = () => {
     fetchHistory();
   }, []); // Empty dependency array - only run once on mount
   
-  // Save new research
-  const saveResearch = async (question: string, answer: string, orderedData: Data[]) => {
+  // Save new research. When the run came through the backend websocket we
+  // reuse its research_id so this upsert merges with the server-side library
+  // entry instead of creating a duplicate.
+  const saveResearch = async (
+    question: string,
+    answer: string,
+    orderedData: Data[],
+    researchId?: string,
+  ) => {
     try {
-      // Generate a unique ID
-      const id = uuidv4();
+      const id = researchId || uuidv4();
       
       // Save to backend
       const response = await fetch('/api/reports', {
@@ -208,7 +214,7 @@ export const useResearchHistory = () => {
       
       // Fallback: save to localStorage only
       const newResearch = {
-        id: uuidv4(),
+        id: researchId || uuidv4(),
         question,
         answer,
         orderedData,

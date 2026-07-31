@@ -8,7 +8,12 @@ import { ResearchHistoryItem, Data, ChatMessage } from '../types/data';
 interface ResearchHistoryContextType {
   history: ResearchHistoryItem[];
   loading: boolean;
-  saveResearch: (question: string, answer: string, orderedData: Data[]) => Promise<string>;
+  saveResearch: (
+    question: string,
+    answer: string,
+    orderedData: Data[],
+    researchId?: string,
+  ) => Promise<string>;
   updateResearch: (id: string, answer: string, orderedData: Data[]) => Promise<boolean>;
   getResearchById: (id: string) => Promise<ResearchHistoryItem | null>;
   deleteResearch: (id: string) => Promise<boolean>;
