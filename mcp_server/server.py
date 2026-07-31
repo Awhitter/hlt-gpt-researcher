@@ -40,8 +40,13 @@ def _allowed_hosts() -> list[str]:
 mcp = FastMCP(
     name="GPT Researcher",
     instructions=(
-        "Use GPT Researcher for current web research. Start with quick_search "
-        "for fast lookups or deep_research when you need a richer source-backed context."
+        "Use GPT Researcher for current web research and for questions about "
+        "the HLT estate. Start with quick_search for fast public-web lookups. "
+        "Use deep_research for richer source-backed context; its default "
+        "scope=\"auto\" automatically pulls in internal context (estate repos "
+        "nursing-mastery, ScraperVault, katailyst2, MMM2, EBB; the Katailyst2 "
+        "registry; internal metrics; media; nurse audience corpora) when the "
+        "query is about it, and stays pure web research when it is not."
     ),
     streamable_http_path="/mcp",
     transport_security=TransportSecuritySettings(allowed_hosts=_allowed_hosts()),

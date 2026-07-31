@@ -82,6 +82,22 @@ const EVENT_LABELS: Record<string, string> = {
   report_written: "Report finished",
 };
 
+const SCOPE_LABELS: Record<string, string> = {
+  codebase: "Code",
+  cms: "Registry",
+  qbank: "QBank",
+  metrics: "Metrics",
+  firecrawl: "Deep web",
+  media: "Media",
+  audience: "Audience",
+  recruiting: "Recruiting",
+};
+
+interface ScopeInfo {
+  auto: boolean;
+  active: string[];
+}
+
 const eventPhase = (content: string): PhaseId | null => {
   for (const phase of PHASES) {
     if (PHASE_EVENTS[phase.id].includes(content)) return phase.id;
@@ -100,6 +116,7 @@ interface Derived {
   sourceCount: number;
   subqueryCount: number;
   latestLabel: string;
+  scope: ScopeInfo | null;
 }
 
 const deriveProgress = (orderedData: Data[]): Derived => {
@@ -107,6 +124,7 @@ const deriveProgress = (orderedData: Data[]): Derived => {
   let done = false;
   let subqueryCount = 0;
   let latestLabel = "Warming up";
+  let scope: ScopeInfo | null = null;
   const sources = new Set<string>();
 
   for (const item of orderedData as any[]) {
@@ -127,6 +145,17 @@ const deriveProgress = (orderedData: Data[]): Derived => {
     if (content === "subqueries" && Array.isArray(item.metadata)) {
       subqueryCount = item.metadata.length;
     }
+    if (content === "hlt_scope_status") {
+      const scopeMeta = item.metadata?.hlt_research_scope;
+      if (scopeMeta && typeof scopeMeta === "object") {
+        scope = {
+          auto: Boolean(scopeMeta.auto_scope?.requested),
+          active: Array.isArray(scopeMeta.active_sources)
+            ? scopeMeta.active_sources
+            : [],
+        };
+      }
+    }
     const phase = eventPhase(content);
     if (phase) {
       const idx = PHASES.findIndex((p) => p.id === phase);
@@ -142,6 +171,7 @@ const deriveProgress = (orderedData: Data[]): Derived => {
     sourceCount: sources.size,
     subqueryCount,
     latestLabel,
+    scope,
   };
 };
 
@@ -255,6 +285,32 @@ export default function ResearchProgress({
           </span>
         </div>
       </div>
+      {derived.scope && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+          <span className="font-semibold uppercase tracking-wide text-slate-500">
+            {derived.scope.auto ? "Auto scope" : "Scope"}
+          </span>
+          {derived.scope.active.length > 0 ? (
+            derived.scope.active.map((key) => (
+              <span
+                key={key}
+                className="rounded border border-teal-400/40 bg-teal-400/10 px-1.5 py-0.5 font-medium text-teal-200"
+                title={
+                  derived.scope?.auto
+                    ? "Pulled in automatically because the question needs it"
+                    : "Pinned before the run"
+                }
+              >
+                {SCOPE_LABELS[key] || key}
+              </span>
+            ))
+          ) : (
+            <span title="No internal context needed for this question">
+              public web only
+            </span>
+          )}
+        </div>
+      )}
       {!finished && (
         <p className="mt-3 truncate text-xs leading-5 text-slate-400">
           <span className="mr-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-teal-300 align-middle" />

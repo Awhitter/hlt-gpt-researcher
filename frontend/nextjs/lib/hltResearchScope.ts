@@ -1,6 +1,7 @@
 import { HLTResearchScope } from "@/types/data";
 
 export const defaultHLTResearchScope: HLTResearchScope = {
+  auto: true,
   codebase: false,
   cms: false,
   qbank: false,

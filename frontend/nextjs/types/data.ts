@@ -74,6 +74,9 @@ export type HLTResearchDepth = "fast" | "balanced" | "deep";
 export type HLTResearchMode = "standard" | "top1";
 
 export interface HLTResearchScope {
+  /** Auto mode: the server infers relevant scopes from the query. Ignored
+   * whenever any scope below is explicitly enabled. */
+  auto: boolean;
   codebase: boolean;
   cms: boolean;
   qbank: boolean;

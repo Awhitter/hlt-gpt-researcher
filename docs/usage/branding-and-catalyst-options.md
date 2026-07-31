@@ -64,6 +64,27 @@ The UI checkboxes are intentionally token-free. They send
 `hlt_research_scope` metadata over the existing WebSocket start payload. The
 backend expands that metadata in `backend/server/hlt_extensions.py`.
 
+**Auto scope (the default).** When no scope is pinned — the UI's "Auto" chip,
+`hlt_research_scope: {"auto": true}`, or omitting the field entirely —
+`backend/server/hlt_scope_inference.py` infers which internal scopes the
+query needs: keyword/entity heuristics first (repo names, registry words,
+metrics phrasing, media/audience language), then one fast-model LLM tiebreak
+for ambiguous weak-signal queries (needs `OPENAI_API_KEY`; short timeout,
+falls back to heuristics-only). Inference only activates scopes whose
+integrations are ready or partial, never `qbank` or the Firecrawl crawl
+lever, and explicit scope selections always win. Generic web questions match
+nothing and run as pure web research with zero added latency. The
+`hlt_scope_status` WebSocket event carries `auto_scope`
+(`requested`/`applied`/`reasons`) so the UI can show what auto-fired.
+Kill switches: `HLT_SCOPE_INFERENCE=0` (whole feature),
+`HLT_SCOPE_INFERENCE_LLM=0` (tiebreak only); `HLT_SCOPE_INFERENCE_MODEL`
+overrides the tiebreak model (default: `FAST_LLM` when it is an OpenAI
+model, else `gpt-4o-mini`).
+
+The hosted MCP server's `deep_research` tool rides the same pipeline via its
+`scope` parameter (`"auto"` default, a pinned list, or `"none"`), so agents
+inherit Katailyst2/GitHub presets when their query is about the estate.
+
 | Checkbox | What it does now | Required env for full power |
 | --- | --- | --- |
 | Code files | Adds codebase instructions naming the canonical estate repos (nursing-mastery, ScraperVault, katailyst2, MMM2 — override with `HLT_CODEBASE_REPOS`) and requests Katailyst2 + GitHub MCP presets | `KATAILYST2_MCP_TOKEN`, optional `GITHUB_MCP_URL` / `GITHUB_MCP_TOKEN` |
