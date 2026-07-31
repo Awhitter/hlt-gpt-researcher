@@ -552,20 +552,66 @@ def register_tools(mcp: FastMCP) -> None:
         query: str,
         summary: bool = True,
         domains: list[str] | None = None,
+        scope: str | list[str] | None = "auto",
+        depth: str = "fast",
     ) -> dict[str, Any]:
-        """Perform a fast public-web search without creating a research session.
+        """Fast lookup with the same auto-scope router as deep_research.
 
-        Web-only: for questions about the HLT estate (nursing-mastery,
-        ScraperVault, katailyst2, MMM2, EBB, the Katailyst2 registry, internal
-        metrics or media), use deep_research with scope="auto" instead.
+        scope="auto" (default) infers HLT estate context when the query needs
+        it — nursing-mastery, ScraperVault, katailyst2, MMM2, EBB, the
+        Katailyst2 registry, metrics, media, audience/recruiting — and stays
+        pure public-web search otherwise. Prefer deep_research for a full
+        cited report; use this for a quick answer.
+
+        scope: "auto" | list of keys (codebase, cms, qbank, metrics,
+        firecrawl, media, audience, recruiting) | "none" for forced web-only.
+        depth: "fast" | "balanced" | "deep" (default "fast").
         """
 
         search_id = str(uuid.uuid4())
-        researcher = GPTResearcher(query=query, report_type="research_report")
+        research_scope = _build_research_scope(scope, depth)
+        task, mcp_configs, mcp_strategy, scraper_override, scope_metadata = (
+            await asyncio.to_thread(_prepare_scoped_request, query, research_scope)
+        )
         try:
+            # Estate scopes need MCP presets; escalate to a short research pass
+            # so Katailyst2/GitHub context actually fires. Pure-web stays cheap.
+            if mcp_configs:
+                logger.info(
+                    "quick_search escalating to scoped research for search_id=%s query=%r scopes=%s",
+                    search_id,
+                    query,
+                    (scope_metadata or {}).get("auto_scope", {}).get("applied")
+                    or (scope_metadata or {}).get("active_sources"),
+                )
+                item, scope_metadata = await _conduct_research(
+                    query,
+                    scope=scope,
+                    depth=depth if depth in _VALID_DEPTHS else "fast",
+                )
+                return _success(
+                    {
+                        "search_id": search_id,
+                        "query": query,
+                        "result_count": len(item.sources),
+                        "search_results": _format_sources_for_response(item.sources),
+                        "context": item.context,
+                        "hlt_scope": _scope_summary(scope_metadata),
+                        "mode": "scoped_research",
+                    }
+                )
+
             logger.info("Performing quick search for search_id=%s query=%r", search_id, query)
+            researcher = GPTResearcher(
+                query=task,
+                report_type="research_report",
+                mcp_configs=None,
+                mcp_strategy=mcp_strategy,
+            )
+            if scraper_override:
+                researcher.cfg.scraper = scraper_override
             results = await researcher.quick_search(
-                query=query,
+                query=task,
                 query_domains=domains,
                 aggregated_summary=summary,
             )
@@ -575,6 +621,8 @@ def register_tools(mcp: FastMCP) -> None:
                     "query": query,
                     "result_count": _result_count(results),
                     "search_results": _jsonable(results),
+                    "hlt_scope": _scope_summary(scope_metadata),
+                    "mode": "web",
                 }
             )
         except Exception as exc:

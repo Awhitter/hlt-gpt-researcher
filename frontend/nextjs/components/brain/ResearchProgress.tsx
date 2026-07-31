@@ -96,6 +96,7 @@ const SCOPE_LABELS: Record<string, string> = {
 interface ScopeInfo {
   auto: boolean;
   active: string[];
+  reasons: Record<string, string[]>;
 }
 
 const eventPhase = (content: string): PhaseId | null => {
@@ -148,11 +149,17 @@ const deriveProgress = (orderedData: Data[]): Derived => {
     if (content === "hlt_scope_status") {
       const scopeMeta = item.metadata?.hlt_research_scope;
       if (scopeMeta && typeof scopeMeta === "object") {
+        const autoReasons =
+          scopeMeta.auto_scope?.reasons &&
+          typeof scopeMeta.auto_scope.reasons === "object"
+            ? scopeMeta.auto_scope.reasons
+            : {};
         scope = {
           auto: Boolean(scopeMeta.auto_scope?.requested),
           active: Array.isArray(scopeMeta.active_sources)
             ? scopeMeta.active_sources
             : [],
+          reasons: autoReasons as Record<string, string[]>,
         };
       }
     }
@@ -288,22 +295,32 @@ export default function ResearchProgress({
       {derived.scope && (
         <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
           <span className="font-semibold uppercase tracking-wide text-slate-500">
-            {derived.scope.auto ? "Auto scope" : "Scope"}
+            {derived.scope.auto ? "Auto-detected" : "Scope"}
           </span>
           {derived.scope.active.length > 0 ? (
-            derived.scope.active.map((key) => (
-              <span
-                key={key}
-                className="rounded border border-teal-400/40 bg-teal-400/10 px-1.5 py-0.5 font-medium text-teal-200"
-                title={
-                  derived.scope?.auto
-                    ? "Pulled in automatically because the question needs it"
-                    : "Pinned before the run"
-                }
-              >
-                {SCOPE_LABELS[key] || key}
-              </span>
-            ))
+            derived.scope.active.map((key) => {
+              const reasons = derived.scope?.reasons?.[key] || [];
+              const reasonText = reasons.length > 0 ? reasons.join("; ") : "";
+              return (
+                <span
+                  key={key}
+                  className="rounded border border-teal-400/40 bg-teal-400/10 px-1.5 py-0.5 font-medium text-teal-200"
+                  title={
+                    reasonText ||
+                    (derived.scope?.auto
+                      ? "Pulled in automatically because the question needs it"
+                      : "Pinned before the run")
+                  }
+                >
+                  {SCOPE_LABELS[key] || key}
+                  {reasonText ? (
+                    <span className="ml-1 font-normal text-teal-200/70">
+                      ({reasons[0]})
+                    </span>
+                  ) : null}
+                </span>
+              );
+            })
           ) : (
             <span title="No internal context needed for this question">
               public web only
