@@ -323,39 +323,56 @@ export default function Home() {
     }
   };
 
-  const handleCodebaseAsk = (question: string) => {
-    setChatBoxSettings((prev) => ({
-      ...prev,
-      hlt_research_scope: {
-        ...defaultHLTResearchScope,
-        ...(prev.hlt_research_scope || {}),
-        codebase: true,
-        depth: "deep",
-      },
-    }));
+  // Builds the exact settings a preset run should use. Presets reset the
+  // scope to a deterministic recipe (defaults + the preset's toggles) so a
+  // leftover toggle from a previous run can't leak into the launched run.
+  const settingsForPresetRun = (
+    scopePatch: Partial<HLTResearchScope>,
+  ): ChatBoxSettings => {
+    const scope: HLTResearchScope = {
+      ...defaultHLTResearchScope,
+      ...scopePatch,
+    };
+    return {
+      ...chatBoxSettings,
+      hlt_research_scope: scope,
+      report_type: scope.depth === "deep" ? "deep" : "research_report",
+      mcp_enabled:
+        chatBoxSettings.mcp_enabled ||
+        scope.codebase ||
+        scope.cms ||
+        scope.qbank ||
+        scope.metrics,
+      mcp_strategy: scope.depth === "fast" ? "fast" : "deep",
+    };
+  };
+
+  const launchPresetRun = (prompt: string, scopePatch: Partial<HLTResearchScope>) => {
+    const nextSettings = settingsForPresetRun(scopePatch);
+    setChatBoxSettings(nextSettings);
     setBrainTab("ask");
-    setPromptValue(question);
-    void handleDisplayResult(question);
+    setPromptValue(prompt);
+    // Pass the settings explicitly: setChatBoxSettings hasn't committed yet,
+    // so handleDisplayResult would otherwise launch with the stale scope.
+    void handleDisplayResult(prompt, nextSettings);
+  };
+
+  const handleCodebaseAsk = (question: string) => {
+    launchPresetRun(question, { codebase: true, depth: "deep" });
   };
 
   const handleStarterPrompt = (starter: {
     prompt: string;
     scope?: Partial<HLTResearchScope>;
   }) => {
-    setChatBoxSettings((prev) => ({
-      ...prev,
-      hlt_research_scope: {
-        ...defaultHLTResearchScope,
-        ...(prev.hlt_research_scope || {}),
-        ...(starter.scope || {}),
-      },
-    }));
-    setBrainTab("ask");
-    setPromptValue(starter.prompt);
-    void handleDisplayResult(starter.prompt);
+    launchPresetRun(starter.prompt, starter.scope || {});
   };
 
-  const handleDisplayResult = async (newQuestion: string) => {
+  const handleDisplayResult = async (
+    newQuestion: string,
+    settingsOverride?: ChatBoxSettings,
+  ) => {
+    const runSettings = settingsOverride || chatBoxSettings;
     // Exit chat mode when starting a new research
     setIsInChatMode(false);
     setShowResult(true);
@@ -375,8 +392,8 @@ export default function Home() {
     // We'll use this as a temporary ID to keep track of this research
     const tempResearchId = `temp-${newResearchStarted}`;
 
-    if (chatBoxSettings.report_type === 'multi_agents' && langgraphHostUrl) {
-      let { streamResponse, host, thread_id } = await startLanggraphResearch(newQuestion, chatBoxSettings.report_source, langgraphHostUrl);
+    if (runSettings.report_type === 'multi_agents' && langgraphHostUrl) {
+      let { streamResponse, host, thread_id } = await startLanggraphResearch(newQuestion, runSettings.report_source, langgraphHostUrl);
       const langsmithGuiLink = `https://smith.langchain.com/studio/thread/${thread_id}?baseUrl=${host}`;
       setOrderedData((prevOrder) => [...prevOrder, { type: 'langgraphButton', link: langsmithGuiLink }]);
 
@@ -395,7 +412,7 @@ export default function Home() {
         previousChunk = chunk;
       }
     } else {
-      initializeWebSocket(newQuestion, chatBoxSettings);
+      initializeWebSocket(newQuestion, runSettings);
     }
   };
 

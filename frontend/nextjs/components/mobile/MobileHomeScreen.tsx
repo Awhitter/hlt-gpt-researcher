@@ -214,9 +214,9 @@ export default function MobileHomeScreen({
 
       <div className="mx-auto mt-4 flex w-full max-w-lg flex-wrap justify-center gap-2 px-4">
         {[
-          "AI trends for Katailyst",
-          "Frontend cleanup map",
-          "Observability patterns",
+          "Trending in nurse forums this month",
+          "Article ideas for nursingmastery.com",
+          "Competitor teardown: new-grad job sites",
         ].map((suggestion) => (
           <button
             key={suggestion}

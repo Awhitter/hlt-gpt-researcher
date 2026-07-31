@@ -28,6 +28,12 @@ export const STARTER_PROMPTS: Record<BrainTabId, StarterPrompt[]> = {
       scope: { recruiting: true, firecrawl: true, depth: "deep" },
     },
     {
+      label: "Article ideas for our site",
+      prompt:
+        "Find 10 high-impact article ideas for www.nursingmastery.com. Start from what nurses and nursing students are actually asking in forums right now, check our content inventory for gaps and overlap with existing pages, and rank by demand and fit. For each idea give a working title, the angle, the target reader, and the forum evidence behind it.",
+      scope: { audience: true, recruiting: true, firecrawl: true, depth: "deep" },
+    },
+    {
       label: "Best-on-earth study",
       prompt:
         "What do the best career/job platforms in ANY industry do that nurse recruiting hasn't copied yet?",

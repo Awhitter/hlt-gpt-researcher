@@ -32,7 +32,14 @@ const Hero: FC<THeroProps> = ({
     setChatBoxSettings?.((prev) => ({
       ...prev,
       hlt_research_scope: normalized,
-      report_type: normalized.depth === "deep" ? "deep" : prev.report_type,
+      // Deep depth runs the deep-research pipeline; leaving deep must revert
+      // it, otherwise every later run silently stays in deep mode.
+      report_type:
+        normalized.depth === "deep"
+          ? "deep"
+          : prev.report_type === "deep"
+            ? "research_report"
+            : prev.report_type,
       mcp_enabled:
         prev.mcp_enabled ||
         normalized.codebase ||
@@ -43,18 +50,13 @@ const Hero: FC<THeroProps> = ({
     }));
   };
 
-  const handleExampleSearch = (query: string) => {
-    setPromptValue(query);
-    handleDisplayResult(query);
-  };
-
   const fadeInUp = {
     hidden: { opacity: 0, y: 10 },
     visible: { opacity: 1, y: 0 },
   };
 
   return (
-    <div className="relative mt-[-56px] flex min-h-[440px] items-start overflow-visible pb-5 pt-[74px] sm:min-h-[470px]">
+    <div className="relative mt-[-56px] flex items-start overflow-visible pb-2 pt-[74px]">
       <motion.div
         initial="hidden"
         animate={isVisible ? "visible" : "hidden"}
@@ -115,76 +117,10 @@ const Hero: FC<THeroProps> = ({
           </motion.div>
         )}
 
-        {hltBranding.enabled && (
-          <motion.div
-            variants={fadeInUp}
-            transition={{ duration: 0.35, delay: 0.2 }}
-            className="mt-4 w-full max-w-[820px] px-4"
-            aria-label="Example searches"
-          >
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Examples
-              </span>
-            </div>
-            <div className="-mx-4 flex snap-x gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              {exampleSearches.map((example) => (
-                <button
-                  key={example.label}
-                  type="button"
-                  title={example.query}
-                  onClick={() => handleExampleSearch(example.query)}
-                  className="group min-h-[72px] w-[190px] shrink-0 snap-start rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 text-left transition-colors hover:border-blue-400/40 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-blue-400/50"
-                >
-                  <span className="block text-xs font-semibold text-slate-200 group-hover:text-white">
-                    {example.label}
-                  </span>
-                  <span className="mt-1 block text-[11px] leading-4 text-slate-500 group-hover:text-slate-300">
-                    {example.description}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </motion.div>
-        )}
-
         <div className="h-1" />
       </motion.div>
     </div>
   );
 };
-
-const exampleSearches = [
-  {
-    label: "AI trends",
-    description: "Latest patterns for product, agents, and cleanup.",
-    query:
-      "Find current AI trends that could improve Katailyst workflows, frontend design, observability, and ecosystem cleanup.",
-  },
-  {
-    label: "Frontend cleanup",
-    description: "Find UI debt and design-system fixes.",
-    query:
-      "Map frontend cleanup opportunities across Katailyst-style product interfaces and suggest design-system enforcement patterns.",
-  },
-  {
-    label: "QBank gaps",
-    description: "Improve corporate CMS and question-bank quality.",
-    query:
-      "Research opportunities to improve corporate CMS and question-bank content quality using read-only internal context when available.",
-  },
-  {
-    label: "Observability",
-    description: "Trace runs, health checks, and drift.",
-    query:
-      "Research observability patterns for agent workflows, run traces, health checks, and ecosystem drift detection.",
-  },
-  {
-    label: "Customer discovery",
-    description: "Find audience pains and workflow signals.",
-    query:
-      "Research customer discovery themes, audience pains, objections, and workflow signals that could inform Katailyst product and content strategy.",
-  },
-];
 
 export default Hero;
