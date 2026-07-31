@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import urllib.request
 
 import websockets
@@ -27,8 +28,38 @@ SCOPE_KEYS = {
 }
 
 
-def fetch_ws_token(ui_url: str) -> str:
-    request = urllib.request.Request(f"{ui_url.rstrip('/')}/api/ws-token", method="POST")
+def team_gate_cookie(ui_url: str, team_password: str | None = None) -> str | None:
+    """Log in through the shared-password team gate and return the session cookie.
+
+    The Vercel UI middleware gates /api/ws-token behind TEAM_ACCESS_PASSWORD.
+    Pass the password explicitly or export TEAM_ACCESS_PASSWORD; when neither is
+    set the gate is assumed to be off (local dev) and no cookie is used.
+    """
+    password = team_password if team_password is not None else os.getenv("TEAM_ACCESS_PASSWORD")
+    if not password:
+        return None
+    request = urllib.request.Request(
+        f"{ui_url.rstrip('/')}/api/auth/login",
+        data=json.dumps({"password": password}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
+        set_cookie = response.headers.get("Set-Cookie") or ""
+    cookie_pair = set_cookie.split(";", 1)[0].strip()
+    if not cookie_pair:
+        raise RuntimeError("team gate login succeeded but no session cookie was set")
+    return cookie_pair
+
+
+def fetch_ws_token(ui_url: str, team_password: str | None = None) -> str:
+    headers = {}
+    cookie = team_gate_cookie(ui_url, team_password)
+    if cookie:
+        headers["Cookie"] = cookie
+    request = urllib.request.Request(
+        f"{ui_url.rstrip('/')}/api/ws-token", headers=headers, method="POST"
+    )
     with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
         payload = json.load(response)
     token = payload.get("ws_token")
