@@ -27,6 +27,43 @@ cites sources.
 
 Health: `curl -fsS …/health` on the API and MCP hosts above.
 
+## Signing in (the UI has a team password)
+
+The browser UI sits behind a shared-password gate: opening any page bounces
+you to `/login`. Enter the team password once — the session cookie lasts
+30 days per browser.
+
+- **Where the password lives:** Vercel project `gpt-researcher-ui` →
+  `TEAM_ACCESS_PASSWORD` (Production), mirrored in Doppler
+  `hlt-agent-tokens/dev` as `GPTR_TEAM_ACCESS_PASSWORD`. Ask Alec if you
+  don't have it. Vercel env values pull back redacted on this team, so the
+  Doppler mirror is the recoverable copy.
+- **Rotating it:** `printf '<new>' | vercel env add TEAM_ACCESS_PASSWORD
+  production --force` from `frontend/nextjs/`, then redeploy (below), then
+  update the Doppler mirror. `TEAM_ACCESS_COOKIE_SECRET` is separate, so a
+  rotation does **not** log anyone out.
+- Agents and scripts are unaffected — MCP and REST auth are separate keys.
+
+## Deploying
+
+| Surface | Command | Notes |
+| --- | --- | --- |
+| Backend API (Railway) | `./deploy-to-railway.sh` | reads local `.env`; healthcheck `GET /health` |
+| MCP server (Railway) | `./deploy-to-railway-mcp.sh` | same pattern; redeploy BOTH when `backend/server/*` changes — the MCP routes through the same request prep |
+| Team UI (Vercel) | `cd frontend/nextjs && vercel --prod --scope alecs-projects-e88e78a8` | project `gpt-researcher-ui`; the CLI's default scope is the HLT team, so pass the scope explicitly |
+
+## Is it working? (60 seconds)
+
+```
+TEAM_ACCESS_PASSWORD=<the password> .venv/bin/python scripts/smoke_estate_eval.py --depth fast
+```
+
+Seven canned questions with scope + content assertions; exit code = number
+of failures. Two cases are known-flaky at `fast` depth (`katailyst-registry-scope`
+occasionally finishes without report content; `scopeless-pizza` occasionally
+name-drops HLT) — a single flaky miss on those two is noise, repeated misses
+or any failure on the two `nursing-mastery-*` glossary cases is real.
+
 ## How to use it in 30 seconds
 
 **Human:** open the UI → leave **Auto** on → ask. Pin Code / Registry /
