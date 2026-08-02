@@ -52,6 +52,14 @@ def test_natural_product_questions_select_internal_code_research(monkeypatch, qu
     assert result["llm_used"] is False
 
 
+def test_non_product_question_does_not_select_internal_code_research(monkeypatch):
+    clear_env(monkeypatch)
+    result = inference.infer_research_scope(
+        "What continuing education requirements apply to nurses in California?"
+    )
+    assert "codebase" not in result["scopes"]
+
+
 def test_registry_and_metrics_signals_select_their_scopes(monkeypatch):
     clear_env(monkeypatch)
 
