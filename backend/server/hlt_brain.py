@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 
 from .hlt_text import STOPWORDS
+from .hlt_grounding import prepare_report_record, report_is_memory_eligible
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +98,31 @@ _BRAIN_REPO_CARDS: tuple[dict[str, Any], ...] = (
 )
 
 
-def get_brain_repos(*, codegraph_ready: bool = False) -> list[dict[str, Any]]:
+def get_brain_repos(*, repository_readiness: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Estate repo cards for the Codebase explorer tab.
 
     Readiness is passed in rather than looked up so this module stays a leaf
     of the request pipeline instead of importing back into it.
     """
-    return [
-        {
-            **card,
-            "codegraph_ready": codegraph_ready,
-        }
-        for card in _BRAIN_REPO_CARDS
-    ]
+    readiness_by_slug = {
+        str(item.get("repo") or "").lower(): item
+        for item in (repository_readiness or [])
+        if isinstance(item, dict)
+    }
+    repos = []
+    for card in _BRAIN_REPO_CARDS:
+        readiness = readiness_by_slug.get(card["slug"], {})
+        repos.append(
+            {
+                **card,
+                "branch": readiness.get("branch"),
+                "commitSha": readiness.get("commitSha"),
+                "indexedAt": readiness.get("indexedAt"),
+                "status": readiness.get("status") or "unavailable",
+                "error": readiness.get("error") or "Repository index status was not returned.",
+            }
+        )
+    return repos
 
 
 def _load_corpus_documents(subdir: str) -> list[dict[str, Any]]:
@@ -220,7 +233,10 @@ def search_prior_reports(query: str, limit: int = 3) -> list[dict[str, Any]]:
         return []
 
     scored: list[tuple[float, dict[str, Any]]] = []
-    for entry in _report_store_entries():
+    for raw_entry in _report_store_entries():
+        entry = prepare_report_record(raw_entry)
+        if not report_is_memory_eligible(entry):
+            continue
         question = str(entry.get("question") or "")
         answer = str(entry.get("answer") or "")
         if not question or not answer:
@@ -251,6 +267,10 @@ def search_prior_reports(query: str, limit: int = 3) -> list[dict[str, Any]]:
                 "date": date,
                 "score": score,
                 "snippet": re.sub(r"\s+", " ", answer)[:400],
+                "verificationStatus": entry["verificationStatus"],
+                "verificationReason": entry["verificationReason"],
+                "sourceFreshness": entry["sourceFreshness"],
+                "repositories": entry["repositories"],
             }
         )
     return results
@@ -263,10 +283,21 @@ def get_brain_library(query: str | None = None, limit: int = 50) -> dict[str, An
         matches = search_prior_reports(query, limit=min(limit, 25))
         return {"reports": matches, "query": query, "total": len(matches)}
 
-    entries = _report_store_entries()
+    entries = [prepare_report_record(entry) for entry in _report_store_entries()]
     entries.sort(key=lambda entry: -(entry.get("timestamp") or 0))
+    deduped_entries = []
+    seen_reports: set[tuple[str, str]] = set()
+    for entry in entries:
+        key = (
+            re.sub(r"\s+", " ", str(entry.get("question") or "").strip().lower()),
+            re.sub(r"\s+", " ", str(entry.get("answer") or "").strip().lower())[:1000],
+        )
+        if key in seen_reports:
+            continue
+        seen_reports.add(key)
+        deduped_entries.append(entry)
     reports = []
-    for entry in entries[:limit]:
+    for entry in deduped_entries[:limit]:
         timestamp = entry.get("timestamp")
         date = (
             time.strftime("%Y-%m-%d", time.gmtime(timestamp / 1000))
@@ -280,9 +311,13 @@ def get_brain_library(query: str | None = None, limit: int = 50) -> dict[str, An
                 "question": entry.get("question"),
                 "date": date,
                 "snippet": re.sub(r"\s+", " ", answer)[:280],
+                "verificationStatus": entry["verificationStatus"],
+                "verificationReason": entry["verificationReason"],
+                "sourceFreshness": entry["sourceFreshness"],
+                "repositories": entry["repositories"],
             }
         )
-    return {"reports": reports, "query": None, "total": len(entries)}
+    return {"reports": reports, "query": None, "total": len(deduped_entries)}
 
 
 _LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
@@ -290,13 +325,17 @@ _LINEAR_CACHE_TTL_SECONDS = 300
 _linear_cache: dict[str, tuple[float, Any]] = {}
 
 
-def _linear_graphql(query: str, timeout: int = 8) -> dict[str, Any] | None:
+def _linear_graphql(
+    query: str,
+    timeout: int = 8,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Run a Linear GraphQL query with LINEAR_API_KEY. Returns None on any failure."""
 
     api_key = os.getenv("LINEAR_API_KEY")
     if not api_key:
         return None
-    payload = json.dumps({"query": query}).encode("utf-8")
+    payload = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
     request = urllib.request.Request(_LINEAR_GRAPHQL_URL, data=payload, method="POST")
     request.add_header("Authorization", api_key)
     request.add_header("Content-Type", "application/json")
@@ -311,6 +350,94 @@ def _linear_graphql(query: str, timeout: int = 8) -> dict[str, Any] | None:
         return None
     data = body.get("data")
     return data if isinstance(data, dict) else None
+
+
+def create_linear_change_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create a confirmation-gated, source-linked Linear request.
+
+    This deliberately creates a planning receipt only. It never changes code,
+    production configuration, or user data.
+    """
+    if payload.get("confirmed") is not True:
+        raise ValueError("Confirmation is required before creating a change request.")
+
+    question = str(payload.get("question") or "").strip()
+    requested_change = str(payload.get("requestedChange") or "").strip()
+    target_repository = str(payload.get("targetRepository") or "").strip()
+    if not question or not requested_change or not target_repository:
+        raise ValueError("Question, requested change, and target repository are required.")
+
+    sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    evidence = prepare_report_record({"sourceRefs": sources}, validate_sources=True)
+    if evidence["verificationStatus"] != "verified":
+        raise ValueError("Every source must be an exact repository path validated at its cited commit.")
+    if target_repository not in evidence["repositories"]:
+        raise ValueError("The target repository must match one of the validated sources.")
+    safe_sources = []
+    for source in evidence["sourceRefs"][:12]:
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "").strip()
+        path = str(source.get("path") or "").strip()
+        if source.get("exists") is True and url.startswith("https://github.com/") and path:
+            safe_sources.append(f"- [{path}]({url})")
+
+    team_id = os.getenv("LINEAR_TEAM_ID")
+    if not team_id:
+        team_data = _linear_graphql("query { teams(first: 50) { nodes { id name key } } }")
+        teams = ((team_data or {}).get("teams") or {}).get("nodes") or []
+        preferred = next(
+            (
+                team for team in teams
+                if str(team.get("name") or "").lower() == "nursing mastery"
+                or str(team.get("key") or "").lower() in {"nur", "nursingmastery"}
+            ),
+            None,
+        )
+        team_id = str((preferred or {}).get("id") or "")
+    if not team_id:
+        raise RuntimeError("Linear is unavailable or the Nursing Mastery team could not be found.")
+
+    source_text = "\n".join(safe_sources) if safe_sources else "- No validated source links were supplied."
+    description = (
+        "## Research question\n\n"
+        f"{question}\n\n"
+        "## Requested change\n\n"
+        f"{requested_change}\n\n"
+        "## Target repository\n\n"
+        f"`{target_repository}`\n\n"
+        "## Research sources\n\n"
+        f"{source_text}\n\n"
+        "Created from Mastery Research after explicit teammate confirmation. "
+        "This request did not edit code or production data."
+    )
+    mutation = _linear_graphql(
+        """
+        mutation CreateMasteryResearchRequest($input: IssueCreateInput!) {
+          issueCreate(input: $input) {
+            success
+            issue { id identifier url title }
+          }
+        }
+        """,
+        variables={
+            "input": {
+                "teamId": team_id,
+                "title": f"Research request: {requested_change[:120]}",
+                "description": description,
+            }
+        },
+    )
+    result = (mutation or {}).get("issueCreate") or {}
+    issue = result.get("issue") or {}
+    if result.get("success") is not True or not issue.get("url"):
+        raise RuntimeError("Linear did not create the change request.")
+    return {
+        "status": "created",
+        "identifier": issue.get("identifier"),
+        "url": issue.get("url"),
+        "title": issue.get("title"),
+    }
 
 
 def _linear_cached(key: str, fetch) -> Any:

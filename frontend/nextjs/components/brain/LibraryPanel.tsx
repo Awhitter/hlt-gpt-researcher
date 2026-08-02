@@ -10,6 +10,8 @@ type LibraryReport = {
   date: string | null;
   snippet: string;
   score?: number;
+  verificationStatus: "verified" | "partial" | "unverified";
+  verificationReason?: string;
 };
 
 type LibraryPayload = {
@@ -111,11 +113,12 @@ export default function LibraryPanel() {
                 <h3 className="text-sm font-semibold text-white">
                   {report.question || "Untitled research"}
                 </h3>
-                {report.date && (
-                  <span className="shrink-0 text-xs tabular-nums text-slate-500">
-                    {report.date}
+                <div className="flex shrink-0 items-center gap-2">
+                  <span title={report.verificationReason} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${report.verificationStatus === "verified" ? "bg-emerald-400/15 text-emerald-200" : report.verificationStatus === "partial" ? "bg-amber-400/15 text-amber-100" : "bg-white/10 text-white"}`}>
+                    {report.verificationStatus || "unverified"}
                   </span>
-                )}
+                  {report.date && <span className="text-xs tabular-nums text-slate-500">{report.date}</span>}
+                </div>
               </div>
               {report.snippet && (
                 <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">

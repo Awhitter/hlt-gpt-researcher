@@ -1,3 +1,5 @@
+"use client";
+
 import React from "react";
 import Link from "next/link";
 import MasteryIcon from "@/components/MasteryIcon";
@@ -26,6 +28,14 @@ const Header = ({
   chatBoxSettings,
   setChatBoxSettings,
 }: HeaderProps) => {
+  const signOut = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.assign("/login");
+    }
+  };
+
   return (
     <header className="fixed left-0 right-0 top-0 z-50">
       <div className="bg-[#06101C]/82 absolute inset-0 border-b border-white/10 backdrop-blur-xl"></div>
@@ -42,7 +52,10 @@ const Header = ({
           }
         >
           {hltBranding.enabled ? (
-            <MasteryIcon size={30} className="shrink-0" />
+            <>
+              <MasteryIcon size={30} className="shrink-0" />
+              <span className="truncate text-sm font-semibold text-white">Mastery Research</span>
+            </>
           ) : (
             <img
               src="/img/gptr-logo.png"
@@ -55,21 +68,16 @@ const Header = ({
         </Link>
 
         <div className="flex items-center gap-2">
-          {chatBoxSettings && setChatBoxSettings ? (
+          {!hltBranding.enabled && chatBoxSettings && setChatBoxSettings ? (
             <Modal
               chatBoxSettings={chatBoxSettings}
               setChatBoxSettings={setChatBoxSettings}
             />
           ) : null}
           {hltBranding.enabled && (
-            <a
-              href={hltBranding.katailystUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="hidden h-7 items-center rounded-md border border-white/10 px-2.5 text-[11px] font-medium text-slate-400 transition-colors hover:border-white/25 hover:text-white sm:flex"
-            >
-              Open {hltBranding.platformName}
-            </a>
+            <button type="button" onClick={signOut} className="text-xs font-medium text-slate-400 hover:text-white">
+              Sign out
+            </button>
           )}
           <div className="flex gap-2 transition-all duration-300 ease-in-out">
             {/* Stop button - shown only during active research */}

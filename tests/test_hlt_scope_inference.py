@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
@@ -32,6 +33,23 @@ def test_repo_mentions_select_codebase(monkeypatch):
     assert result["scopes"] == ["codebase"]
     assert result["llm_used"] is False
     assert any("ScraperVault" in reason for reason in result["reasons"]["codebase"])
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What attributes do we capture for a nurse?",
+        "When do we capture email?",
+        "How does job search work?",
+        "What onboarding questions do we ask, and how can they be changed?",
+        "Do we store emails in Marketo?",
+    ],
+)
+def test_natural_product_questions_select_internal_code_research(monkeypatch, question):
+    clear_env(monkeypatch)
+    result = inference.infer_research_scope(question)
+    assert "codebase" in result["scopes"]
+    assert result["llm_used"] is False
 
 
 def test_registry_and_metrics_signals_select_their_scopes(monkeypatch):

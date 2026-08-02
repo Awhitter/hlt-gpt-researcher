@@ -51,8 +51,11 @@ index_repo() {
   local slug="$1"
   local full="$2"
   if clone_or_update "$slug" "$full"; then
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$REPOS_DIR/$slug/.hlt-indexed-at"
+    rm -f "$REPOS_DIR/$slug/.hlt-index-error"
     echo "[codegraph] indexed $slug"
   else
+    date -u +"%Y-%m-%dT%H:%M:%SZ indexing failed" > "$REPOS_DIR/$slug/.hlt-index-error" 2>/dev/null || true
     echo "[codegraph] FAILED to index $slug ($full); continuing" >&2
     FAILED_REPOS+=("$slug")
   fi

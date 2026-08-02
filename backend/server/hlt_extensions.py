@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hmac
 import importlib.util
+import json
 import logging
 import os
 import re
@@ -44,6 +45,7 @@ import secrets
 import time
 from typing import Any, Iterable
 import urllib.error
+import urllib.request
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -59,6 +61,7 @@ from .hlt_brain import (
     get_brain_repos,
     get_brain_roadmap,
     get_brain_vision_documents,
+    create_linear_change_request,
     search_prior_reports,
 )
 from .hlt_media import _cloudinary_readiness, search_cloudinary_assets
@@ -86,6 +89,8 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 _WS_TOKEN_TTL_SECONDS = 120
+_CODEGRAPH_HEALTH_TTL_SECONDS = 30
+_codegraph_health_cache: tuple[float, list[dict[str, Any]]] | None = None
 
 # Paths that must remain callable without auth so the frontend + Railway
 # healthcheck + static assets keep working. Tight allowlist — every other
@@ -319,13 +324,28 @@ def _scope_instruction(key: str) -> str:
     if key == "codebase":
         repos = "; ".join(_codebase_repos())
         return (
+            "Answer as a careful internal code researcher for nontechnical teammates. "
             "Use available codebase/repository context (prefer codegraph MCP "
-            "tools: list_repos, query, context, impact, trace when available). "
+            "tools: list_repos, repo_overview, query, context, impact, trace, and "
+            "verify_source_ref when available). "
             "The canonical HLT "
             f"repositories are: {repos}. Prefer these repositories' implementation "
             "files, repo maps, pull requests, and architecture notes over generic "
             "web sources, ignore legacy/archived repositories unless explicitly "
-            "asked, and say which repository each finding came from."
+            "asked, and say which repository each finding came from. Treat "
+            "ScraperVault as recruiting/profile/application authority, Nursing "
+            "Mastery as the nurse-facing experience, Katailyst as capability "
+            "authority, and EBB/PostHog as measurement evidence. Distinguish "
+            "implemented now, documented intent, roadmap, and unknown. Every "
+            "implementation claim must cite a retrieved existing file, route, "
+            "symbol, schema, or configuration using an immutable GitHub URL with "
+            "the exact 40-character commit SHA; validate the path before presenting "
+            "it as verified. Never invent a file, endpoint, queue, database field, "
+            "or integration. If Marketo or another live system was not inspected, "
+            "say it is unavailable rather than guessing. Structure the answer as: "
+            "Direct answer; What happens and when; What data is captured and where "
+            "it is stored; Where the behavior lives; How to change it; Sources, "
+            "freshness, and anything that could not be verified."
         )
     return _SCOPE_INSTRUCTIONS[key]
 
@@ -405,6 +425,28 @@ def _preset_readiness(preset: str) -> dict[str, Any]:
     }
 
 
+def _codegraph_repository_readiness() -> list[dict[str, Any]]:
+    """Read per-repository index truth from the codegraph health endpoint."""
+    global _codegraph_health_cache
+    now = time.time()
+    if _codegraph_health_cache and now - _codegraph_health_cache[0] < _CODEGRAPH_HEALTH_TTL_SECONDS:
+        return _codegraph_health_cache[1]
+    configured = os.getenv("CODEGRAPH_MCP_URL")
+    if not configured:
+        return []
+    health_url = re.sub(r"/mcp/?$", "/health", configured)
+    request = urllib.request.Request(health_url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - configured service URL
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return []
+    repositories = body.get("repositories") if isinstance(body, dict) else None
+    result = repositories if isinstance(repositories, list) else []
+    _codegraph_health_cache = (now, result)
+    return result
+
+
 def _firecrawl_readiness() -> dict[str, Any]:
     has_key = bool(os.getenv("FIRECRAWL_API_KEY"))
     has_package = _firecrawl_import_available()
@@ -442,6 +484,32 @@ def get_hlt_readiness() -> dict[str, Any]:
     cloudinary_status = _cloudinary_readiness()
     audience_corpus = _corpus_readiness("audience")
     recruiting_corpus = _corpus_readiness("recruiting")
+    repository_readiness = _codegraph_repository_readiness()
+    repository_statuses = [
+        str(repo.get("status") or "unavailable")
+        for repo in repository_readiness
+        if isinstance(repo, dict)
+    ]
+    if len(repository_statuses) == len(_codebase_repos()) and all(
+        status == "ready" for status in repository_statuses
+    ):
+        codegraph_repository_status = "ready"
+    elif any(status in {"ready", "partial"} for status in repository_statuses):
+        codegraph_repository_status = "partial"
+    else:
+        codegraph_repository_status = "unavailable"
+    code_backend_status = (
+        "ready"
+        if codegraph_repository_status == "ready"
+        or (
+            preset_statuses["codegraph"]["configured"] is False
+            and preset_statuses["github"]["status"] == "ready"
+        )
+        else "partial"
+        if codegraph_repository_status == "partial"
+        or preset_statuses["github"]["status"] == "ready"
+        else "unavailable"
+    )
 
     integrations = {
         "codebase": {
@@ -450,34 +518,31 @@ def get_hlt_readiness() -> dict[str, Any]:
             "status": (
                 "ready"
                 if preset_statuses["katailyst"]["status"] == "ready"
-                and (
-                    preset_statuses["codegraph"]["status"] == "ready"
-                    or preset_statuses["github"]["status"] == "ready"
-                )
+                and code_backend_status == "ready"
                 else _status_from_components([
                     preset_statuses["katailyst"]["status"],
-                    (
-                        "ready"
-                        if preset_statuses["codegraph"]["status"] == "ready"
-                        or preset_statuses["github"]["status"] == "ready"
-                        else "unavailable"
-                    ),
+                    code_backend_status,
                 ])
             ),
             "components": {
                 "katailyst": preset_statuses["katailyst"]["status"],
-                "codegraph": preset_statuses["codegraph"]["status"],
+                "codegraph": codegraph_repository_status,
                 "github": preset_statuses["github"]["status"],
             },
+            "repositories": repository_readiness,
             "missing": sorted(set(
                 preset_statuses["katailyst"]["missing"]
                 + (
                     []
-                    if preset_statuses["codegraph"]["status"] == "ready"
-                    or preset_statuses["github"]["status"] == "ready"
+                    if code_backend_status in {"ready", "partial"}
                     else preset_statuses["codegraph"]["missing"]
                     + preset_statuses["github"]["missing"]
                 )
+                + [
+                    f"{repo.get('repo')}: {repo.get('error') or repo.get('status')}"
+                    for repo in repository_readiness
+                    if isinstance(repo, dict) and repo.get("status") != "ready"
+                ]
             )),
         },
         "cms": {
@@ -1112,9 +1177,7 @@ def install(
     def brain_repos():  # noqa: D401
         """Team-facing estate repo concept cards for the Codebase tab."""
         return {
-            "repos": get_brain_repos(
-                codegraph_ready=_preset_readiness("codegraph")["status"] == "ready"
-            )
+            "repos": get_brain_repos(repository_readiness=_codegraph_repository_readiness())
         }
 
     @app.get("/api/brain/vision", tags=["hlt", "brain"])
@@ -1141,6 +1204,17 @@ def install(
     def brain_library(q: str | None = None):  # noqa: D401
         """Searchable archive of past research runs (the memory layer)."""
         return get_brain_library(query=q)
+
+    @app.post("/api/brain/change-request", tags=["hlt", "brain"])
+    async def brain_change_request(request: Request):
+        """Create a Linear issue only after an explicit confirmation."""
+        try:
+            payload = await request.json()
+            return create_linear_change_request(payload if isinstance(payload, dict) else {})
+        except ValueError as error:
+            return JSONResponse({"detail": str(error)}, status_code=400)
+        except RuntimeError as error:
+            return JSONResponse({"detail": str(error)}, status_code=503)
 
     # 2. API-key auth (opt-in via env).
     api_key = os.getenv("API_AUTH_KEY") or None

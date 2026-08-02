@@ -6,11 +6,19 @@ import {
   constantTimeEqual,
   createTeamAccessCookieValue,
   teamAccessPassword,
+  teamAccessState,
 } from "@/lib/teamAccess";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
+  const access = teamAccessState();
+  if (access.mode === "misconfigured") {
+    return NextResponse.json({ error: access.reason }, { status: 503 });
+  }
+  if (access.mode === "local-bypass") {
+    return NextResponse.json({ error: "Team access is bypassed for local development" }, { status: 404 });
+  }
   const expected = teamAccessPassword();
   if (!expected) {
     // Gate disabled — nothing to log into.

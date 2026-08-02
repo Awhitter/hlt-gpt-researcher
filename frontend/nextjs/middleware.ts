@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { TEAM_ACCESS_COOKIE, teamAccessPassword, verifyTeamAccessCookieValue } from "@/lib/teamAccess";
+import { TEAM_ACCESS_COOKIE, teamAccessState, verifyTeamAccessCookieValue } from "@/lib/teamAccess";
 
 /**
  * Shared-password gate for the team UI.
@@ -11,19 +11,30 @@ import { TEAM_ACCESS_COOKIE, teamAccessPassword, verifyTeamAccessCookieValue } f
  * straight to the backend host, so it is untouched by this middleware; the
  * backend keeps its own API_AUTH_KEY / ws-token auth.
  *
- * With TEAM_ACCESS_PASSWORD unset the gate is disabled (local dev parity
- * with the backend's API_AUTH_KEY behavior).
+ * Production fails closed if either auth variable is missing. Only local
+ * development receives the explicit no-secret bypass.
  */
 export async function middleware(request: NextRequest) {
-  if (!teamAccessPassword()) {
+  const access = teamAccessState();
+  if (access.mode === "local-bypass") {
     return NextResponse.next();
   }
 
   const { pathname } = request.nextUrl;
 
   // Pre-auth surface: the login page and the login POST itself.
-  if (pathname === "/login" || pathname === "/api/auth/login") {
+  if (pathname === "/login" || pathname === "/api/auth/login" || pathname === "/api/auth/logout") {
     return NextResponse.next();
+  }
+
+  if (access.mode === "misconfigured") {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: access.reason }, { status: 503 });
+    }
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.search = "?reason=configuration";
+    return NextResponse.redirect(loginUrl);
   }
 
   const cookie = request.cookies.get(TEAM_ACCESS_COOKIE)?.value;
@@ -39,6 +50,7 @@ export async function middleware(request: NextRequest) {
   const loginUrl = request.nextUrl.clone();
   loginUrl.pathname = "/login";
   loginUrl.search = "";
+  loginUrl.searchParams.set("reason", cookie ? "expired" : "required");
   if (pathname !== "/") {
     loginUrl.searchParams.set("from", pathname);
   }

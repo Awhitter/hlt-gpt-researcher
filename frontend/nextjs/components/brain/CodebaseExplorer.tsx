@@ -10,7 +10,11 @@ type RepoCard = {
   tagline: string;
   capabilities: string[];
   ask_examples: string[];
-  codegraph_ready?: boolean;
+  branch?: string | null;
+  commitSha?: string | null;
+  indexedAt?: string | null;
+  status: "ready" | "partial" | "unavailable";
+  error?: string | null;
 };
 
 type Props = {
@@ -83,14 +87,12 @@ export default function CodebaseExplorer({ onAsk }: Props) {
           >
             <div className="flex items-start justify-between gap-2">
               <h3 className="text-base font-semibold text-white">{repo.name}</h3>
-              {repo.codegraph_ready ? (
-                <span className="rounded-md bg-teal-500/20 px-1.5 py-0.5 text-[10px] font-medium text-teal-200">
-                  graph
-                </span>
-              ) : null}
+              <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${repo.status === "ready" ? "bg-teal-500/20 text-teal-200" : repo.status === "partial" ? "bg-amber-500/20 text-amber-100" : "bg-white/10 text-white"}`}>
+                {repo.status}
+              </span>
             </div>
-            <p className="mt-2 text-xs leading-relaxed text-slate-400">
-              {repo.tagline}
+            <p className="mt-2 font-mono text-[11px] text-slate-400">
+              {repo.branch || "branch unavailable"} · {repo.commitSha?.slice(0, 10) || "index unavailable"}
             </p>
           </motion.button>
         ))}
@@ -107,14 +109,12 @@ export default function CodebaseExplorer({ onAsk }: Props) {
             <h3 className="text-xl font-semibold">{active.name}</h3>
             <span className="text-xs text-slate-500">{active.github}</span>
           </div>
-          <ul className="mt-4 space-y-2 text-sm text-slate-300">
-            {active.capabilities.map((cap) => (
-              <li key={cap} className="flex gap-2">
-                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-teal-400" />
-                {cap}
-              </li>
-            ))}
-          </ul>
+          <dl className="mt-4 grid gap-3 text-xs text-slate-400 sm:grid-cols-3">
+            <div><dt className="text-slate-500">Branch</dt><dd className="mt-1 text-slate-200">{active.branch || "Unavailable"}</dd></div>
+            <div><dt className="text-slate-500">Commit</dt><dd className="mt-1 font-mono text-slate-200">{active.commitSha?.slice(0, 10) || "Unavailable"}</dd></div>
+            <div><dt className="text-slate-500">Indexed</dt><dd className="mt-1 text-slate-200">{active.indexedAt ? new Date(active.indexedAt).toLocaleString() : "Unavailable"}</dd></div>
+          </dl>
+          {active.error && <p className="mt-3 text-xs text-amber-100">{active.error}</p>}
 
           <div className="mt-6 flex flex-wrap gap-2">
             {active.ask_examples.map((example) => (
