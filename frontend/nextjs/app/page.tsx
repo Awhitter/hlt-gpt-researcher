@@ -746,6 +746,7 @@ export default function Home() {
         <MobileResearchContent
           orderedData={orderedData}
           answer={answer}
+          question={question}
           loading={loading}
           isStopped={isStopped}
           chatPromptValue={chatPromptValue}

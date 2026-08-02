@@ -7,6 +7,7 @@ import { toast } from "react-hot-toast";
 interface MobileResearchContentProps {
   orderedData: Data[];
   answer: string;
+  question?: string;
   loading: boolean;
   isStopped: boolean;
   chatPromptValue: string;
@@ -21,6 +22,7 @@ interface MobileResearchContentProps {
 export default function MobileResearchContent({
   orderedData: initialOrderedData,
   answer: initialAnswer,
+  question,
   loading: initialLoading,
   isStopped,
   chatPromptValue,
@@ -206,7 +208,7 @@ export default function MobileResearchContent({
   
   // Extract the initial question from ordered data
   const initialQuestion = localOrderedData.find(data => data.type === 'question');
-  const questionText = initialQuestion?.content || '';
+  const questionText = initialQuestion?.content || question || '';
 
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)] bg-gradient-to-b from-gray-900 to-gray-950">
@@ -252,6 +254,7 @@ export default function MobileResearchContent({
       <div className="flex-1 overflow-hidden">
         <MobileChatPanel
           question={questionText}
+          answer={localAnswer}
           chatPromptValue={chatPromptValue}
           setChatPromptValue={setChatPromptValue}
           handleChat={handleLocalChat}
@@ -305,4 +308,4 @@ export default function MobileResearchContent({
       `}</style>
     </div>
   );
-} 
+}

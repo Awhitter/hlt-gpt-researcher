@@ -6,6 +6,18 @@ export type ReportSourceRef = {
   url: string;
 };
 
+export type MobileReportMessage = {
+  type: string;
+  content: string;
+  metadata?: unknown;
+};
+
+type MobileReportInput = {
+  type?: unknown;
+  content?: unknown;
+  metadata?: unknown;
+};
+
 const immutableGithubSource =
   /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/blob\/([0-9a-fA-F]{40})\/([^\s)#?]+)(?:#L(\d+)(?:-L\d+)?)?/g;
 
@@ -37,4 +49,48 @@ export function isChangeOrientedQuestion(question: string): boolean {
 
 export function resolveReportAnswer(structuredAnswer: string | undefined, legacyAnswer: string): string {
   return structuredAnswer || legacyAnswer;
+}
+
+export function buildMobileReportMessages(
+  orderedData: readonly MobileReportInput[],
+  legacyAnswer: string,
+  fallbackQuestion = "",
+): MobileReportMessage[] {
+  const messages: MobileReportMessage[] = [];
+  let hasQuestion = false;
+  let hasReport = false;
+
+  for (const item of orderedData) {
+    if (item.type === "question" && typeof item.content === "string") {
+      hasQuestion = true;
+      messages.push({ type: "question", content: item.content, metadata: item.metadata });
+    } else if (item.type === "chat" && typeof item.content === "string") {
+      messages.push({ type: "chat", content: item.content, metadata: item.metadata });
+    } else if (
+      item.type === "reportBlock" &&
+      typeof item.content === "string" &&
+      item.content.trim()
+    ) {
+      hasReport = true;
+      messages.push({ type: "chat", content: item.content, metadata: item.metadata });
+    }
+  }
+
+  if (!hasQuestion && fallbackQuestion.trim()) {
+    messages.unshift({ type: "question", content: fallbackQuestion.trim() });
+  }
+
+  if (
+    !hasReport &&
+    legacyAnswer.trim() &&
+    !messages.some((item) => item.type === "chat" && item.content === legacyAnswer)
+  ) {
+    const questionIndex = messages.findIndex((item) => item.type === "question");
+    messages.splice(questionIndex >= 0 ? questionIndex + 1 : 0, 0, {
+      type: "chat",
+      content: legacyAnswer,
+    });
+  }
+
+  return messages;
 }

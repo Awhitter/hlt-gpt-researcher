@@ -12,7 +12,12 @@ const { outputText } = ts.transpileModule(source, {
 const moduleContext = { exports: {} };
 vm.runInNewContext(outputText, { exports: moduleContext.exports, module: moduleContext });
 
-const { extractReportSources, isChangeOrientedQuestion, resolveReportAnswer } = moduleContext.exports;
+const {
+  buildMobileReportMessages,
+  extractReportSources,
+  isChangeOrientedQuestion,
+  resolveReportAnswer,
+} = moduleContext.exports;
 const sha = "a".repeat(40);
 
 test("extracts only immutable GitHub sources", () => {
@@ -31,4 +36,31 @@ test("recognizes change-oriented questions", () => {
 test("legacy answer renders when structured report data is absent", () => {
   assert.equal(resolveReportAnswer(undefined, "Recovered legacy answer"), "Recovered legacy answer");
   assert.equal(resolveReportAnswer("Structured answer", "Legacy"), "Structured answer");
+});
+
+test("mobile reopening renders a legacy answer and its stored question", () => {
+  assert.equal(
+    JSON.stringify(buildMobileReportMessages([], "Recovered legacy answer", "Stored question")),
+    JSON.stringify([
+      { type: "question", content: "Stored question" },
+      { type: "chat", content: "Recovered legacy answer" },
+    ]),
+  );
+});
+
+test("mobile reopening renders a structured report once", () => {
+  assert.equal(
+    JSON.stringify(buildMobileReportMessages(
+      [
+        { type: "question", content: "Stored question" },
+        { type: "reportBlock", content: "Structured report" },
+      ],
+      "Structured report",
+      "Stored question",
+    )),
+    JSON.stringify([
+      { type: "question", content: "Stored question" },
+      { type: "chat", content: "Structured report" },
+    ]),
+  );
 });
