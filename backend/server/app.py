@@ -36,6 +36,7 @@ from gpt_researcher.utils.enum import Tone
 from chat.chat import ChatAgentWithMemory
 
 from server.report_store import get_report_store
+from server.hlt_grounding import prepare_report_record
 from gpt_researcher.research_run_store import get_outputs_dir, get_research_run_store, jsonable
 from gpt_researcher.utils.langfuse_observability import (
     observe_langfuse,
@@ -286,14 +287,17 @@ async def create_or_update_report(request: Request):
         if existing and isinstance(existing.get("timestamp"), int):
             timestamp = max(timestamp, existing["timestamp"])
 
-        report = {
+        report = prepare_report_record({
             "id": research_id,
             "question": data.get("question"),
             "answer": data.get("answer"),
             "orderedData": data.get("orderedData") or [],
             "chatMessages": data.get("chatMessages") or [],
             "timestamp": timestamp,
-        }
+            "sourceRefs": data.get("sourceRefs") or [],
+            "verificationStatus": data.get("verificationStatus"),
+            "unsupportedClaims": data.get("unsupportedClaims") or [],
+        }, validate_sources=True)
 
         await report_store.upsert_report(research_id, report)
         return {"success": True, "id": research_id}
@@ -309,12 +313,12 @@ async def update_report(research_id: str, request: Request):
     data = await request.json()
     now_ms = current_timestamp_ms()
 
-    updated = {
+    updated = prepare_report_record({
         **existing,
         **{k: v for k, v in data.items() if v is not None},
         "id": research_id,
         "timestamp": now_ms,
-    }
+    }, validate_sources=True)
 
     await report_store.upsert_report(research_id, updated)
     return {"success": True, "id": research_id}

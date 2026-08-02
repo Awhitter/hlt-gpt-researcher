@@ -25,7 +25,6 @@ import BrainShell from "@/components/brain/BrainShell";
 import { BrainTabId } from "@/lib/brainTabs";
 
 // Import the mobile components
-import MobileHomeScreen from "@/components/mobile/MobileHomeScreen";
 import MobileResearchContent from "@/components/mobile/MobileResearchContent";
 
 export default function Home() {
@@ -359,13 +358,6 @@ export default function Home() {
 
   const handleCodebaseAsk = (question: string) => {
     launchPresetRun(question, { codebase: true, depth: "deep" });
-  };
-
-  const handleStarterPrompt = (starter: {
-    prompt: string;
-    scope?: Partial<HLTResearchScope>;
-  }) => {
-    launchPresetRun(starter.prompt, starter.scope || {});
   };
 
   const handleDisplayResult = async (
@@ -732,11 +724,21 @@ export default function Home() {
   const renderMobileContent = () => {
     if (!showResult) {
       return (
-        <MobileHomeScreen
-          promptValue={promptValue}
-          setPromptValue={setPromptValue}
-          handleDisplayResult={handleMobileDisplayResult}
-          isLoading={loading}
+        <BrainShell
+          activeTab={brainTab}
+          onTabChange={setBrainTab}
+          onCodebaseAsk={handleCodebaseAsk}
+          chatBoxSettings={chatBoxSettings}
+          setChatBoxSettings={setChatBoxSettings}
+          askChildren={
+            <Hero
+              promptValue={promptValue}
+              setPromptValue={setPromptValue}
+              handleDisplayResult={handleMobileDisplayResult}
+              chatBoxSettings={chatBoxSettings}
+              setChatBoxSettings={setChatBoxSettings}
+            />
+          }
         />
       );
     } else {
@@ -790,20 +792,12 @@ export default function Home() {
           onScrollToBottom: scrollToBottom,
           children: (
             <>
-              <ResearchSidebar
-                history={history}
-                onSelectResearch={handleSelectResearch}
-                onNewResearch={handleStartNewResearch}
-                onDeleteResearch={deleteResearch}
-                isOpen={sidebarOpen}
-                toggleSidebar={toggleSidebar}
-              />
-              
               <BrainShell
                 activeTab={brainTab}
                 onTabChange={setBrainTab}
                 onCodebaseAsk={handleCodebaseAsk}
-                onStarterPrompt={handleStarterPrompt}
+                chatBoxSettings={chatBoxSettings}
+                setChatBoxSettings={setChatBoxSettings}
                 askChildren={
                   <Hero
                     promptValue={promptValue}

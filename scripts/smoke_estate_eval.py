@@ -56,6 +56,7 @@ class EvalCase:
     must_match: str | None = None  # case-insensitive search anywhere
     must_not_match: str | None = None  # case-insensitive search anywhere
     must_not_match_head: str | None = None  # only the first HEAD_CHARS (the frame)
+    require_immutable_code_sources: bool = False
     note: str = ""
 
 
@@ -100,6 +101,48 @@ CASES: list[EvalCase] = [
         expect_active={"codebase"},
         must_match=r"ScraperVault|nursing-mastery",
         note="Repo-shaped questions must activate the codebase scope.",
+    ),
+    EvalCase(
+        id="nurse-profile-attributes",
+        query="What attributes do we capture for a nurse?",
+        expect_active={"codebase"},
+        must_match=r"(attribute|field|profile|captur|stor)",
+        require_immutable_code_sources=True,
+        note="Natural profile language must route to code and cite exact implementation sources.",
+    ),
+    EvalCase(
+        id="email-capture-timing",
+        query="When do we capture email?",
+        expect_active={"codebase"},
+        must_match=r"email",
+        require_immutable_code_sources=True,
+        note="Email timing must be traced through the implementation, not inferred from web pages.",
+    ),
+    EvalCase(
+        id="job-search-implementation",
+        query="How does job search work?",
+        expect_active={"codebase"},
+        must_match=r"(search|filter|query|feed)",
+        must_not_match=r"jobs_enrichment\.py|/api/internal/jobs/import|BullMQ",
+        require_immutable_code_sources=True,
+        note="Search must distinguish Nursing Mastery consumer behavior from ScraperVault authority.",
+    ),
+    EvalCase(
+        id="onboarding-questions-change",
+        query="What onboarding questions do we ask, and how can they be changed?",
+        expect_active={"codebase"},
+        must_match=r"(onboarding|question|field|form)",
+        require_immutable_code_sources=True,
+        note="Change guidance must name current source locations without implying a direct edit.",
+    ),
+    EvalCase(
+        id="marketo-email-readback",
+        query="Do we store emails in Marketo?",
+        expect_active={"codebase"},
+        must_match=r"Marketo",
+        must_not_match=r"definitely|certainly|guaranteed",
+        require_immutable_code_sources=True,
+        note="Code evidence may describe a handoff, but missing Marketo readback must remain unavailable.",
     ),
     EvalCase(
         id="audience-voice",
@@ -212,6 +255,13 @@ async def run_case(case: EvalCase, args: argparse.Namespace, token: str) -> None
             f"report frame (first {HEAD_CHARS} chars) matched forbidden "
             f"/{case.must_not_match_head}/i: {hit.group(0)!r}"
         )
+    if case.require_immutable_code_sources:
+        refs = re.findall(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/blob/[0-9a-fA-F]{40}/[^\s)#?]+",
+            report,
+        )
+        if not refs:
+            raise CaseFailure("report has no immutable GitHub source at an exact commit")
 
 
 async def run_all(args: argparse.Namespace) -> int:

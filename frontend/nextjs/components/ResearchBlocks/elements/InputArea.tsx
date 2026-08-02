@@ -37,7 +37,9 @@ const InputArea: FC<TInputAreaProps> = ({
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isFocused, setIsFocused] = useState(false);
-  const placeholder = "Enter your topic, question, or area of interest...";
+  const placeholder = hltBranding.enabled
+    ? "Ask a question about our projects…"
+    : "Enter your topic, question, or area of interest...";
 
   // Auto-focus the textarea when component mounts
   useEffect(() => {

@@ -9,7 +9,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -28,6 +31,14 @@ logger = logging.getLogger("hlt-codegraph")
 GITNEXUS_HOME = os.getenv("GITNEXUS_HOME", "/data/gitnexus")
 REPOS_DIR = os.getenv("REPOS_DIR", "/data/repos")
 AUTH_TOKEN = os.getenv("CODEGRAPH_MCP_TOKEN") or os.getenv("GITNEXUS_AUTH_TOKEN")
+REPO_GITHUB = {
+    "nursing-mastery": "Awhitter/nursing-mastery",
+    "scrapervault": "Awhitter/ScraperVault",
+    "katailyst2": "Awhitter/katailyst2",
+    "mmm2": "Awhitter/MMM2",
+    "ebb": "Awhitter/evidence-based-business",
+}
+INDEX_STALE_HOURS = int(os.getenv("CODEGRAPH_STALE_HOURS", "36"))
 
 
 def _allowed_hosts() -> list[str]:
@@ -80,6 +91,59 @@ def _run_gitnexus(args: list[str], timeout: int = 120) -> str:
             }
         )
     return stdout or stderr or "{}"
+
+
+def _git(repo_path: str, *args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", repo_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def _repo_readiness(repo: str) -> dict[str, Any]:
+    path = os.path.join(REPOS_DIR, repo)
+    result: dict[str, Any] = {
+        "repo": repo,
+        "branch": None,
+        "commitSha": None,
+        "indexedAt": None,
+        "status": "unavailable",
+        "error": "Repository clone is missing.",
+    }
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return result
+    result["branch"] = _git(path, "branch", "--show-current") or "detached"
+    result["commitSha"] = _git(path, "rev-parse", "HEAD")
+    indexed_file = Path(path) / ".hlt-indexed-at"
+    error_file = Path(path) / ".hlt-index-error"
+    if error_file.exists():
+        result["error"] = error_file.read_text(encoding="utf-8").strip()[:500]
+        result["status"] = "unavailable"
+        return result
+    if not indexed_file.exists() or not result["commitSha"]:
+        result["error"] = "This repository has not completed an index run."
+        return result
+    indexed_at = indexed_file.read_text(encoding="utf-8").strip()
+    result["indexedAt"] = indexed_at
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(indexed_at.replace("Z", "+00:00"))
+        if age.total_seconds() > INDEX_STALE_HOURS * 3600:
+            result["status"] = "partial"
+            result["error"] = f"Index is older than {INDEX_STALE_HOURS} hours."
+        else:
+            result["status"] = "ready"
+            result["error"] = None
+    except ValueError:
+        result["status"] = "partial"
+        result["error"] = "Index timestamp is invalid."
+    return result
 
 
 mcp = FastMCP(
@@ -149,6 +213,36 @@ def repo_overview(repo: str) -> str:
             "exists": os.path.isdir(path),
             "status": status,
             "registry": listing,
+            "readiness": _repo_readiness(repo),
+        }
+    )
+
+
+@mcp.tool()
+def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> str:
+    """Verify that a source path exists at an exact commit and return its permalink."""
+    repo_key = repo.lower().strip()
+    if repo_key not in REPO_GITHUB:
+        return json.dumps({"exists": False, "error": "Repository is not in the active HLT index."})
+    relative = path.strip().lstrip("/")
+    if not relative or ".." in Path(relative).parts:
+        return json.dumps({"exists": False, "error": "Invalid repository path."})
+    repo_path = os.path.join(REPOS_DIR, repo_key)
+    current_sha = _git(repo_path, "rev-parse", "HEAD")
+    requested_sha = (commit_sha or current_sha or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", requested_sha):
+        return json.dumps({"exists": False, "error": "An exact 40-character commit SHA is required."})
+    exists = _git(repo_path, "cat-file", "-e", f"{requested_sha}:{relative}") is not None
+    readiness = _repo_readiness(repo_key)
+    return json.dumps(
+        {
+            "repo": REPO_GITHUB[repo_key],
+            "commitSha": requested_sha,
+            "path": relative,
+            "exists": exists,
+            "indexedAt": readiness.get("indexedAt"),
+            "status": readiness.get("status"),
+            "url": f"https://github.com/{REPO_GITHUB[repo_key]}/blob/{requested_sha}/{relative}",
         }
     )
 
@@ -167,6 +261,7 @@ async def health_check(request):  # noqa: ANN001
             "status": "ok",
             "service": "hlt-codegraph",
             "repos": repos,
+            "repositories": [_repo_readiness(repo) for repo in REPO_GITHUB],
             "gitnexus_home": GITNEXUS_HOME,
             "auth_required": bool(AUTH_TOKEN),
         }

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 from .multi_agent_runner import run_multi_agent_task
 from .hlt_extensions import prepare_research_request as prepare_hlt_research_request
 from .report_store import get_report_store
+from .hlt_grounding import prepare_report_record
 
 # Import chat agent
 try:
@@ -418,14 +419,14 @@ async def handle_start_command(websocket, data: str, manager):
     # upserts the same research_id with its richer orderedData afterwards.
     if report.strip():
         try:
-            await get_report_store().upsert_report(research_id, {
+            await get_report_store().upsert_report(research_id, prepare_report_record({
                 "id": research_id,
                 "question": display_task,
                 "answer": report,
                 "orderedData": [],
                 "chatMessages": [],
                 "timestamp": int(time.time() * 1000),
-            })
+            }, validate_sources=True))
         except Exception:
             logger.warning(
                 "Failed to persist report to the research library",

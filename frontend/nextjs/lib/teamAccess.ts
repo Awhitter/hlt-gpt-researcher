@@ -6,9 +6,8 @@
  * every request. Everything here uses Web Crypto so it runs identically in
  * the Edge middleware and in Node route handlers.
  *
- * When TEAM_ACCESS_PASSWORD is unset the gate is intentionally disabled
- * (local dev / self-host without auth), mirroring the backend's API_AUTH_KEY
- * behavior.
+ * Production fails closed unless both auth variables exist. Local development
+ * keeps an explicit bypass so contributors can run the UI without secrets.
  */
 
 export const TEAM_ACCESS_COOKIE = "mr_team_access";
@@ -20,14 +19,34 @@ export function teamAccessPassword(): string | null {
   return process.env.TEAM_ACCESS_PASSWORD || null;
 }
 
+export type TeamAccessState =
+  | { mode: "enabled"; reason: null }
+  | { mode: "local-bypass"; reason: null }
+  | { mode: "misconfigured"; reason: string };
+
+export function teamAccessState(): TeamAccessState {
+  const password = teamAccessPassword();
+  const secret = process.env.TEAM_ACCESS_COOKIE_SECRET || null;
+  if (password && secret) return { mode: "enabled", reason: null };
+  if (process.env.NODE_ENV !== "production") return { mode: "local-bypass", reason: null };
+  const missing = [
+    !password ? "TEAM_ACCESS_PASSWORD" : null,
+    !secret ? "TEAM_ACCESS_COOKIE_SECRET" : null,
+  ].filter(Boolean);
+  return {
+    mode: "misconfigured",
+    reason: `Team access is unavailable because ${missing.join(" and ")} is missing.`,
+  };
+}
+
 /**
- * Cookie-signing secret: TEAM_ACCESS_COOKIE_SECRET when set, otherwise
- * derived from the password so a single env var is enough to run the gate.
- * Rotating either value invalidates existing sessions.
+ * Cookie-signing secret. Production never derives it from the password;
+ * rotating the explicit value invalidates all existing sessions.
  */
 function cookieSecret(): string | null {
   const explicit = process.env.TEAM_ACCESS_COOKIE_SECRET;
   if (explicit) return explicit;
+  if (process.env.NODE_ENV === "production") return null;
   const password = teamAccessPassword();
   if (!password) return null;
   return `${password}::mastery-research-team-cookie`;

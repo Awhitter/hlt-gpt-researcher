@@ -12,6 +12,7 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const reason = searchParams.get("reason");
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -35,7 +36,13 @@ function LoginForm() {
         return;
       }
 
-      setError(response.status === 401 ? "That password is not right." : "Something went wrong. Try again.");
+      if (response.status === 401) {
+        setError("That password is not right.");
+      } else if (response.status === 503) {
+        setError("Team access is temporarily unavailable. The owner needs to restore the production access settings.");
+      } else {
+        setError("Something went wrong. Try again.");
+      }
     } catch {
       setError("Something went wrong. Try again.");
     } finally {
@@ -63,6 +70,16 @@ function LoginForm() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {reason === "expired" && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Your session expired or access was rotated. Enter the team password again.
+            </p>
+          )}
+          {reason === "configuration" && (
+            <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">
+              Team access is temporarily unavailable because the production login is not fully configured.
+            </p>
+          )}
           <label className="block">
             <span className="mb-1 block text-sm font-medium" style={{ color: hltBranding.deepNavy }}>
               Team password
@@ -91,7 +108,7 @@ function LoginForm() {
         </form>
 
         <p className="mt-6 text-center text-xs text-gray-400">
-          Ask {hltBranding.ownerName} for the shared team password.
+          Shared HLT team access · sessions last 30 days
         </p>
       </div>
     </main>

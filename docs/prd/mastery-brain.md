@@ -3,7 +3,7 @@
 **Status:** Active  
 **Owner:** Alec Whitters / HLT  
 **Repo:** `hlt-gpt-researcher` (Mastery Research)  
-**Last updated:** 2026-07-30
+**Last updated:** 2026-08-02
 
 ## Vision
 
@@ -19,13 +19,33 @@ It leans toward **2027**: frontier models via OpenRouter (swappable), subagents 
 | **Alec** | Store vision, steer product, deep research across repos + web + registry |
 | **Agent consumers** (Katailyst2, Hermes, other MCP clients) | Reliable `deep_research` / `quick_search` / `/gather` with scope presets |
 
-## Surfaces (UI tabs)
+## Human experience
 
-1. **Ask** — Existing Mastery Research console (web + scoped MCP research).
-2. **Codebase** — Per-repo concept pages (mmm2, katailyst2, ebb, scrapervault, nursing-mastery) with architecture clusters, capabilities, and a “Can we do X?” box that routes to code-scoped research.
-3. **Vision** — Editable markdown vision docs indexed into hybrid research context so answers cite product north star.
-4. **Changelog** — Interactive visual timeline of what changed across the estate (git + Linear releases), agent-written plain English.
-5. **Roadmap** — Linear projects/milestones; Productboard stub until credentials exist.
+The primary browser surface is one plain-language prompt, **Ask about HLT**,
+with the existing compact scope controls visible. The UI does not hardcode
+example questions: examples belong in acceptance tests, not permanent copy.
+Codebase, Audience, Library, Vision, Changelog, Roadmap, and technical
+preferences remain available through progressive disclosure.
+
+Implementation answers use a stable plain-English order: direct answer;
+what happens and when; data captured and storage; where behavior lives; how
+to change it; sources/freshness/unknowns. Change-oriented answers may create
+a source-linked Linear request after confirmation; they never edit code or
+production data.
+
+## Trust contract
+
+- Implementation claims cite an existing file, route, symbol, schema, or
+  configuration at an exact commit SHA.
+- GitHub paths are validated before a report becomes `verified`; partial or
+  unavailable validation stays visible.
+- Legacy reports remain readable but begin as `unverified` and cannot feed
+  future research memory until revalidated.
+- Repository readiness is per repo: branch, commit SHA, index timestamp,
+  status, and error. One healthy repo cannot turn the whole estate green.
+- ScraperVault owns recruiting/profile/application truth; Nursing Mastery is
+  the nurse-facing consumer; Katailyst owns capabilities; EBB/PostHog provide
+  measurement evidence. Missing live-system access is unavailable, not a guess.
 
 ## Architecture
 

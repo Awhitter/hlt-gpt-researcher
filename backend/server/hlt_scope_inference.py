@@ -56,6 +56,13 @@ _SIGNALS: dict[str, tuple[tuple[int, re.Pattern[str], str], ...]] = {
         (_WEAK, r"\bnursing mastery\b", "mentions Nursing Mastery"),
         (_WEAK, r"\b(endpoints?|api route|schema|deployed?|architecture|implemented|implementation)\b", "uses implementation words"),
         (_WEAK, r"\b(apply|application) flow\b", "mentions the apply flow"),
+        (_STRONG, r"\b(what|which) (attributes?|fields?|data) (do|does) (we|the app) (capture|collect|store).{0,30}\bnurs", "asks what nurse data the product captures"),
+        (_STRONG, r"\bwhen (do|does) (we|the app) (capture|collect|ask for).{0,30}\bemail", "asks when email is captured"),
+        (_STRONG, r"\b(do|does) (we|the app).{0,30}\bemail(s)?\b.{0,30}\bmarketo\b", "asks about the Marketo email handoff"),
+        (_STRONG, r"\b(how (do|does)|what powers).{0,25}\b(job )?search\b", "asks how product search works"),
+        (_STRONG, r"\b(onboarding|sign[- ]?up).{0,35}\b(questions?|fields?|change|edit)", "asks about onboarding implementation"),
+        (_STRONG, r"\bhow (do|can|would) (i|we).{0,35}\b(change|edit|update)\b", "asks how to change implemented behavior"),
+        (_STRONG, r"\bwhere (do|does|is|are).{0,40}\b(stored?|saved?|live|implemented)\b", "asks where product behavior or data lives"),
     )),
     "cms": _compile((
         (_STRONG, r"\bkatailyst2?\b", "mentions Katailyst"),

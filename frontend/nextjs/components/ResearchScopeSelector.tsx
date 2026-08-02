@@ -126,7 +126,7 @@ export default function ResearchScopeSelector({
 
   return (
     <section
-      className={`mx-auto w-full max-w-[820px] px-4 ${compact ? "mt-4" : "mt-0"}`}
+      className={`mx-auto min-w-0 w-full max-w-[900px] overflow-x-hidden sm:overflow-visible ${compact ? "mt-4" : "mt-0"}`}
       aria-label="Research scope"
     >
       <div className="flex flex-col items-center justify-center gap-2.5">
@@ -168,9 +168,7 @@ export default function ResearchScopeSelector({
           </div>
         </div>
 
-        <div
-          className={`flex flex-wrap justify-center gap-1.5 ${compact ? "flex-col" : ""}`}
-        >
+        <div className="flex min-w-0 max-w-full snap-x items-center justify-start gap-1.5 overflow-x-auto pb-2 sm:flex-wrap sm:justify-center sm:overflow-visible">
           <button
             type="button"
             title="Let Mastery decide: estate code, registry, metrics, media, or audience context is pulled in automatically when the question needs it — plain web questions stay web-only. Pin a scope below to take over."

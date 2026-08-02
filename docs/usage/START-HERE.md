@@ -31,17 +31,18 @@ Health: `curl -fsS …/health` on the API and MCP hosts above.
 
 The browser UI sits behind a shared-password gate: opening any page bounces
 you to `/login`. Enter the team password once — the session cookie lasts
-30 days per browser.
+30 days per browser. **Sign out** clears it immediately. Production fails
+closed if either auth variable is absent; secret-free bypass exists only in
+local development.
 
 - **Where the password lives:** Vercel project `gpt-researcher-ui` →
   `TEAM_ACCESS_PASSWORD` (Production), mirrored in Doppler
   `hlt-agent-tokens/dev` as `GPTR_TEAM_ACCESS_PASSWORD`. Ask Alec if you
   don't have it. Vercel env values pull back redacted on this team, so the
   Doppler mirror is the recoverable copy.
-- **Rotating it:** `printf '<new>' | vercel env add TEAM_ACCESS_PASSWORD
-  production --force` from `frontend/nextjs/`, then redeploy (below), then
-  update the Doppler mirror. `TEAM_ACCESS_COOKIE_SECRET` is separate, so a
-  rotation does **not** log anyone out.
+- **Rotating it:** update `TEAM_ACCESS_PASSWORD` and a newly generated
+  `TEAM_ACCESS_COOKIE_SECRET` together, then redeploy and update the Doppler
+  mirror. Rotating the cookie secret intentionally logs out every old session.
 - Agents and scripts are unaffected — MCP and REST auth are separate keys.
 
 ## Deploying
@@ -58,17 +59,19 @@ you to `/login`. Enter the team password once — the session cookie lasts
 TEAM_ACCESS_PASSWORD=<the password> .venv/bin/python scripts/smoke_estate_eval.py --depth fast
 ```
 
-Seven canned questions with scope + content assertions; exit code = number
-of failures. Two cases are known-flaky at `fast` depth (`katailyst-registry-scope`
+The suite includes grounded product questions that require internal routing
+and immutable commit-specific GitHub sources; exit code = number of failures.
+Two web/model cases remain known-flaky at `fast` depth (`katailyst-registry-scope`
 occasionally finishes without report content; `scopeless-pizza` occasionally
 name-drops HLT) — a single flaky miss on those two is noise, repeated misses
 or any failure on the two `nursing-mastery-*` glossary cases is real.
 
 ## How to use it in 30 seconds
 
-**Human:** open the UI → leave **Auto** on → ask. Pin Code / Registry /
-Metrics only when you want to force a lane. Watch the phase rail: it will
-say *Auto-detected: Code (mentions ScraperVault)* when Auto fires.
+**Human:** open the UI → leave **Auto** on → ask. The compact scope toggles
+remain visible; pin Code / Registry / Metrics only when you want to force a
+lane. History and secondary research/admin surfaces sit behind their own
+links rather than competing with the main prompt.
 
 **Agent:** call `deep_research` (or `quick_search`) with the default
 `scope="auto"`. Pin `["codebase","cms"]` or pass `"none"` to override.
@@ -86,6 +89,7 @@ backend/server/
   hlt_extensions.py      ← router: auth, readiness, MCP presets, prepare_research_request
   hlt_scope_inference.py ← Auto: heuristics → optional FAST_LLM tiebreak
   hlt_brain.py           ← /api/brain/* (repos, corpora, library, Linear)
+  hlt_grounding.py       ← source validation, verification status, memory quarantine
   hlt_media.py           ← Cloudinary for the media scope
   hlt_text.py            ← shared tokenizer/stopwords
 mcp_server/tools.py      ← MCP tools; both default scope="auto"

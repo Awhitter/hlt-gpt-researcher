@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -490,6 +491,7 @@ def test_apify_preset_skipped_without_token(monkeypatch):
 
 
 def _mock_linear_graphql(monkeypatch, payload_by_query_marker):
+    hlt_brain._linear_cache.clear()
     def fake_graphql(query, timeout=8):
         for marker, payload in payload_by_query_marker.items():
             if marker in query:
@@ -497,7 +499,77 @@ def _mock_linear_graphql(monkeypatch, payload_by_query_marker):
         return None
 
     monkeypatch.setattr(hlt_brain, "_linear_graphql", fake_graphql)
-    hlt_brain._linear_cache.clear()
+
+
+def test_change_request_requires_confirmation_and_returns_linear_receipt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        hlt_brain,
+        "prepare_report_record",
+        lambda report, validate_sources=False: {
+            "verificationStatus": "verified",
+            "repositories": ["Awhitter/nursing-mastery"],
+            "sourceRefs": [
+                {
+                    **report["sourceRefs"][0],
+                    "repo": "Awhitter/nursing-mastery",
+                    "exists": True,
+                }
+            ],
+        },
+    )
+
+    def fake_graphql(query, timeout=8, variables=None):
+        calls.append((query, variables))
+        if "teams(" in query:
+            return {"teams": {"nodes": [{"id": "team-1", "name": "Nursing Mastery", "key": "NUR"}]}}
+        if "issueCreate" in query:
+            return {
+                "issueCreate": {
+                    "success": True,
+                    "issue": {"identifier": "NUR-999", "url": "https://linear.app/hlt/issue/NUR-999", "title": "Research request"},
+                }
+            }
+        return None
+
+    monkeypatch.setattr(hlt_brain, "_linear_graphql", fake_graphql)
+    with pytest.raises(ValueError, match="Confirmation"):
+        hlt_brain.create_linear_change_request({})
+
+    receipt = hlt_brain.create_linear_change_request(
+        {
+            "confirmed": True,
+            "question": "How can we change onboarding?",
+            "requestedChange": "Ask for specialty after graduation year",
+            "targetRepository": "Awhitter/nursing-mastery",
+            "sources": [{"path": "app/onboarding/page.tsx", "url": "https://github.com/Awhitter/nursing-mastery/blob/" + "a" * 40 + "/app/onboarding/page.tsx"}],
+        }
+    )
+    assert receipt["identifier"] == "NUR-999"
+    mutation_variables = calls[-1][1]
+    assert mutation_variables["input"]["teamId"] == "team-1"
+    assert "does not edit code" not in mutation_variables["input"]["description"].lower()
+    assert "did not edit code" in mutation_variables["input"]["description"].lower()
+
+
+def test_repo_cards_carry_per_repo_readiness():
+    repos = hlt_brain.get_brain_repos(
+        repository_readiness=[
+            {
+                "repo": "nursing-mastery",
+                "branch": "main",
+                "commitSha": "a" * 40,
+                "indexedAt": "2026-08-02T12:00:00Z",
+                "status": "ready",
+                "error": None,
+            }
+        ]
+    )
+    nursing = next(repo for repo in repos if repo["slug"] == "nursing-mastery")
+    scraper = next(repo for repo in repos if repo["slug"] == "scrapervault")
+    assert nursing["status"] == "ready"
+    assert nursing["commitSha"] == "a" * 40
+    assert scraper["status"] == "unavailable"
 
 
 def test_roadmap_uses_live_linear_projects(monkeypatch):
@@ -806,6 +878,13 @@ def test_prior_research_is_injected_into_related_tasks(monkeypatch, tmp_path):
                 "question": "How do travel nurse recruiters source candidates?",
                 "answer": "Recruiters source candidates from staffing marketplaces and referrals." * 5,
                 "timestamp": 1753000000000,
+                "sourceRefs": [{
+                    "repo": "Awhitter/ScraperVault",
+                    "commitSha": "a" * 40,
+                    "path": "README.md",
+                    "url": f"https://github.com/Awhitter/ScraperVault/blob/{'a' * 40}/README.md",
+                    "exists": True,
+                }],
             },
             "r2": {
                 "id": "r2",
@@ -1009,6 +1088,13 @@ def test_brain_audience_and_library_endpoints(monkeypatch, tmp_path):
                 "question": "Nurse recruiting funnels",
                 "answer": "Funnels work like this.",
                 "timestamp": 1753000000000,
+                "sourceRefs": [{
+                    "repo": "Awhitter/ScraperVault",
+                    "commitSha": "b" * 40,
+                    "path": "README.md",
+                    "url": f"https://github.com/Awhitter/ScraperVault/blob/{'b' * 40}/README.md",
+                    "exists": True,
+                }],
             }
         },
     )
@@ -1027,6 +1113,7 @@ def test_brain_audience_and_library_endpoints(monkeypatch, tmp_path):
     assert library.status_code == 200
     assert library.json()["total"] == 1
     assert library.json()["reports"][0]["question"] == "Nurse recruiting funnels"
+    assert library.json()["reports"][0]["verificationStatus"] == "verified"
 
     search = client.get("/api/brain/library", params={"q": "recruiting funnels"})
     assert search.status_code == 200

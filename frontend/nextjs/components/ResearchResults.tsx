@@ -9,6 +9,8 @@ import AccessReport from "./ResearchBlocks/AccessReport";
 import ResearchProgress from "./brain/ResearchProgress";
 import { preprocessOrderedData } from "../utils/dataProcessing";
 import { Data } from "../types/data";
+import ChangeRequest from "./brain/ChangeRequest";
+import { resolveReportAnswer } from "@/lib/reportTrust";
 
 interface ResearchResultsProps {
   orderedData: Data[];
@@ -86,6 +88,7 @@ export const ResearchResults: React.FC<ResearchResultsProps> = ({
             : currentResearchId;
   const hasInlineReport = Boolean(finalReport?.content || answer);
   const hasCompletedRun = Boolean(pathData);
+  const displayedAnswer = resolveReportAnswer(finalReport?.content, answer);
 
   return (
     <>
@@ -101,8 +104,9 @@ export const ResearchResults: React.FC<ResearchResultsProps> = ({
           onShareClick={onShareClick}
         />
       )}
-      {finalReport && (
-        <Report answer={finalReport.content} researchId={currentResearchId} />
+      {displayedAnswer && <Report answer={displayedAnswer} researchId={currentResearchId} />}
+      {initialQuestion && (
+        <ChangeRequest question={initialQuestion.content} answer={displayedAnswer} />
       )}
       {orderedData.length > 0 && (
         // The phase rail above carries live progress; raw agent activity is
