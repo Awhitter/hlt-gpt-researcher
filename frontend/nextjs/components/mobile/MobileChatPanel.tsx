@@ -6,6 +6,7 @@ import '@/styles/markdown.css';
 import Link from "next/link";
 import MasteryIcon from "@/components/MasteryIcon";
 import { hltBranding } from "@/lib/hltBranding";
+import { buildMobileReportMessages } from "@/lib/reportTrust";
 // Simple classname utility function to replace cn from @/lib/utils
 const cn = (...classes: (string | undefined)[]) => classes.filter(Boolean).join(' ');
 import { toast } from 'react-hot-toast';
@@ -14,6 +15,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 interface MobileChatPanelProps {
   question: string;
+  answer: string;
   chatPromptValue: string;
   setChatPromptValue: React.Dispatch<React.SetStateAction<string>>;
   handleChat: (message: string) => void;
@@ -199,6 +201,7 @@ function processMarkdown(content: string): string {
 
 const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
   question,
+  answer,
   chatPromptValue,
   setChatPromptValue,
   handleChat,
@@ -215,22 +218,10 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [renderedMessages, setRenderedMessages] = useState<{id: string, content: string, html: string, type: string, metadata?: any}[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const prevOrderedDataLengthRef = useRef(0);
 
   // Process markdown in messages - memoized for performance
   useEffect(() => {
-    // Only process if data has changed
-    if (orderedData.length === prevOrderedDataLengthRef.current && !loading && !isProcessingChat) {
-      return;
-    }
-
-    // Update reference for comparison
-    prevOrderedDataLengthRef.current = orderedData.length;
-
-    // Filter to only get chat messages (questions and responses)
-    const chatMessages = orderedData.filter((data) => {
-      return data.type === 'question' || data.type === 'chat';
-    });
+    const chatMessages = buildMobileReportMessages(orderedData, answer, question);
 
     const processMessages = async () => {
       try {
@@ -279,7 +270,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
     };
 
     processMessages();
-  }, [orderedData, loading, isProcessingChat]);
+  }, [answer, orderedData, question, loading, isProcessingChat]);
 
   // Auto-resize textarea when content changes - memoized
   const handleTextAreaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -370,7 +361,9 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
   }, [scrollToBottom]);
 
   // Determine if we need to show intro message
-  const showIntroMessage = orderedData.length === 0 || (orderedData.length === 1 && orderedData[0].type === 'question');
+  const showIntroMessage = !answer.trim() && (
+    orderedData.length === 0 || (orderedData.length === 1 && orderedData[0].type === 'question')
+  );
 
   // Optimize the message rendering with better chunking
   const processedMessages = useMemo(() => {

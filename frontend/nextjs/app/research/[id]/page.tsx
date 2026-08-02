@@ -465,6 +465,7 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
       <MobileResearchContent
         orderedData={orderedData}
         answer={answer}
+        question={question}
         loading={false}
         isStopped={isStopped}
         chatPromptValue={chatPromptValue}
