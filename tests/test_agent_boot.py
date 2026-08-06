@@ -105,8 +105,28 @@ def test_privileged_slash_commands_are_not_handed_to_everyone():
     extra = config["platforms"]["slack"]["extra"]
 
     assert extra["allow_admin_from"] == ["U1", "U2"]
-    for dangerous in ("model", "yolo", "cron", "reset"):
+    for dangerous in ("model", "yolo", "rollback", "update", "restart"):
         assert dangerous not in extra["user_allowed_commands"]
+
+
+# The 50 real Hermes gateway commands, from `hermes slack manifest`. A name in
+# user_allowed_commands that is not one of these is silently inert — a teammate
+# gets refused something you believe you granted. "status" was exactly that.
+REAL_HERMES_COMMANDS = {
+    "hermes", "btw", "bg", "start", "new", "retry", "undo", "title", "branch",
+    "compress", "rollback", "stop", "approve", "deny", "background", "agents",
+    "queue", "steer", "goal", "subgoal", "whoami", "profile", "sethome",
+    "resume", "sessions", "model", "codex-runtime", "personality", "footer",
+    "yolo", "reasoning", "fast", "voice", "memory", "bundles", "learn",
+    "suggestions", "blueprint", "curator", "kanban", "reload-mcp",
+    "reload-skills", "commands", "help", "restart", "usage", "insights",
+    "platform", "update", "version",
+}
+
+
+def test_every_allowed_command_actually_exists():
+    unknown = set(render_config.USER_ALLOWED_COMMANDS) - REAL_HERMES_COMMANDS
+    assert not unknown, f"not real Hermes commands, so silently inert: {unknown}"
 
 
 def test_missing_admin_list_is_visible_in_health(tmp_path):

@@ -56,10 +56,23 @@ SLACK_TOOLSETS: tuple[str, ...] = (
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
-# /cron, /reset — requires being listed in SLACK_ADMIN_USERS. Without an admin
-# list configured, Hermes disables slash gating entirely and every user can run
-# every command, so ADMIN_ONLY_NOTE below is not optional hardening.
-USER_ALLOWED_COMMANDS: tuple[str, ...] = ("status", "whoami", "help", "new", "queue")
+# /rollback, /update — requires being listed in SLACK_ADMIN_USERS. Without an
+# admin list configured Hermes disables slash gating entirely and every user can
+# run every command, which is why boot warns loudly when it is unset.
+#
+# Every name here must be a real Hermes command: an entry that does not exist is
+# silently inert, so a teammate is refused something you believe you granted.
+# `hermes slack manifest` prints the authoritative list (50 commands).
+USER_ALLOWED_COMMANDS: tuple[str, ...] = (
+    "help",
+    "commands",
+    "whoami",
+    "new",
+    "queue",
+    "sessions",
+    "title",
+    "stop",
+)
 
 # name -> (url env var, bearer-token env var)
 MCP_TARGETS: tuple[tuple[str, str, str], ...] = (
