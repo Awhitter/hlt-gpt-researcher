@@ -201,6 +201,16 @@ def _result_count(results: Any) -> int:
         return 1
 
 
+def _topic_last_accessed(topic: str) -> float:
+    """Recency of the research a topic points at; 0.0 once it is orphaned.
+
+    `_resource_by_topic` maps topic -> research_id, so the value is a plain
+    string. Ordering topics therefore has to go through `_research_by_id`.
+    """
+    item = _research_by_id.get(_resource_by_topic[topic])
+    return item.last_accessed_at if item else 0.0
+
+
 async def _prune_locked(now: float | None = None) -> None:
     now = now or time.time()
     expired_ids = [
@@ -211,22 +221,26 @@ async def _prune_locked(now: float | None = None) -> None:
     for research_id in expired_ids:
         _research_by_id.pop(research_id, None)
 
-    expired_topics = [
-        topic
-        for topic, research_id in _resource_by_topic.items()
-        if research_id not in _research_by_id
-        or now - _research_by_id[research_id].last_accessed_at > STORE_TTL_SECONDS
-    ]
-    for topic in expired_topics:
-        _resource_by_topic.pop(topic, None)
-
+    # Trim by size BEFORE sweeping topics. The other order orphans a topic in
+    # the same pass that drops its research, leaving _resource_by_topic one
+    # entry above the cap while _research_by_id sits at it — which used to
+    # reach the topic trim below and call .last_accessed_at on a str.
     while len(_research_by_id) > STORE_MAX_ITEMS:
         oldest_id = min(_research_by_id, key=lambda k: _research_by_id[k].last_accessed_at)
         _research_by_id.pop(oldest_id, None)
 
+    # Any topic whose research is gone — expired or trimmed — goes with it.
+    # This subsumes the TTL check: TTL-expired ids were already popped above.
+    orphaned_topics = [
+        topic
+        for topic, research_id in _resource_by_topic.items()
+        if research_id not in _research_by_id
+    ]
+    for topic in orphaned_topics:
+        _resource_by_topic.pop(topic, None)
+
     while len(_resource_by_topic) > STORE_MAX_ITEMS:
-        oldest_topic = min(_resource_by_topic, key=lambda k: _resource_by_topic[k].last_accessed_at)
-        _resource_by_topic.pop(oldest_topic, None)
+        _resource_by_topic.pop(min(_resource_by_topic, key=_topic_last_accessed), None)
 
 
 async def _store_research(research_id: str, item: StoredResearch, *, resource_topic: str | None = None) -> None:

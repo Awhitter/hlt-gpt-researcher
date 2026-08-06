@@ -49,6 +49,7 @@ jobs:
           pytest -q \
             tests/test_hermes_boot.py \
             tests/test_codegraph_auth.py \
+            tests/test_mcp_store_prune.py \
             tests/test_hlt_extensions.py \
             tests/test_hlt_grounding.py \
             tests/test_hlt_scope_inference.py \
