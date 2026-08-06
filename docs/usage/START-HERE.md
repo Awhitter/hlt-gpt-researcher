@@ -12,13 +12,22 @@ Ask a question in plain English; Auto decides whether the answer needs our
 code/registry/metrics/media or just the public web, then researches and
 cites sources.
 
-## Three doors (pick one)
+## Doors (pick one)
 
-| Who | Door | URL / mount |
-| --- | --- | --- |
-| Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app |
-| Agents (Claude Code, Cursor, Katailyst) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` |
-| Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` |
+| Who | Door | URL / mount | Status |
+| --- | --- | --- | --- |
+| Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app | live |
+| Agents (Claude Code, Cursor, Katailyst) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
+| Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` | live |
+| Humans, in Slack | Hermes agent | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | **installed, not switched on** |
+
+The Hermes door is the persistent agent described in the PRD: same research
+brain, but it remembers across sessions and can reach codegraph, Katailyst2 and
+Linear over MCP. The container is built and configured; it stays silent until
+the Slack app exists. Turning it on is ~3 minutes in a browser plus three env
+vars — [`services/hermes/README.md`](../../services/hermes/README.md) has the
+recipe. Until then `/health` reports `mode: readiness_gateway`, which is the
+expected resting state and not a fault.
 
 - UI + MCP default to **Auto scope** (estate context when the question needs
   it; pure web otherwise).
