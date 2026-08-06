@@ -103,11 +103,16 @@ def install(
             summary["soul_installed"] = True
 
     # --- briefing ---------------------------------------------------------
-    # Shared first: read the estate before your own role.
+    # Shared first: read the estate before your own role. TEAM.md comes last
+    # and is deliberately the closest thing to the question — who is asking
+    # decides which half of the briefing is even relevant. A marketing lead got
+    # an answer about `proxy.ts` because the agent knew the codebase and had
+    # never been told that non-engineers talk to her.
     parts: list[str] = []
     for name, path in (
         ("shared", GROUNDING_SRC / "shared" / "AGENTS.md"),
         (agent, GROUNDING_SRC / agent / "AGENTS.md"),
+        ("team", GROUNDING_SRC / agent / "TEAM.md"),
     ):
         if path.is_file():
             parts.append(path.read_text(encoding="utf-8").rstrip())

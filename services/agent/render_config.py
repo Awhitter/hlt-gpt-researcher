@@ -101,14 +101,22 @@ SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
 # break prompt caching. This is the supported way to shape behaviour per
 # surface — the alternative is editing her SOUL, which applies everywhere.
 SLACK_PLATFORM_HINT = (
-    "You are answering in Slack, for a team that did NOT build this system. "
-    "Assume the reader is new: define a term the first time you use it, and "
-    "never assume they know which repo owns what.\n"
-    "Always ground an answer. Cite the Linear identifier (NUR-123), the file "
-    "path, or the doc you read it in — an unsourced claim about this estate is "
-    "worth nothing, because parts of it have no author who remembers.\n"
-    "When you do not know, say so and say how you would find out. That is a "
-    "better answer here than a confident guess.\n"
+    "You are answering in Slack, for a team that did NOT build this system, "
+    "and most of them are not engineers.\n"
+    "Answer in the register of the person asking. Their job decides what an "
+    "answer is: a marketing question gets audience, voice and funnel; a "
+    "delivery question gets projects, dates and owners. NEVER open a reply to "
+    "a non-engineer with an internal name — a file path, a repo label, a "
+    "D-number, a system codename. Those are citations you add at the end.\n"
+    "Asked what you can do for someone, answer in THEIR work, not as an "
+    "inventory of your tools.\n"
+    "Query the source before you describe it. Saying a system 'holds our voice "
+    "and personas' without opening it looks like an answer and contains none.\n"
+    "Ground every answer, and put the evidence at the END as a short Sources "
+    "list — the identifier, file or registry ref you actually opened — instead "
+    "of scattering them mid-sentence where they break the reading.\n"
+    "When you do not know, say so and say how you would find out. That beats a "
+    "confident guess.\n"
     "Keep it to a few short paragraphs; this is a chat message, not a "
     "document. Lead with the answer, then the evidence.\n"
     "When a picture would explain a flow faster than prose, offer to generate "
@@ -140,6 +148,10 @@ MCP_TARGETS: tuple[tuple[str, str, str], ...] = (
     ("codegraph", "CODEGRAPH_MCP_URL", "CODEGRAPH_MCP_TOKEN"),
     ("katailyst2", "KATAILYST2_MCP_URL", "KATAILYST2_MCP_TOKEN"),
     ("linear", "LINEAR_MCP_URL", "LINEAR_MCP_TOKEN"),
+    # How the funnel is actually performing. Read-only; the grounding
+    # carries the caveat that ~64% of events are ScraperVault machine
+    # traffic, so an unfiltered number is worse than no number.
+    ("posthog", "POSTHOG_MCP_URL", "POSTHOG_MCP_TOKEN"),
 )
 
 # Where the composed briefing lives. MUST be set explicitly: left at ".",
@@ -204,6 +216,35 @@ def build_slack(env: Mapping[str, str]) -> dict[str, Any]:
     return slack
 
 
+def build_home_channel(env: Mapping[str, str]) -> dict[str, Any] | None:
+    """`platforms.slack.home_channel` — where cron output lands.
+
+    Unset, Hermes posts a "No home channel is set" notice at the start of every
+    new session and tells the user to type `/hermes sethome`. That was the FIRST
+    thing a new teammate ever saw from this agent, and the command it names does
+    not work unless the Slack manifest declares `/hermes` — ours did not.
+
+    Setting it here removes the notice for everyone, with nobody having to run
+    anything. Shape matches upstream `HomeChannel.to_dict()`.
+
+    Format: `SLACK_HOME_CHANNEL="C0BN349TRU7|#cleo"` (id, optional label).
+    A value with no channel id is ignored rather than written half-formed — a
+    malformed home channel silently breaks cron delivery.
+    """
+    raw = _clean(env, "SLACK_HOME_CHANNEL")
+    if not raw:
+        return None
+    chat_id, _, name = raw.partition("|")
+    chat_id = chat_id.strip()
+    if not chat_id:
+        return None
+    return {
+        "platform": "slack",
+        "chat_id": chat_id,
+        "name": name.strip() or chat_id,
+    }
+
+
 def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
     """`platforms.slack` — the namespace that carries the good Slack features."""
     extra: dict[str, Any] = {
@@ -249,17 +290,19 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
         extra["allow_admin_from"] = list(admins)
         extra["group_allow_admin_from"] = list(admins)
 
-    return {
-        "slack": {
-            # Upstream's default uses Slack's assistant status API, which
-            # disables the compose box while Brian thinks.
-            "typing_indicator": False,
-            # Default posts "♻️ Gateway online" into the workspace on every
-            # redeploy. Operator noise for end users.
-            "gateway_restart_notification": False,
-            "extra": extra,
-        }
+    slack: dict[str, Any] = {
+        # Upstream's default uses Slack's assistant status API, which
+        # disables the compose box while Brian thinks.
+        "typing_indicator": False,
+        # Default posts "♻️ Gateway online" into the workspace on every
+        # redeploy. Operator noise for end users.
+        "gateway_restart_notification": False,
+        "extra": extra,
     }
+    home = build_home_channel(env)
+    if home:
+        slack["home_channel"] = home
+    return {"slack": slack}
 
 
 def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
