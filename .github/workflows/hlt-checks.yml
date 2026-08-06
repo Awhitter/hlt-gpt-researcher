@@ -86,5 +86,8 @@ jobs:
       # The team gate is one regex; middleware.matcher.test.mjs is what stops
       # it silently reopening. teamAccess.test.mjs needs the typescript dep,
       # which is why it runs after install rather than standalone.
-      - name: Run team-access and middleware gate tests
-        run: node --test middleware.matcher.test.mjs lib/teamAccess.test.mjs
+      - name: Run team-access, middleware gate, and progress tests
+        run: node --test middleware.matcher.test.mjs lib/teamAccess.test.mjs lib/researchProgress.test.mjs
+
+      - name: Typecheck
+        run: ./node_modules/.bin/tsc --noEmit
