@@ -379,7 +379,12 @@ def render(
         "config_path": str(path),
         "model": config["model"]["default"],
         "openrouter_key_present": bool(_clean(env, "OPENROUTER_API_KEY")),
-        "slack_toolsets": list(SLACK_TOOLSETS),
+        # What Hermes was ACTUALLY handed, mcp-* grants included — not the
+        # static tuple. Reporting the tuple hid the fact that four mounted MCP
+        # servers had none of their tools granted.
+        "slack_toolsets": config.get("platform_toolsets", {}).get(
+            "slack", list(SLACK_TOOLSETS)
+        ),
         "slack_admins_configured": bool(_csv(env, "SLACK_ADMIN_USERS")),
         "slack_channel_allowlist": bool(_csv(env, "SLACK_ALLOWED_CHANNELS")),
         "slack_senders_allowed": (
