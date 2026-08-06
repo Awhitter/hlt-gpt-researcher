@@ -1,4 +1,4 @@
-"""Contract tests for Brian's boot config.
+"""Contract tests for the agent container's boot config.
 
 Three separate mechanisms in this service turned out to be silent no-ops:
 
@@ -22,7 +22,7 @@ import pytest
 
 yaml = pytest.importorskip("yaml")
 
-SERVICE_DIR = Path(__file__).resolve().parents[1] / "services" / "brian"
+SERVICE_DIR = Path(__file__).resolve().parents[1] / "services" / "agent"
 
 # The interpolation pattern Hermes itself uses (hermes_cli/config.py).
 HERMES_ENV_REF = re.compile(r"\$\{([^}]+)\}")
@@ -41,8 +41,8 @@ def _load(module_name: str, path: Path):
     return module
 
 
-render_config = _load("hlt_brian_render_config", SERVICE_DIR / "render_config.py")
-grounding = _load("hlt_brian_grounding", SERVICE_DIR / "grounding.py")
+render_config = _load("hlt_agent_render_config", SERVICE_DIR / "render_config.py")
+grounding = _load("hlt_agent_grounding", SERVICE_DIR / "grounding.py")
 
 FULL_ENV = {
     "OPENROUTER_API_KEY": "sk-or-secret",
@@ -177,12 +177,63 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     assert "seed_paths" not in config["memory"]
 
 
-def test_grounding_dir_is_explicit():
+def test_grounding_dir_is_explicit(tmp_path):
     """Left at ".", Hermes' project-context discovery resolves into its own
     install tree and silently loads nothing."""
     config = render_config.build_config(FULL_ENV)
-    assert config["terminal"]["cwd"] == render_config.GROUNDING_DIR
+    assert config["terminal"]["cwd"] == render_config.DEFAULT_GROUNDING_DIR
     assert config["terminal"]["cwd"] != "."
+
+    # And a real render points it at the composed briefing on the disk.
+    render_config.render(env=FULL_ENV, home=tmp_path)
+    written = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert written["terminal"]["cwd"] == str(tmp_path / "grounding")
+
+
+# --- agent selection --------------------------------------------------------
+
+
+def test_agent_id_selects_the_persona(tmp_path):
+    """One image, two agents. The wrong persona in a Slack workspace is loud."""
+    cleo = grounding.install(home=tmp_path / "a", env={"AGENT_ID": "cleo"})
+    brian = grounding.install(home=tmp_path / "b", env={"AGENT_ID": "brian"})
+
+    assert cleo["agent"] == "cleo"
+    assert brian["agent"] == "brian"
+    assert "Cleo" in (tmp_path / "a" / "SOUL.md").read_text(encoding="utf-8")
+    assert "Brian" in (tmp_path / "b" / "SOUL.md").read_text(encoding="utf-8")
+
+
+def test_unknown_agent_id_falls_back_but_says_so(tmp_path):
+    summary = grounding.install(home=tmp_path, env={"AGENT_ID": "clio"})
+
+    assert summary["agent"] == grounding.DEFAULT_AGENT
+    assert summary["agent_id_unrecognised"] is True, "a typo must not boot silently"
+
+
+def test_unset_agent_id_is_not_flagged(tmp_path):
+    summary = grounding.install(home=tmp_path, env={})
+    assert summary["agent"] == grounding.DEFAULT_AGENT
+    assert summary["agent_id_unrecognised"] is False
+
+
+def test_briefing_is_shared_facts_plus_the_agent_s_own(tmp_path):
+    grounding.install(home=tmp_path, env={"AGENT_ID": "cleo"})
+    briefing = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
+
+    # Shared estate facts, written once.
+    assert "Healthcare Learning Technologies" in briefing
+    # Cleo's own section.
+    assert "Nursing Mastery has no database" in briefing
+
+
+def test_every_declared_agent_has_a_soul(tmp_path):
+    """A registered agent with no SOUL.md would boot voiceless."""
+    for agent in grounding.AGENT_IDS:
+        home = tmp_path / agent
+        summary = grounding.install(agent=agent, home=home, env={})
+        assert summary["soul_installed"] is True, f"{agent} has no SOUL.md"
+        assert "shared" in summary["briefing_sections"]
 
 
 def test_model_override_precedence(tmp_path):
@@ -243,18 +294,18 @@ def test_render_creates_missing_home(tmp_path):
 
 
 def test_soul_is_installed_where_hermes_reads_it(tmp_path):
-    summary = grounding.install(home=tmp_path)
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
 
     assert summary["soul_installed"] is True
     # HERMES_HOME/SOUL.md — not memories/, not memory/.
     assert (tmp_path / "SOUL.md").is_file()
-    assert "Brian" in (tmp_path / "SOUL.md").read_text(encoding="utf-8")
+    assert "Cleo" in (tmp_path / "SOUL.md").read_text(encoding="utf-8")
 
 
 def test_hand_edited_soul_is_preserved(tmp_path):
     (tmp_path / "SOUL.md").write_text("# my own persona\n", encoding="utf-8")
 
-    summary = grounding.install(home=tmp_path)
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
 
     assert summary["soul_preserved_operator_edit"] is True
     assert summary["soul_installed"] is False
@@ -262,8 +313,8 @@ def test_hand_edited_soul_is_preserved(tmp_path):
 
 
 def test_our_own_soul_is_refreshed_on_reboot(tmp_path):
-    grounding.install(home=tmp_path)
-    assert grounding.install(home=tmp_path)["soul_installed"] is True
+    grounding.install(agent="cleo", home=tmp_path, env={})
+    assert grounding.install(agent="cleo", home=tmp_path, env={})["soul_installed"] is True
 
 
 def test_company_facts_ship_in_the_image_not_in_memory(tmp_path):
@@ -272,8 +323,8 @@ def test_company_facts_ship_in_the_image_not_in_memory(tmp_path):
     MEMORY.md is capped at ~2200 chars, frozen per session and agent-writable —
     the wrong container for a company knowledge base.
     """
-    summary = grounding.install(home=tmp_path)
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
 
-    assert summary["agents_md_present"] is True
+    assert summary["briefing_sections"] == ["shared", "cleo"]
     assert not (tmp_path / "memories").exists(), "boot must not pre-seed agent memory"
     assert not (tmp_path / "memory").exists(), "the old wrong-directory seeding is gone"

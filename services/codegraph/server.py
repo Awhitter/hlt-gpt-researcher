@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -244,6 +244,60 @@ def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> st
             "indexedAt": readiness.get("indexedAt"),
             "status": readiness.get("status"),
             "url": f"https://github.com/{REPO_GITHUB[repo_key]}/blob/{requested_sha}/{relative}",
+        }
+    )
+
+
+@mcp.tool()
+def recent_changes(repo: str, days: int = 14, limit: int = 25) -> str:
+    """What actually shipped in a repo recently, in plain language.
+
+    Reads the repo's CHANGELOG.md, which both nursing-mastery and ScraperVault
+    keep as dated, thematic prose ("a day that shipped forty PRs gets grouped by
+    what actually changed for a nurse") and hold complete with a coverage gate
+    that asserts every merged PR appears in it.
+
+    This is a far better answer than Linear for shipped work: these repos merge
+    hundreds of PRs a fortnight, while Linear's completed feed is capped and
+    ordered by last-touched. Use Linear for what is OPEN, and this for what is
+    DONE.
+
+    Note the clone here is `--depth=1`, so `git log` has no history — the
+    CHANGELOG file is the record, and it is the better one anyway.
+    """
+    repo_key = repo.strip().lower()
+    if repo_key not in REPO_GITHUB:
+        return json.dumps({"error": f"Unknown repo {repo!r}.", "known": sorted(REPO_GITHUB)})
+
+    path = os.path.join(REPOS_DIR, repo_key, "CHANGELOG.md")
+    if not os.path.isfile(path):
+        return json.dumps({"error": f"{repo_key} has no CHANGELOG.md in the indexed clone."})
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as error:
+        return json.dumps({"error": f"Could not read CHANGELOG.md: {error}"})
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(days, 1))).strftime("%Y-%m-%d")
+    entries = []
+    for match in re.finditer(r"^##\s+(\d{4}-\d{2}-\d{2})\s*[-–—]?\s*(.*)$", text, re.M):
+        date, title = match.group(1), match.group(2).strip()
+        if date < cutoff:
+            break  # newest-first, so the first old entry ends the window
+        body = text[match.end() : text.find("\n## ", match.end())]
+        entries.append({"date": date, "title": title, "body": body.strip()[:1200]})
+        if len(entries) >= limit:
+            break
+
+    return json.dumps(
+        {
+            "repo": repo_key,
+            "github": REPO_GITHUB[repo_key],
+            "since": cutoff,
+            "readiness": _repo_readiness(repo_key),
+            "entry_count": len(entries),
+            "entries": entries,
         }
     )
 

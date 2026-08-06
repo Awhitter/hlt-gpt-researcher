@@ -1,11 +1,11 @@
-"""Port-owner and supervisor for Brian, the Mastery Researcher.
+"""Port-owner and supervisor for whichever HLT agent this container runs.
 
 Render runs this as a **web service**: something has to bind ``$PORT`` or the
 health check fails and the deploy is rolled back. Hermes' Slack gateway talks
 to Slack over Socket Mode — an outbound WebSocket — and never binds a port, so
 it cannot be the container's main process on its own.
 
-So this module owns the port, boots Brian's config, supervises the gateway as
+So this module owns the port, boots the agent's config, supervises the gateway as
 a child process, and reports what actually happened. ``/health`` answers from
 observed state (is the child alive? did the config get written? which tools is
 he allowed?) rather than from "an env var is set", so a green check means the
@@ -33,14 +33,14 @@ logging.basicConfig(level=logging.INFO, format="[brian] %(levelname)s %(message)
 logger = logging.getLogger("brian")
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", "/data/hermes"))
-GATEWAY_ENABLED = os.getenv("BRIAN_ENABLE_GATEWAY", "0") == "1"
+GATEWAY_ENABLED = os.getenv("AGENT_ENABLE_GATEWAY", "0") == "1"
 
 # Give up after this many crashes so a bad config surfaces in /health instead
 # of hiding behind an endless restart loop.
 MAX_RESTARTS = 5
 BACKOFF_CAP_SECONDS = 60
 
-app = FastAPI(title="Brian — Mastery Researcher")
+app = FastAPI(title="HLT agent")
 
 
 class GatewaySupervisor:
@@ -78,7 +78,7 @@ class GatewaySupervisor:
 
     def start(self) -> None:
         if not GATEWAY_ENABLED:
-            logger.info("gateway disabled (BRIAN_ENABLE_GATEWAY != 1) — serving health only")
+            logger.info("gateway disabled (AGENT_ENABLE_GATEWAY != 1) — serving health only")
             return
         if not self.cli_present:
             self._gave_up_reason = (
@@ -144,7 +144,7 @@ def boot() -> None:
     for key, value in BOOT.items():
         logger.info("config %s: %s", key, value)
     if not BOOT.get("openrouter_key_present"):
-        logger.warning("OPENROUTER_API_KEY is not set — Brian has no model credentials")
+        logger.warning("OPENROUTER_API_KEY is not set — the agent has no model credentials")
     if GATEWAY_ENABLED and not BOOT.get("slack_admins_configured"):
         # Hermes disables slash-command gating entirely when no admin list is
         # configured, which means every workspace member can run /model, /yolo
@@ -154,7 +154,7 @@ def boot() -> None:
             "every workspace member can run every command"
         )
     if GATEWAY_ENABLED and not BOOT.get("slack_channel_allowlist"):
-        logger.warning("SLACK_ALLOWED_CHANNELS is unset — Brian will answer in any channel")
+        logger.warning("SLACK_ALLOWED_CHANNELS is unset — the agent will answer in any channel")
     supervisor.start()
 
 
@@ -171,7 +171,8 @@ def health() -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "status": status,
-        "service": "brian",
+        "service": "hlt-agent",
+        "agent": BOOT.get("agent"),
         "mode": mode,
         "hermes_home": str(HERMES_HOME),
         "config": BOOT,
@@ -179,9 +180,9 @@ def health() -> dict[str, Any]:
     }
     if mode == "readiness_gateway":
         payload["note"] = (
-            "Brian is installed and configured but the Slack gateway is off. "
-            "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and BRIAN_ENABLE_GATEWAY=1 to "
-            "bring him up — see services/brian/README.md."
+            "The agent is installed and configured but the Slack gateway is off. "
+            "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and AGENT_ENABLE_GATEWAY=1 to "
+            "bring it up — see services/agent/README.md."
         )
     elif mode == "gateway_down":
         payload["note"] = gateway["stopped_reason"] or (

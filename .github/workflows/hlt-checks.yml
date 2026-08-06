@@ -47,10 +47,11 @@ jobs:
       - name: Run HLT tests
         run: |
           pytest -q \
-            tests/test_brian_boot.py \
+            tests/test_agent_boot.py \
             tests/test_codegraph_auth.py \
             tests/test_mcp_store_prune.py \
             tests/test_hlt_suggestions.py \
+            tests/test_product_tools.py \
             tests/test_hlt_extensions.py \
             tests/test_hlt_grounding.py \
             tests/test_hlt_scope_inference.py \

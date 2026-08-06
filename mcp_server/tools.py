@@ -18,6 +18,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server.product_tools import register_product_tools
+
 from gpt_researcher import GPTResearcher
 from gpt_researcher.research_run_store import get_outputs_dir, get_research_run_store
 from gpt_researcher.utils.enum import Tone
@@ -523,6 +525,10 @@ async def get_research_context_tool(research_id: str) -> dict[str, Any]:
 
 def register_tools(mcp: FastMCP) -> None:
     """Register GPT Researcher MCP tools, resource, and prompt."""
+
+    # Product-owner tools over Linear, used by the Slack agent. Kept in their own
+    # leaf so this module stays about research.
+    register_product_tools(mcp)
 
     @mcp.resource("research://{topic}")
     async def research_resource(topic: str) -> str:
