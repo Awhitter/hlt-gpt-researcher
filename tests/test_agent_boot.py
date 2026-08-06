@@ -682,3 +682,22 @@ def test_slack_hint_forbids_leading_with_internals():
 
     assert "register of the person asking" in hint
     assert "Query the source before you describe it" in hint
+
+
+def test_mounted_servers_without_the_mcp_sdk_are_reported_dead():
+    """`mcp` is an optional upstream extra, and without it Hermes disables MCP
+    entirely at DEBUG while every server still reads as mounted and granted.
+
+    That is how Cleo came to tell a teammate her Linear and codegraph tools were
+    "not actually available to me in this session" with /health showing four
+    servers mounted and no missing tokens.
+    """
+    health_gateway = _load_health_gateway()
+    supervisor = health_gateway.GatewaySupervisor()
+
+    # The property is what /health reads; it must reflect the INSTALLED package,
+    # never a config value — that distinction is the whole point.
+    import importlib.util as _iu
+
+    assert supervisor.mcp_sdk_available == (_iu.find_spec("mcp") is not None)
+    assert "mcp_sdk_available" in supervisor.snapshot()

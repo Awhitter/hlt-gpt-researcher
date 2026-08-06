@@ -94,6 +94,20 @@ class GatewaySupervisor:
         return shutil.which("hermes") is not None
 
     @property
+    def mcp_sdk_available(self) -> bool:
+        """Whether Hermes can use MCP servers at all.
+
+        `mcp` is an OPTIONAL upstream extra. Without it Hermes logs
+        "mcp package not installed -- MCP tool support disabled" at DEBUG and
+        carries on: every server still reads as mounted, every `mcp-<server>`
+        toolset still appears granted, and the agent has NOT ONE of their
+        tools. Cleo told a teammate her Linear and codegraph tools were "not
+        actually available to me in this session" while /health showed four
+        servers mounted with no missing tokens. She was right.
+        """
+        return importlib.util.find_spec("mcp") is not None
+
+    @property
     def slack_adapter_available(self) -> bool:
         """Whether Hermes can actually build a Slack adapter.
 
@@ -112,6 +126,7 @@ class GatewaySupervisor:
                 "running": running,
                 "cli_present": self.cli_present,
                 "slack_adapter_available": self.slack_adapter_available,
+                "mcp_sdk_available": self.mcp_sdk_available,
                 "restarts": self._restarts,
                 "last_exit_code": self._last_exit_code,
                 "uptime_seconds": (
@@ -270,9 +285,14 @@ def health() -> dict[str, Any]:
     # Only a positively-identified bad key degrades — "unknown" means the boot
     # check could not reach OpenRouter, which is not evidence of anything.
     model_credentials_bad = BOOT.get("openrouter_key_kind") in {"provisioning", "rejected"}
+    # Mounted servers the agent cannot reach are worse than none: she reports
+    # having them and then cannot answer from any of them.
+    mcp_dead = bool(BOOT.get("mcp_mounted")) and not gateway["mcp_sdk_available"]
 
     if not GATEWAY_ENABLED:
         status, mode = "ok", "readiness_gateway"
+    elif gateway["running"] and gateway["slack_adapter_available"] and mcp_dead:
+        status, mode = "degraded", "gateway_no_mcp_sdk"
     elif gateway["running"] and gateway["slack_adapter_available"] and model_credentials_bad:
         status, mode = "degraded", "gateway_no_model_credentials"
     elif gateway["running"] and gateway["slack_adapter_available"]:
@@ -299,6 +319,14 @@ def health() -> dict[str, Any]:
             "The agent is installed and configured but the Slack gateway is off. "
             "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and AGENT_ENABLE_GATEWAY=1 to "
             "bring it up — see services/agent/README.md."
+        )
+    elif mode == "gateway_no_mcp_sdk":
+        payload["note"] = (
+            f"{len(BOOT.get('mcp_mounted') or [])} MCP servers are configured and "
+            "granted, but the `mcp` python package is not installed, so Hermes "
+            "disabled MCP entirely and the agent has none of their tools. It is "
+            "an optional upstream extra — the image must install "
+            "hermes-agent[mcp]."
         )
     elif mode == "gateway_no_model_credentials":
         payload["note"] = (

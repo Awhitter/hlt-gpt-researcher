@@ -7,20 +7,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Hermes agent from upstream, WITH the [slack] extra. slack-bolt and slack-sdk
-# are optional dependencies upstream, so a plain `-e /opt/hermes` builds and
-# runs fine and then logs "No adapter available for slack" at boot — the
-# gateway process stays alive serving cron, the health check stays green, and
-# the bot never connects to Slack at all. Both the CLI and the extra are
-# asserted here so that failure is a red build, not a silent one. Render keeps the last
+# Hermes agent from upstream WITH every extra this agent actually uses.
+# Upstream ships these as OPTIONAL extras, and every one of them fails the
+# same way when missing: the feature is configured, reported healthy, and
+# quietly does nothing.
+#
+#   slack        without it: "No adapter available for slack" — bot never connects
+#   mcp          without it: "mcp package not installed -- MCP tool support
+#                disabled" at DEBUG. Every MCP server still reports as mounted
+#                and granted while the agent has NONE of their tools. This cost
+#                a day: Cleo told a teammate her Linear and codegraph tools were
+#                "not actually available to me in this session" and she was right.
+#   tts-premium  the ElevenLabs client for text_to_speech
+#   fal          the FAL client for image_generate
+#
+# Each is asserted below, so a missing extra is a red build rather than a
+# silent capability hole. Render keeps the last
 # live deploy when a build fails, so a broken upstream never takes the
 # service down.
 ARG HERMES_REF=main
 RUN git clone --depth=1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes \
-    && pip install --no-cache-dir -e "/opt/hermes[slack]" \
+    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
-    && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; }
+    && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
+    && { python -c "import mcp" || { echo "mcp extra missing after install"; exit 1; }; } \
+    && { python -c "import elevenlabs" || { echo "tts-premium extra missing after install"; exit 1; }; } \
+    && { python -c "import fal_client" || { echo "fal extra missing after install"; exit 1; }; }
 
 # The gateway argv must be one upstream actually accepts. `hermes gateway -v`
 # parses as an unknown arg: -v/-q/--external-supervisor are declared on the
