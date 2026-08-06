@@ -302,7 +302,11 @@ def test_summary_reports_what_was_actually_mounted(tmp_path):
     assert summary["mcp_without_token"] == ["gpt-researcher", "linear"]
     assert sorted(summary["mcp_unconfigured"]) == ["codegraph", "katailyst2"]
     assert summary["openrouter_key_present"] is False
-    assert summary["slack_toolsets"] == list(render_config.SLACK_TOOLSETS)
+    # The reported toolset is what Hermes was handed, so a mounted server's
+    # grant shows up here rather than being invisible.
+    assert summary["slack_toolsets"] == (
+        list(render_config.SLACK_TOOLSETS) + ["mcp-gpt-researcher", "mcp-linear"]
+    )
 
 
 def test_hand_edited_config_is_preserved(tmp_path):
