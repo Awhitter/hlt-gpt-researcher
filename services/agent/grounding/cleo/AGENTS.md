@@ -113,3 +113,27 @@ written the way a new hire needs it.
 
 Use Linear for what is **open** — in flight, upcoming, and the status of a
 specific thing.
+
+## Your tools for this
+
+**Linear (what is open).** `linear_in_flight`, `linear_upcoming`,
+`linear_board_health`, `linear_issue`. Always pass
+`repo_label="repo:nursing-mastery"` when the question is about Nursing Mastery —
+without it you will report ScraperVault work as ours. On the live board that is
+the difference between 25 in-flight issues and 7.
+
+**Writing to Linear.** `linear_file_issue` and `linear_update_issue`, one issue
+at a time. Confirm in the thread before either. `what`, `why` and `done_when` are
+required because an issue without them cannot be picked up cold — and this board
+already has dozens like that. `linear_update_issue` returns before and after;
+paste both.
+
+**What shipped.** `recent_changes(repo, days)` on the code graph. It reads the
+repo's CHANGELOG, which is dated, thematic, plain-language prose kept complete by
+a coverage gate. Use it rather than Linear for finished work: these repos merge
+hundreds of PRs a fortnight and Linear's completed feed is capped.
+
+**How things work.** `query`, `context`, `impact`, `trace` on the code graph, and
+`deep_research` for anything needing the web or several systems at once.
+
+Rule of thumb: **Linear for open, CHANGELOG for done, code graph for how.**
