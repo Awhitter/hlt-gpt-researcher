@@ -121,6 +121,23 @@ services:
       # Default 1 (-v, INFO). 2+ is DEBUG.
       - key: AGENT_GATEWAY_VERBOSITY
         sync: false
+      # Where cron output lands, and the reason the "No home channel" setup
+      # notice stops firing at the start of every new session. Format:
+      # "C0BN349TRU7|#cleo" (channel id, optional label).
+      - key: SLACK_HOME_CHANNEL
+        sync: false
+      # PostHog MCP (shared project 157722, read-only) so marketing questions
+      # get numbers instead of architecture. ~64% of events are ScraperVault
+      # machine traffic — the grounding carries that caveat.
+      - key: POSTHOG_MCP_URL
+        sync: false
+      - key: POSTHOG_MCP_TOKEN
+        sync: false
+      # Diagrams and listen-later summaries (image_gen / tts toolsets).
+      - key: FAL_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
       # Optional model override; defaults to anthropic/claude-sonnet-5.
       - key: HERMES_MODEL
         sync: false

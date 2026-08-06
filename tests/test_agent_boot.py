@@ -300,7 +300,7 @@ def test_summary_reports_what_was_actually_mounted(tmp_path):
     assert summary["written"] is True
     assert summary["mcp_mounted"] == ["gpt-researcher", "linear"]
     assert summary["mcp_without_token"] == ["gpt-researcher", "linear"]
-    assert sorted(summary["mcp_unconfigured"]) == ["codegraph", "katailyst2"]
+    assert sorted(summary["mcp_unconfigured"]) == ["codegraph", "katailyst2", "posthog"]
     assert summary["openrouter_key_present"] is False
     # The reported toolset is what Hermes was handed, so a mounted server's
     # grant shows up here rather than being invisible.
@@ -397,7 +397,7 @@ def test_company_facts_ship_in_the_image_not_in_memory(tmp_path):
     """
     summary = grounding.install(agent="cleo", home=tmp_path, env={})
 
-    assert summary["briefing_sections"] == ["shared", "cleo"]
+    assert summary["briefing_sections"] == ["shared", "cleo", "team"]
     assert not (tmp_path / "memories").exists(), "boot must not pre-seed agent memory"
     assert not (tmp_path / "memory").exists(), "the old wrong-directory seeding is gone"
 
@@ -620,4 +620,65 @@ def test_slack_gets_its_own_prompt_guidance():
     hint = config["platform_hints"]["slack"]["append"]
 
     assert "did NOT build this system" in hint
-    assert "NUR-123" in hint, "grounding an answer in an identifier is the point"
+    # Evidence goes at the END as a Sources list; scattering ids mid-sentence
+    # is what made her answers read like machine-room tours.
+    assert "Sources list" in hint, "grounding an answer in a real source is the point"
+
+
+# --- talking to the team, not about the plumbing ----------------------------
+
+
+def test_the_setup_nag_is_switched_off():
+    """Hermes greets every new session with a "No home channel" notice.
+
+    It tells the user to type `/hermes sethome` — a command our manifest did
+    not declare, so it fails. That notice was the first thing a new teammate
+    ever saw from this agent. Setting the home channel removes it for everyone
+    without anyone running anything.
+    """
+    slack = render_config.build_platforms({"SLACK_HOME_CHANNEL": "C0BN349TRU7|#cleo"})["slack"]
+
+    assert slack["home_channel"] == {
+        "platform": "slack",
+        "chat_id": "C0BN349TRU7",
+        "name": "#cleo",
+    }
+
+
+def test_a_malformed_home_channel_is_omitted_not_written():
+    """A half-formed home channel silently breaks cron delivery."""
+    assert "home_channel" not in render_config.build_platforms({})["slack"]
+    assert render_config.build_home_channel({"SLACK_HOME_CHANNEL": "|#cleo"}) is None
+    assert render_config.build_home_channel({"SLACK_HOME_CHANNEL": "  "}) is None
+    # id alone is fine — the label is cosmetic
+    assert render_config.build_home_channel({"SLACK_HOME_CHANNEL": "C123"})["name"] == "C123"
+
+
+def test_posthog_is_mounted_and_granted():
+    """Marketing asks "is it working", which needs numbers, not architecture."""
+    env = {**FULL_ENV, "POSTHOG_MCP_URL": "https://mcp.posthog.com/mcp", "POSTHOG_MCP_TOKEN": "phx"}
+    config = render_config.build_config(env)
+
+    assert "posthog" in config["mcp_servers"]
+    assert "mcp-posthog" in config["platform_toolsets"]["slack"]
+
+
+def test_the_briefing_carries_the_team_not_just_the_code(tmp_path):
+    """A marketing lead got an answer about `proxy.ts` because the briefing only
+    described the codebase and never said non-engineers exist."""
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
+
+    assert summary["briefing_sections"] == ["shared", "cleo", "team"]
+    briefing = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
+    for person in ("Emily Whitters", "Justin Leas", "Kim Lehrman", "Jason Shaw"):
+        assert person in briefing
+    # the business, not only the code
+    assert "NCLEX RN Mastery is the mass surface" in briefing
+    assert "Cedar Rapids" in briefing, "a tried-and-failed campaign must not be re-proposed"
+
+
+def test_slack_hint_forbids_leading_with_internals():
+    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
+
+    assert "register of the person asking" in hint
+    assert "Query the source before you describe it" in hint
