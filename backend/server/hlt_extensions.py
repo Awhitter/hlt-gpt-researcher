@@ -55,6 +55,8 @@ from gpt_researcher.utils.langfuse_observability import get_langfuse_runtime_sta
 
 from .hlt_brain import (
     _corpus_readiness,
+    _fetch_linear_shipped,
+    _load_corpus_documents,
     get_brain_audience,
     get_brain_changelog,
     get_brain_library,
@@ -65,6 +67,7 @@ from .hlt_brain import (
     search_prior_reports,
 )
 from .hlt_media import _cloudinary_readiness, search_cloudinary_assets
+from .hlt_suggestions import get_brain_suggestions
 from .hlt_scope_inference import infer_research_scope
 
 # Re-exported above for callers and tests that treat this module as the HLT
@@ -1212,6 +1215,15 @@ def install(
     def brain_library(q: str | None = None):  # noqa: D401
         """Searchable archive of past research runs (the memory layer)."""
         return get_brain_library(query=q)
+
+    @app.get("/api/brain/suggestions", tags=["hlt", "brain"])
+    def brain_suggestions():  # noqa: D401
+        """Question bank for the ask surface and Slack's suggested prompts."""
+        return get_brain_suggestions(
+            repos_fn=get_brain_repos,
+            shipped_fn=_fetch_linear_shipped,
+            corpus_fn=_load_corpus_documents,
+        )
 
     @app.post("/api/brain/change-request", tags=["hlt", "brain"])
     async def brain_change_request(request: Request):

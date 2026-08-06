@@ -74,14 +74,28 @@ following servers auto-mount from `.mcp.json`:
    `docs/usage/owners-manual.md`.
 
 Human UI: `https://gpt-researcher-ui.vercel.app` is branded as **Mastery
-Research**. Sliding Brain tabs: Ask, Audience, Codebase, Library, Vision,
-Changelog, Roadmap — each tab has "What can I ask?" starter chips
-(`lib/starterPrompts.ts`) that launch scoped runs. Ask includes compact HLT
-scope toggles for Deep web, Audience, Recruiting, QBank, Media, Code,
-Registry, and Metrics, a Fast/Balanced/Deep depth picker, and a
+Research**. Ask is the always-on surface; the other tabs (Nurse voice,
+Codebase, Library, Vision, Changelog, Roadmap) live behind "More research
+tools" and render from `lib/brainTabs.ts` — that array is the single tab
+registry, so do not add a second hardcoded list beside it.
+
+Under the ask box sits a **suggestion strip**: three example questions with a
+control to cycle to the next three. The bank comes from
+`GET /api/brain/suggestions` (`backend/server/hlt_suggestions.py`), built by
+filling curated templates with live nouns — Linear shipped issues, the weekly
+content-inventory sweep, ranked nurse pain points, the code graph's repo list —
+so it cannot go stale the way the old hardcoded chips did. Every entry pins the
+scope it needs, which is what makes its label honest: explicit scope beats Auto
+in `prepare_research_request`. The same endpoint feeds Brian's Slack suggested
+prompts, so there is one bank, not two.
+
+Ask keeps **Auto** visible as the only always-on control; the eight scope
+toggles (Deep web, Nurse voice, Recruiting, QBank, Media, Code, Registry,
+Metrics), the Fast/Balanced/Deep depth picker and the
 Standard/Top 1% mode picker (top1 injects the cross-industry
-winners → mechanisms → rhymes → audience-verification doctrine). An **Auto**
-chip is on by default and pins nothing: `backend/server/hlt_scope_inference.py`
+winners → mechanisms → rhymes → audience-verification doctrine) all fold behind
+one `Advanced` disclosure whose summary reports what is in force. Auto is on by
+default and pins nothing: `backend/server/hlt_scope_inference.py`
 infers the scopes a query needs (heuristics, then one FAST_LLM tiebreak for
 weak signals, never `qbank`/`firecrawl`, never an unready integration), and the
 phase rail shows what auto-fired and why. Pinning any toggle leaves auto mode.

@@ -23,16 +23,26 @@ export function normalizeHLTResearchScope(
   };
 }
 
+/**
+ * The eight pinnable sources — everything in HLTResearchScope except `auto`,
+ * `depth` and `mode`, which are not sources.
+ *
+ * One list, because callers that enumerate these by hand drift: pinning a
+ * source must leave Auto, and a source added here but missed there would be
+ * silently ignored by the count and the Auto reset.
+ */
+export const SCOPE_SOURCE_KEYS = [
+  "codebase",
+  "cms",
+  "qbank",
+  "metrics",
+  "firecrawl",
+  "media",
+  "audience",
+  "recruiting",
+] as const satisfies readonly (keyof HLTResearchScope)[];
+
 export function selectedScopeCount(scope?: Partial<HLTResearchScope>): number {
   const normalized = normalizeHLTResearchScope(scope);
-  return [
-    normalized.codebase,
-    normalized.cms,
-    normalized.qbank,
-    normalized.metrics,
-    normalized.firecrawl,
-    normalized.media,
-    normalized.audience,
-    normalized.recruiting,
-  ].filter(Boolean).length;
+  return SCOPE_SOURCE_KEYS.filter((key) => normalized[key]).length;
 }

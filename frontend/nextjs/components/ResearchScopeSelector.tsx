@@ -1,7 +1,7 @@
 "use client";
 
 import { HLTResearchScope } from "@/types/data";
-import { normalizeHLTResearchScope } from "@/lib/hltResearchScope";
+import { normalizeHLTResearchScope, selectedScopeCount } from "@/lib/hltResearchScope";
 
 type ResearchScopeSelectorProps = {
   value?: HLTResearchScope;
@@ -31,9 +31,9 @@ const scopeOptions: Array<{
   },
   {
     key: "audience",
-    label: "Audience",
+    label: "Nurse voice",
     title:
-      "Ground answers in what nurses actually say: forums (r/nursing, r/StudentNurse, allnurses), verbatim quotes with receipts, plus the internal voice-of-nurse corpus.",
+      "Ground answers in what nurses actually say: forums (r/nursing, r/StudentNurse, allnurses), verbatim quotes with receipts, plus the internal voice-of-nurse corpus. Nursing only — this does not cover ASVAB, PANCE or DAT candidates.",
   },
   {
     key: "recruiting",
@@ -104,6 +104,17 @@ export default function ResearchScopeSelector({
     onChange({ ...scope, ...patch });
   };
 
+  // The folded row still has to say what is in force, or collapsing the
+  // controls would hide state rather than tidy it.
+  const pinned = selectedScopeCount(scope);
+  const depthLabel = depthOptions.find((o) => o.value === scope.depth)?.label ?? "Balanced";
+  const modeLabel = modeOptions.find((o) => o.value === scope.mode)?.label ?? "Standard";
+  const summaryLabel = [
+    pinned > 0 ? `${pinned} scope${pinned === 1 ? "" : "s"} pinned` : "Auto",
+    depthLabel,
+    modeLabel,
+  ].join(" · ");
+
   const setAuto = (auto: boolean) => {
     if (auto) {
       // Auto mode releases every pinned scope; the server infers what the
@@ -130,6 +141,52 @@ export default function ResearchScopeSelector({
       aria-label="Research scope"
     >
       <div className="flex flex-col items-center justify-center gap-2.5">
+        {/*
+          Auto is the only control most people ever need, so it is the only one
+          that stays out. The other twelve made the first screen read like a
+          settings panel; they are one click away and the summary below reports
+          their state so nothing is hidden, only folded.
+        */}
+        <button
+          type="button"
+          title="Let Mastery decide: estate code, registry, metrics, media, or nurse-voice context is pulled in automatically when the question needs it — plain web questions stay web-only. Pin a scope under Advanced to take over."
+          aria-pressed={scope.auto}
+          onClick={() => setAuto(!scope.auto)}
+          className={`flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#06101C] ${
+            scope.auto
+              ? "border-teal-400/75 bg-teal-400/15 text-teal-100"
+              : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/20 hover:bg-white/[0.07]"
+          }`}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-3 w-3"
+            aria-hidden="true"
+          >
+            <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" />
+            <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z" />
+          </svg>
+          Auto
+        </button>
+
+        <details className="group w-full">
+          <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-2 py-1 text-xs text-slate-500 transition-colors hover:text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#06101C] [&::-webkit-details-marker]:hidden">
+            <svg
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+              className="h-2.5 w-2.5 transition-transform duration-200 ease-out group-open:rotate-90 motion-reduce:transition-none"
+            >
+              <path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{summaryLabel}</span>
+          </summary>
+
+          <div className="mt-3 flex flex-col items-center justify-center gap-2.5">
         <div className="flex flex-wrap items-center justify-center gap-2">
           <div className="inline-flex w-fit rounded-md border border-white/10 bg-white/[0.04] p-0.5 backdrop-blur">
             {depthOptions.map((option) => (
@@ -169,31 +226,6 @@ export default function ResearchScopeSelector({
         </div>
 
         <div className="flex min-w-0 max-w-full snap-x items-center justify-start gap-1.5 overflow-x-auto pb-2 sm:flex-wrap sm:justify-center sm:overflow-visible">
-          <button
-            type="button"
-            title="Let Mastery decide: estate code, registry, metrics, media, or audience context is pulled in automatically when the question needs it — plain web questions stay web-only. Pin a scope below to take over."
-            onClick={() => setAuto(!scope.auto)}
-            className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition-all ${
-              scope.auto
-                ? "border-teal-400/75 bg-teal-400/15 text-teal-100"
-                : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/20 hover:bg-white/[0.07]"
-            }`}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-3 w-3"
-              aria-hidden="true"
-            >
-              <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" />
-              <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z" />
-            </svg>
-            Auto
-          </button>
           {scopeOptions.map((option) => {
             const selected = scope[option.key];
             return (
@@ -253,6 +285,8 @@ export default function ResearchScopeSelector({
             );
           })}
         </div>
+          </div>
+        </details>
       </div>
     </section>
   );

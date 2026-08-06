@@ -11,7 +11,8 @@ import { Data, ChatBoxSettings, QuestionData, ChatMessage, ChatData, HLTResearch
 import { preprocessOrderedData } from '../utils/dataProcessing';
 import { toast } from "react-hot-toast";
 import { v4 as uuidv4 } from 'uuid';
-import { defaultHLTResearchScope } from "@/lib/hltResearchScope";
+import { SCOPE_SOURCE_KEYS, defaultHLTResearchScope } from "@/lib/hltResearchScope";
+import { Suggestion } from "@/lib/suggestions";
 
 import Hero from "@/components/Hero";
 import ResearchPageLayout from "@/components/layouts/ResearchPageLayout";
@@ -328,9 +329,16 @@ export default function Home() {
   const settingsForPresetRun = (
     scopePatch: Partial<HLTResearchScope>,
   ): ChatBoxSettings => {
+    // Pinning any source leaves Auto, exactly as toggling one by hand does.
+    // Without this a preset run stores `auto: true` next to pinned scopes —
+    // a combination the selector can never produce, so the chip that follows
+    // reads as "Auto" while the run was actually scoped. The backend already
+    // prefers explicit keys, so this is about the state telling the truth.
+    const pinsASource = SCOPE_SOURCE_KEYS.some((key) => scopePatch[key]);
     const scope: HLTResearchScope = {
       ...defaultHLTResearchScope,
       ...scopePatch,
+      auto: pinsASource ? false : (scopePatch.auto ?? defaultHLTResearchScope.auto),
     };
     return {
       ...chatBoxSettings,
@@ -358,6 +366,12 @@ export default function Home() {
 
   const handleCodebaseAsk = (question: string) => {
     launchPresetRun(question, { codebase: true, depth: "deep" });
+  };
+
+  // A suggestion carries the scope it needs, so clicking one is a correctly
+  // routed run rather than a text prefill the user then has to scope by hand.
+  const handleSuggestion = (suggestion: Suggestion) => {
+    launchPresetRun(suggestion.prompt, suggestion.scope);
   };
 
   const handleDisplayResult = async (
@@ -737,6 +751,7 @@ export default function Home() {
               handleDisplayResult={handleMobileDisplayResult}
               chatBoxSettings={chatBoxSettings}
               setChatBoxSettings={setChatBoxSettings}
+              onSuggestion={handleSuggestion}
             />
           }
         />
@@ -806,6 +821,7 @@ export default function Home() {
                     handleDisplayResult={handleDisplayResult}
                     chatBoxSettings={chatBoxSettings}
                     setChatBoxSettings={setChatBoxSettings}
+                    onSuggestion={handleSuggestion}
                   />
                 }
               />

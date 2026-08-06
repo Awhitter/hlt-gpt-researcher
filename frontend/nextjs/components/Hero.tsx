@@ -1,8 +1,10 @@
 import React, { FC } from "react";
 import InputArea from "./ResearchBlocks/elements/InputArea";
 import ResearchScopeSelector from "@/components/ResearchScopeSelector";
+import SuggestionStrip from "@/components/brain/SuggestionStrip";
 import { ChatBoxSettings, HLTResearchScope } from "@/types/data";
 import { normalizeHLTResearchScope } from "@/lib/hltResearchScope";
+import { Suggestion } from "@/lib/suggestions";
 
 type THeroProps = {
   promptValue: string;
@@ -10,6 +12,7 @@ type THeroProps = {
   handleDisplayResult: (query: string) => void;
   chatBoxSettings?: ChatBoxSettings;
   setChatBoxSettings?: React.Dispatch<React.SetStateAction<ChatBoxSettings>>;
+  onSuggestion?: (suggestion: Suggestion) => void;
 };
 
 const Hero: FC<THeroProps> = ({
@@ -18,6 +21,7 @@ const Hero: FC<THeroProps> = ({
   handleDisplayResult,
   chatBoxSettings,
   setChatBoxSettings,
+  onSuggestion,
 }) => {
   const handleScopeChange = (scope: HLTResearchScope) => {
     const normalized = normalizeHLTResearchScope(scope);
@@ -43,8 +47,11 @@ const Hero: FC<THeroProps> = ({
   };
 
   return (
-    <div className="flex min-h-[58vh] w-full max-w-full items-center justify-center overflow-x-hidden px-4 pb-10">
-      <div className="min-w-0 w-full max-w-full -translate-y-6 sm:max-w-[900px] sm:-translate-y-10">
+    // No fixed min-height and no translate: both reserved space the Hero was
+    // not using, which the next block then clawed back with a negative margin.
+    // That collided the moment the scope disclosure opened.
+    <div className="flex w-full max-w-full items-center justify-center overflow-x-hidden px-4 pb-6 pt-[12vh] sm:pt-[14vh]">
+      <div className="min-w-0 w-full max-w-full sm:max-w-[900px]">
         <h1 className="mb-8 text-center text-3xl font-medium tracking-[-0.03em] text-white sm:text-4xl">
           Ask about HLT
         </h1>
@@ -53,6 +60,7 @@ const Hero: FC<THeroProps> = ({
           setPromptValue={setPromptValue}
           handleSubmit={handleDisplayResult}
         />
+        {onSuggestion && <SuggestionStrip onSelect={onSuggestion} />}
         <ResearchScopeSelector
           value={chatBoxSettings?.hlt_research_scope}
           onChange={handleScopeChange}
