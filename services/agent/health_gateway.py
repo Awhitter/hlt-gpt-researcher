@@ -185,6 +185,48 @@ class GatewaySupervisor:
 supervisor = GatewaySupervisor()
 BOOT: dict[str, Any] = {}
 
+OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+
+
+def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
+    """Classify the model credential: can it actually run inference?
+
+    OpenRouter issues two kinds of ``sk-or-v1-`` key that are indistinguishable
+    by prefix, length or shape. A *provisioning* key authenticates fine and is
+    then refused for every completion with 401 "User not found." — so "the env
+    var is set" says nothing about whether the agent can answer anyone. Cleo
+    shipped on one and replied to every message "Provider authentication
+    failed", while /health reported ``openrouter_key_present: true``.
+
+    ``/api/v1/key`` names the kind without spending a token, so this is one
+    cheap call at boot rather than a live completion.
+
+    Returns ``inference`` | ``provisioning`` | ``rejected`` | ``unknown``.
+    ``unknown`` means the check itself could not run (offline, DNS, timeout)
+    and is never treated as a failure — a flaky network must not make a
+    working agent look broken.
+    """
+    if not key:
+        return "unknown"
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        OPENROUTER_KEY_URL, headers={"Authorization": f"Bearer {key}"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = _json.loads(response.read()).get("data") or {}
+    except urllib.error.HTTPError as exc:
+        return "rejected" if exc.code in (401, 403) else "unknown"
+    except Exception:
+        return "unknown"
+
+    if data.get("is_provisioning_key") or data.get("is_management_key"):
+        return "provisioning"
+    return "inference"
+
 
 def boot() -> None:
     BOOT.update(grounding.install())
@@ -193,6 +235,19 @@ def boot() -> None:
         logger.info("config %s: %s", key, value)
     if not BOOT.get("openrouter_key_present"):
         logger.warning("OPENROUTER_API_KEY is not set — the agent has no model credentials")
+    else:
+        kind = openrouter_key_kind(os.getenv("OPENROUTER_API_KEY", ""))
+        BOOT["openrouter_key_kind"] = kind
+        logger.info("config openrouter_key_kind: %s", kind)
+        if kind == "provisioning":
+            logger.error(
+                "OPENROUTER_API_KEY is a PROVISIONING key, not an inference key. "
+                "It authenticates to OpenRouter but every completion is refused "
+                "401 'User not found.', so the agent will answer every message "
+                "with 'Provider authentication failed'."
+            )
+        elif kind == "rejected":
+            logger.error("OPENROUTER_API_KEY was rejected by OpenRouter")
     if GATEWAY_ENABLED and not BOOT.get("slack_admins_configured"):
         # Hermes disables slash-command gating entirely when no admin list is
         # configured, which means every workspace member can run /model, /yolo
@@ -210,8 +265,16 @@ def boot() -> None:
 def health() -> dict[str, Any]:
     gateway = supervisor.snapshot()
 
+    # A credential that cannot run inference is not a working agent: she hears
+    # every message and answers each one "Provider authentication failed".
+    # Only a positively-identified bad key degrades — "unknown" means the boot
+    # check could not reach OpenRouter, which is not evidence of anything.
+    model_credentials_bad = BOOT.get("openrouter_key_kind") in {"provisioning", "rejected"}
+
     if not GATEWAY_ENABLED:
         status, mode = "ok", "readiness_gateway"
+    elif gateway["running"] and gateway["slack_adapter_available"] and model_credentials_bad:
+        status, mode = "degraded", "gateway_no_model_credentials"
     elif gateway["running"] and gateway["slack_adapter_available"]:
         status, mode = "ok", "gateway"
     elif gateway["running"]:
@@ -236,6 +299,13 @@ def health() -> dict[str, Any]:
             "The agent is installed and configured but the Slack gateway is off. "
             "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and AGENT_ENABLE_GATEWAY=1 to "
             "bring it up — see services/agent/README.md."
+        )
+    elif mode == "gateway_no_model_credentials":
+        payload["note"] = (
+            "Slack is connected, but OPENROUTER_API_KEY cannot run inference "
+            f"(kind: {BOOT.get('openrouter_key_kind')}). The bot receives every "
+            "message and replies 'Provider authentication failed'. A provisioning "
+            "key looks identical to an inference key — check /api/v1/key."
         )
     elif mode == "gateway_no_slack_adapter":
         payload["note"] = (
