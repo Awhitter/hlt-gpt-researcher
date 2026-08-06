@@ -117,6 +117,25 @@ def test_missing_admin_list_is_visible_in_health(tmp_path):
     assert summary["slack_channel_allowlist"] is False
 
 
+def test_a_workspace_bot_must_not_deny_the_workspace():
+    """Hermes defaults to denying unknown senders on every messaging platform.
+
+    Left at the default the bot is simply silent for everyone, with only a
+    startup warning to say so — which is what happened on first boot.
+    """
+    extra = render_config.build_config(FULL_ENV)["platforms"]["slack"]["extra"]
+    assert extra["dm_policy"] == "open"
+    assert extra["group_policy"] == "open"
+
+
+def test_sender_policy_is_reported(tmp_path):
+    assert render_config.render(env=FULL_ENV, home=tmp_path)["slack_senders_allowed"] == "none"
+    opened = render_config.render(
+        env={**FULL_ENV, "GATEWAY_ALLOW_ALL_USERS": "true"}, home=tmp_path
+    )
+    assert opened["slack_senders_allowed"] == "all"
+
+
 def test_workspace_safety_defaults():
     config = render_config.build_config(FULL_ENV)
 
