@@ -44,20 +44,22 @@ services:
       - key: CODEGRAPH_MCP_TOKEN
         sync: false
 
-  # Brian, the Mastery Researcher.
+  # One HLT Slack agent. AGENT_ID picks which persona boots: `cleo` (product
+  # owner, the default) or `brian` (researcher). One Hermes gateway binds to
+  # exactly one Slack app, so a second agent needs a second service off this
+  # same image — not a second image.
   #
-  # The service keeps the hostname `hlt-hermes`: Render cannot rename a service
-  # in place, and changing `name` here would make the blueprint create a second
-  # service and orphan this one's 5GB disk. The agent identity — bot name, K2
-  # registry row, docs, env prefix — is Brian. "Hermes" is only the upstream
-  # runtime, and must not be used as the agent's name: `agent:hermes` in
-  # Katailyst2 is the fleet orchestrator persona, a different thing entirely.
+  # The service keeps the hostname `hlt-hermes`: Render cannot rename in place,
+  # and changing `name` here would make the blueprint create a second service
+  # and orphan this one's 5GB disk. "Hermes" is only the upstream runtime and
+  # must never be used as an agent's name — `agent:hermes` in Katailyst2 is the
+  # fleet orchestrator persona, a different thing entirely.
   - type: web
     name: hlt-hermes
     runtime: docker
     plan: starter
     region: oregon
-    rootDir: services/brian
+    rootDir: services/agent
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     disk:
@@ -94,7 +96,10 @@ services:
       # The go-live switch. Declared here so it is visible as a knob, but left
       # dashboard-owned (sync: false) so a blueprint re-sync can't silently
       # switch the agent back off. Set to "1" once the Slack tokens exist.
-      - key: BRIAN_ENABLE_GATEWAY
+      - key: AGENT_ENABLE_GATEWAY
+        sync: false
+      # Which persona boots: cleo | brian. Defaults to cleo.
+      - key: AGENT_ID
         sync: false
       # Slack user IDs allowed to run privileged slash commands (/model, /cron,
       # /yolo). REQUIRED before going live: with no admin list, Hermes disables

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render ``$HERMES_HOME/config.yaml`` for Brian, the Mastery Researcher.
+"""Render ``$HERMES_HOME/config.yaml`` for whichever agent this container is.
 
 Hermes reads every setting — model, toolsets, Slack behaviour, MCP mounts —
 from a single ``config.yaml`` under ``HERMES_HOME``. Nothing else in this image
@@ -11,7 +11,7 @@ Hermes expands them at load time, so the persistent Render disk never holds a
 token in plaintext.
 
 The security posture here is deliberate and is the reason this file is long.
-Brian is reachable by a whole Slack workspace AND reads untrusted web pages.
+These agents are reachable by a whole Slack workspace AND read untrusted web pages.
 Those two facts together make the upstream defaults unsafe: see SLACK_TOOLSETS.
 """
 from __future__ import annotations
@@ -37,10 +37,10 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 # Left at the default, anyone who can @mention Brian in Slack gets arbitrary
 # code execution on this container.
 #
-# Brian additionally reads untrusted third-party web pages, so shell access
-# would make him a textbook confused deputy: a hostile page talks the model into
-# running a command. Upstream constrains its own webhook toolset for exactly
-# this reason.
+# These agents additionally read untrusted third-party web pages, so shell
+# access would make one a textbook confused deputy: a hostile page talks the
+# model into running a command. Upstream constrains its own webhook toolset for
+# exactly this reason.
 #
 # Excluded on purpose: terminal, execute_code, cronjob, computer_use, browser,
 # and `file` (there is no read-only variant — it grants write_file and patch).
@@ -69,10 +69,10 @@ MCP_TARGETS: tuple[tuple[str, str, str], ...] = (
     ("linear", "LINEAR_MCP_URL", "LINEAR_MCP_TOKEN"),
 )
 
-# Where the durable company grounding lives. MUST be set explicitly: left at
-# ".", Hermes' project-context discovery resolves into its own install tree and
-# silently loads nothing.
-GROUNDING_DIR = "/app/grounding"
+# Where the composed briefing lives. MUST be set explicitly: left at ".",
+# Hermes' project-context discovery resolves into its own install tree and
+# silently loads nothing. grounding.py writes AGENTS.md here at boot.
+DEFAULT_GROUNDING_DIR = "/data/hermes/grounding"
 
 
 def _clean(env: Mapping[str, str], key: str) -> str | None:
@@ -162,7 +162,9 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
-def build_config(env: Mapping[str, str]) -> dict[str, Any]:
+def build_config(
+    env: Mapping[str, str], grounding_dir: str = DEFAULT_GROUNDING_DIR
+) -> dict[str, Any]:
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
         "model": {
@@ -188,7 +190,7 @@ def build_config(env: Mapping[str, str]) -> dict[str, Any]:
             ),
         },
         # Project-context discovery reads AGENTS.md from here.
-        "terminal": {"cwd": GROUNDING_DIR},
+        "terminal": {"cwd": grounding_dir},
         # The top-level `toolsets` key is deprecated and ignored upstream; this
         # per-platform map is the one that is actually read.
         "platform_toolsets": {"slack": list(SLACK_TOOLSETS)},
@@ -246,7 +248,7 @@ def render(
     home_path.mkdir(parents=True, exist_ok=True)
     path = home_path / "config.yaml"
 
-    config = build_config(env)
+    config = build_config(env, grounding_dir=str(home_path / "grounding"))
     servers: dict[str, Any] = config.get("mcp_servers", {})
     summary: dict[str, Any] = {
         "config_path": str(path),
@@ -275,4 +277,4 @@ def render(
 
 if __name__ == "__main__":
     for key, value in render().items():
-        print(f"[brian] config {key}: {value}")
+        print(f"[agent] config {key}: {value}")

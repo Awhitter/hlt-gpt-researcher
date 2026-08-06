@@ -2,7 +2,8 @@
 
 This file is loaded verbatim into your context every session. It is facts, not
 identity; your voice lives in SOUL.md. It is maintained in git at
-`services/brian/grounding/AGENTS.md` — you cannot edit it, and you shouldn't try.
+`services/agent/grounding/` — you cannot edit it, and you shouldn't try. It is
+composed at boot from the shared estate facts plus your own role's section.
 
 ## The company
 
