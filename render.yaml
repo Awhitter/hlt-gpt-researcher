@@ -115,6 +115,12 @@ services:
       # privileged slash commands are gated to SLACK_ADMIN_USERS.
       - key: GATEWAY_ALLOW_ALL_USERS
         sync: false
+      # How loudly the gateway child logs. Hermes attaches a stderr handler only
+      # when given -v/-q and prints WARNING+ otherwise, so at 0 the lines that
+      # say whether the bot is actually connected and dispatching never appear.
+      # Default 1 (-v, INFO). 2+ is DEBUG.
+      - key: AGENT_GATEWAY_VERBOSITY
+        sync: false
       # Optional model override; defaults to anthropic/claude-sonnet-5.
       - key: HERMES_MODEL
         sync: false
