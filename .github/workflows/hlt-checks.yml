@@ -48,6 +48,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_hermes_boot.py \
+            tests/test_codegraph_auth.py \
             tests/test_hlt_extensions.py \
             tests/test_hlt_grounding.py \
             tests/test_hlt_scope_inference.py \

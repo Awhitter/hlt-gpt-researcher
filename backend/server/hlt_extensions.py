@@ -434,12 +434,20 @@ def _codegraph_repository_readiness() -> list[dict[str, Any]]:
     configured = os.getenv("CODEGRAPH_MCP_URL")
     if not configured:
         return []
-    health_url = re.sub(r"/mcp/?$", "/health", configured)
-    request = urllib.request.Request(health_url, method="GET")
+    # /readiness, not /health: the sidecar's public health endpoint is liveness
+    # only, because it is world-readable and index truth names private repos
+    # and their commit SHAs. This route needs the bearer token.
+    readiness_url = re.sub(r"/mcp/?$", "/readiness", configured)
+    token = os.getenv("CODEGRAPH_MCP_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    request = urllib.request.Request(readiness_url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - configured service URL
             body = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        # Say so. Swallowing this renders as an empty repo panel in the UI,
+        # which reads as "the estate has no repos" rather than "the probe failed".
+        logger.warning("Code-graph readiness probe failed (%s): %s", readiness_url, exc)
         return []
     repositories = body.get("repositories") if isinstance(body, dict) else None
     result = repositories if isinstance(repositories, list) else []
