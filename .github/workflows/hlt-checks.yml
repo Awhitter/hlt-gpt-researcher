@@ -1,0 +1,88 @@
+# The HLT overlay's own CI.
+#
+# The three workflows this repo inherited from upstream all no-op here:
+# build.yml and deploy.yml trigger on `master` (this fork's default branch is
+# `main`), and docker-build.yml is workflow_dispatch-only with its
+# pull_request trigger commented out. So until this file existed, nothing ran
+# on any HLT pull request — which is how a bypassable auth matcher and a
+# sidecar that had never started both reached production looking green.
+#
+# Scope is deliberate: only tests that pass with no API keys and no network.
+# A check that needs a secret is a check that silently skips.
+name: HLT checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: hlt-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: HLT backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      # Explicit list rather than the whole tests/ tree: the rest of the suite
+      # reaches for OPENAI_API_KEY / TAVILY_API_KEY and would fail or skip.
+      - name: Run HLT tests
+        run: |
+          pytest -q \
+            tests/test_hermes_boot.py \
+            tests/test_hlt_extensions.py \
+            tests/test_hlt_grounding.py \
+            tests/test_hlt_scope_inference.py \
+            tests/test_mcp_scope_params.py \
+            tests/test_mcp_server_health.py \
+            tests/test_websocket_manager.py \
+            tests/test_firecrawl_retriever.py \
+            tests/test_report_artifacts.py \
+            tests/test_research_run_store.py
+
+  frontend:
+    name: Team UI tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend/nextjs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/nextjs/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The team gate is one regex; middleware.matcher.test.mjs is what stops
+      # it silently reopening. teamAccess.test.mjs needs the typescript dep,
+      # which is why it runs after install rather than standalone.
+      - name: Run team-access and middleware gate tests
+        run: node --test middleware.matcher.test.mjs lib/teamAccess.test.mjs
