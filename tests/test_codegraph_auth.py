@@ -9,17 +9,31 @@ to anyone who knew the hostname. Both are pinned here.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 SERVICE_DIR = Path(__file__).resolve().parents[1] / "services" / "codegraph"
-sys.path.insert(0, str(SERVICE_DIR))
 
 pytest.importorskip("mcp.server.fastmcp")
-import server  # noqa: E402  (path set above)
+
+
+def _load(module_name: str, path: Path):
+    """Load a service module by path, WITHOUT touching sys.path.
+
+    `services/codegraph/server.py` would otherwise shadow the `server` package
+    that `backend.server.app` imports, breaking every test module collected
+    after this one in the same process.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+server = _load("hlt_codegraph_server", SERVICE_DIR / "server.py")
 
 TOKEN = "s3cret-token"
 

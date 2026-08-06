@@ -9,8 +9,8 @@ vars happen to be set.
 """
 from __future__ import annotations
 
+import importlib.util
 import re
-import sys
 from pathlib import Path
 
 import pytest
@@ -18,9 +18,22 @@ import pytest
 yaml = pytest.importorskip("yaml")
 
 SERVICE_DIR = Path(__file__).resolve().parents[1] / "services" / "hermes"
-sys.path.insert(0, str(SERVICE_DIR))
 
-import render_config  # noqa: E402  (path set above)
+
+def _load(module_name: str, path: Path):
+    """Load a service module by path, WITHOUT touching sys.path.
+
+    Prepending a service directory to sys.path leaks into every test module
+    collected after this one — `services/codegraph/server.py` shadowing the
+    `server` package is exactly how that bites.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+render_config = _load("hlt_hermes_render_config", SERVICE_DIR / "render_config.py")
 
 # The interpolation pattern Hermes itself uses (hermes_cli/config.py).
 HERMES_ENV_REF = re.compile(r"\$\{([^}]+)\}")
