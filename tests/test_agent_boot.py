@@ -91,12 +91,23 @@ def test_slack_toolset_is_pinned_in_the_config_hermes_reads():
     wrong one leaves the default full-access preset in force.
     """
     config = render_config.build_config(FULL_ENV)
-    assert config["platform_toolsets"]["slack"] == list(render_config.SLACK_TOOLSETS)
+    granted = config["platform_toolsets"]["slack"]
+
+    # Every pinned toolset is granted, plus one `mcp-<server>` per mounted
+    # server — that suffix is not decoration, it is what actually hands the
+    # agent her Linear and codegraph tools.
+    assert granted == render_config.slack_toolsets(config["mcp_servers"])
+    for toolset in render_config.SLACK_TOOLSETS:
+        assert toolset in granted
 
 
 def test_brian_can_still_do_his_job():
-    """Locking down must not remove research capability."""
-    for tool in ("web", "search", "memory", "skills", "clarify"):
+    """Locking down must not remove research capability.
+
+    `search` is gone on purpose — it is web_search alone and `web` already
+    bundles web_search + web_extract.
+    """
+    for tool in ("web", "memory", "skills", "clarify"):
         assert tool in render_config.SLACK_TOOLSETS
 
 
@@ -559,3 +570,50 @@ def test_an_unreachable_check_never_condemns_a_working_key(monkeypatch):
 
     assert health_gateway.openrouter_key_kind("sk-or-v1-whatever") == "unknown"
     assert health_gateway.openrouter_key_kind("") == "unknown"
+
+
+def test_mcp_tools_are_actually_granted_to_slack():
+    """Mounting an MCP server does not give the agent its tools.
+
+    `platform_toolsets` is an ALLOWLIST and every MCP server registers under a
+    dynamic toolset named `mcp-<server>`. Cleo shipped with all four servers
+    mounted and none of them listed, so /health reported
+    `mcp_mounted: [codegraph, gpt-researcher, katailyst2, linear]` and
+    `mcp_without_token: []` — both true — while she had not one of their tools
+    and told a teammate they were "not actually available to me in this
+    session".
+    """
+    config = render_config.build_config(FULL_ENV)
+    granted = config["platform_toolsets"]["slack"]
+
+    for name in ("codegraph", "gpt-researcher", "katailyst2", "linear"):
+        assert name in config["mcp_servers"], f"{name} should be mounted"
+        assert f"mcp-{name}" in granted, f"{name} is mounted but its tools are not granted"
+
+
+def test_an_unconfigured_server_is_not_granted():
+    """The grant list is derived from what is mounted, so it cannot drift."""
+    env = {k: v for k, v in FULL_ENV.items() if not k.startswith("LINEAR_")}
+    config = render_config.build_config(env)
+
+    assert "linear" not in config["mcp_servers"]
+    assert "mcp-linear" not in config["platform_toolsets"]["slack"]
+
+
+def test_media_backends_are_reported(tmp_path):
+    """The image/audio tools load without their key and fail at call time."""
+    summary = render_config.render(env=FULL_ENV, home=tmp_path)
+    assert summary["media_backends"] == {"image_generate": False, "text_to_speech": False}
+
+    with_keys = render_config.render(
+        env={**FULL_ENV, "FAL_KEY": "fal-x", "ELEVENLABS_API_KEY": "el-x"}, home=tmp_path
+    )
+    assert with_keys["media_backends"] == {"image_generate": True, "text_to_speech": True}
+
+
+def test_slack_gets_its_own_prompt_guidance():
+    config = render_config.build_config(FULL_ENV)
+    hint = config["platform_hints"]["slack"]["append"]
+
+    assert "did NOT build this system" in hint
+    assert "NUR-123" in hint, "grounding an answer in an identifier is the point"
