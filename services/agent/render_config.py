@@ -44,15 +44,75 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 #
 # Excluded on purpose: terminal, execute_code, cronjob, computer_use, browser,
 # and `file` (there is no read-only variant — it grants write_file and patch).
+#
+# `cronjob` stays out even though it is tempting for the weekly brief: a
+# scheduled job runs UNATTENDED with the agent's whole toolset, so anyone who
+# can @mention her could leave something running that files Linear issues with
+# nobody watching. Schedule briefs from the operator side instead.
+#
+# `delegation` is in, and it is safe here for a specific reason —
+# `tools/delegate_tool.py`: "Subagents inherit the parent's toolsets", with
+# child-blocked tools and `delegation` itself stripped. A child therefore gets
+# THIS narrow list, not the full CLI toolset, so it is not an escape hatch.
+# Verify that still holds before trusting it after an upstream bump.
+#
+# `search` was dropped as redundant: it is web_search alone, and `web` already
+# bundles web_search + web_extract.
 SLACK_TOOLSETS: tuple[str, ...] = (
     "web",
-    "search",
     "vision",
     "skills",
     "todo",
     "memory",
     "session_search",
     "clarify",
+    # Break a big "explain the whole architecture" ask into parallel readers.
+    "delegation",
+    # Diagrams and a listen-later summary — image_generate needs FAL_KEY,
+    # text_to_speech uses ElevenLabs when ELEVENLABS_API_KEY is set.
+    "image_gen",
+    "tts",
+)
+
+# One-tap starters at the Agent/Assistant entry point (Slack caps this at 4).
+# Written as a new hire would ask them, not as an insider would.
+SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
+    {
+        "title": "What shipped this week?",
+        "message": "What shipped in Nursing Mastery this week, and what's still in flight?",
+    },
+    {
+        "title": "Explain a subsystem",
+        "message": "I'm new here. Explain how the job board gets its jobs, and point me at the files.",
+    },
+    {
+        "title": "Where do I start?",
+        "message": "I just joined. What are the three things I should understand first about this codebase, and what will confuse me?",
+    },
+    {
+        "title": "What's on the board?",
+        "message": "What's in progress on the NUR team right now, and is anything stuck?",
+    },
+)
+
+# The per-surface guidance Hermes injects into the system prompt's STABLE tier
+# (see upstream `developer-guide/prompt-assembly.md`). `append` keeps the
+# built-in Slack hint and adds ours after it; a byte-stable string here does not
+# break prompt caching. This is the supported way to shape behaviour per
+# surface — the alternative is editing her SOUL, which applies everywhere.
+SLACK_PLATFORM_HINT = (
+    "You are answering in Slack, for a team that did NOT build this system. "
+    "Assume the reader is new: define a term the first time you use it, and "
+    "never assume they know which repo owns what.\n"
+    "Always ground an answer. Cite the Linear identifier (NUR-123), the file "
+    "path, or the doc you read it in — an unsourced claim about this estate is "
+    "worth nothing, because parts of it have no author who remembers.\n"
+    "When you do not know, say so and say how you would find out. That is a "
+    "better answer here than a confident guess.\n"
+    "Keep it to a few short paragraphs; this is a chat message, not a "
+    "document. Lead with the answer, then the evidence.\n"
+    "When a picture would explain a flow faster than prose, offer to generate "
+    "one. When someone asks for a summary they can take away, offer audio."
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
@@ -163,6 +223,23 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
         "feedback_buttons": True,
         "assistant_thread_titles": True,
         "user_allowed_commands": list(USER_ALLOWED_COMMANDS),
+        # Slack renders these as one-tap starters at the Agent/Assistant entry
+        # point. A new engineer opening her for the first time should not have
+        # to guess what she is for — max 4, and they are the four questions
+        # this whole agent exists to answer.
+        "suggested_prompts": list(SUGGESTED_PROMPTS),
+        # Shown in the composer footer while she works. The default is
+        # "is thinking...", which says nothing about a bot that may be doing a
+        # multi-minute read across five repos.
+        "typing_status_text": "is digging through the estate…",
+        # "none" ignores every bot; "mentions" accepts a bot message only when
+        # that message itself @mentions her. Agents posting on a human's behalf
+        # (the Claude Slack app, other HLT bots) carry an app id and are
+        # otherwise dropped in silence — which is exactly what made her look
+        # dead during setup while she was working fine. "mentions" is upstream's
+        # documented safest bot-to-bot mode: it cannot loop, because a reply
+        # without an explicit mention is still ignored.
+        "allow_bots": "mentions",
     }
     admins = _csv(env, "SLACK_ADMIN_USERS")
     if admins:
@@ -185,9 +262,31 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
+def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
+    """The Slack allowlist, including one entry per configured MCP server.
+
+    `platform_toolsets` is an ALLOWLIST, and every MCP server registers its
+    tools under a dynamic toolset named `mcp-<server>` (`tools/mcp_tool.py`:
+    `toolset_name = f"mcp-{self.name}"`). Listing the servers under
+    `mcp_servers` connects them; it does NOT grant their tools to a platform
+    whose toolset list omits them.
+
+    Cleo shipped that way. `/health` reported
+    `mcp_mounted: [codegraph, gpt-researcher, katailyst2, linear]` and
+    `mcp_without_token: []` — both true — while she had not one of their tools
+    and told a teammate: "they're not actually available to me in this
+    session." Connected is not granted.
+
+    Derived from the servers actually configured, so adding an MCP server
+    grants it automatically and an unconfigured one never appears.
+    """
+    return list(SLACK_TOOLSETS) + sorted(f"mcp-{name}" for name in servers)
+
+
 def build_config(
     env: Mapping[str, str], grounding_dir: str = DEFAULT_GROUNDING_DIR
 ) -> dict[str, Any]:
+    servers = build_mcp_servers(env)
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
         "model": {
@@ -216,7 +315,11 @@ def build_config(
         "terminal": {"cwd": grounding_dir},
         # The top-level `toolsets` key is deprecated and ignored upstream; this
         # per-platform map is the one that is actually read.
-        "platform_toolsets": {"slack": list(SLACK_TOOLSETS)},
+        "platform_toolsets": {"slack": slack_toolsets(servers)},
+        # Per-surface prompt guidance. Top-level key, NOT under `platforms` —
+        # a third Slack namespace, and putting it in the wrong one is silently
+        # ignored like every other misplaced Slack key in this file.
+        "platform_hints": {"slack": {"append": SLACK_PLATFORM_HINT}},
         "slack": build_slack(env),
         "platforms": build_platforms(env),
         "memory": {
@@ -247,7 +350,6 @@ def build_config(
     if fallback:
         config["fallback_providers"] = fallback
 
-    servers = build_mcp_servers(env)
     if servers:
         config["mcp_servers"] = servers
     return config
@@ -285,6 +387,13 @@ def render(
             if (_clean(env, "GATEWAY_ALLOW_ALL_USERS") or "").lower() == "true"
             else ("allowlist" if _csv(env, "SLACK_ALLOWED_USERS") else "none")
         ),
+        # The image and audio toolsets are loaded either way; without their key
+        # the tool exists and fails at call time, so the agent offers a diagram
+        # and then cannot produce one. Report the credential, not the toolset.
+        "media_backends": {
+            "image_generate": bool(_clean(env, "FAL_KEY")),
+            "text_to_speech": bool(_clean(env, "ELEVENLABS_API_KEY")),
+        },
         "mcp_mounted": sorted(servers),
         "mcp_unconfigured": [n for n, _, _ in MCP_TARGETS if n not in servers],
         "mcp_without_token": sorted(
