@@ -413,6 +413,26 @@ def _load_health_gateway():
                 sys.modules[name] = previous
 
 
+# `run` is not decoration: -v/-q/--external-supervisor live on the `run`
+# sub-subparser, so `hermes gateway -v` is an argparse error that crash-loops
+# the child. The Dockerfile asserts the real parser still accepts these.
+BASE_ARGV = ["hermes", "gateway", "run", "--external-supervisor"]
+
+
+def test_the_verbosity_flag_goes_where_upstream_declares_it():
+    """`hermes gateway -v` is an argparse error, not a verbose gateway.
+
+    Shipping that put the container in a restart loop: argparse printed usage,
+    exited non-zero, and the supervisor just saw a child that would not stay
+    up. Bare `hermes gateway` and `hermes gateway run` take the same code path
+    upstream, so naming `run` costs nothing and makes the flags legal.
+    """
+    cmd = _load_health_gateway().gateway_command()
+
+    assert cmd[:3] == ["hermes", "gateway", "run"]
+    assert cmd.index("run") < cmd.index("-v"), "flags must follow the run subcommand"
+
+
 def test_the_gateway_child_logs_at_info_by_default():
     """Without -v Hermes prints WARNING and above, and nothing else.
 
@@ -423,21 +443,21 @@ def test_the_gateway_child_logs_at_info_by_default():
     process was alive, /health was green, and no Slack event ever arrived with
     not one line to say so.
     """
-    assert _load_health_gateway().gateway_command() == ["hermes", "gateway", "-v"]
+    assert _load_health_gateway().gateway_command() == BASE_ARGV + ["-v"]
 
 
 def test_verbosity_is_operator_tunable():
     health_gateway = _load_health_gateway()
 
-    assert health_gateway.gateway_command("0") == ["hermes", "gateway"]
-    assert health_gateway.gateway_command("2") == ["hermes", "gateway", "-vv"]
+    assert health_gateway.gateway_command("0") == BASE_ARGV
+    assert health_gateway.gateway_command("2") == BASE_ARGV + ["-vv"]
     # argparse counts repeats; -vvv is already DEBUG, so more adds nothing.
-    assert health_gateway.gateway_command("9") == ["hermes", "gateway", "-vvv"]
+    assert health_gateway.gateway_command("9") == BASE_ARGV + ["-vvv"]
 
 
 def test_a_junk_verbosity_still_boots_the_gateway():
     """A typo in an env var must not take the bot down or silence it."""
     health_gateway = _load_health_gateway()
 
-    assert health_gateway.gateway_command("loud") == ["hermes", "gateway", "-v"]
-    assert health_gateway.gateway_command("") == ["hermes", "gateway", "-v"]
+    assert health_gateway.gateway_command("loud") == BASE_ARGV + ["-v"]
+    assert health_gateway.gateway_command("") == BASE_ARGV + ["-v"]

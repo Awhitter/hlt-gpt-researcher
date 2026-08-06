@@ -52,8 +52,19 @@ GATEWAY_VERBOSITY = os.getenv("AGENT_GATEWAY_VERBOSITY", "1")
 
 
 def gateway_command(verbosity: str = GATEWAY_VERBOSITY) -> list[str]:
-    """The argv for the gateway child, including its verbosity flag."""
-    cmd = ["hermes", "gateway"]
+    """The argv for the gateway child.
+
+    ``run`` must be explicit. Bare ``hermes gateway`` takes the same code path
+    (``_gateway_command_inner``: "if subcmd is None or subcmd == 'run'"), but
+    -v/-q/--external-supervisor are declared on the ``run`` sub-subparser, so
+    `hermes gateway -v` is an argparse error, not a verbose gateway.
+
+    ``--external-supervisor`` tells Hermes a process manager owns this
+    foreground gateway, which is exactly true here: an in-chat restart or
+    update then exits back to us to be restarted, instead of spawning a
+    detached replacement that would leave two dispatchers on one Slack app.
+    """
+    cmd = ["hermes", "gateway", "run", "--external-supervisor"]
     try:
         level = int(verbosity)
     except (TypeError, ValueError):

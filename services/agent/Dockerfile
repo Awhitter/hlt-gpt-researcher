@@ -22,6 +22,21 @@ RUN git clone --depth=1 --branch "${HERMES_REF}" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; }
 
+# The gateway argv must be one upstream actually accepts. `hermes gateway -v`
+# parses as an unknown arg: -v/-q/--external-supervisor are declared on the
+# `gateway run` sub-subparser, not on `gateway`. argparse then prints usage and
+# exits non-zero, which the supervisor sees only as a crash-looping child — the
+# flag we added to make failures visible instead made the gateway unbootable.
+# Assert the real parser accepts them, so an upstream rename is a red build.
+RUN set -e; \
+    hermes gateway run --help > /tmp/gw-help.txt 2>&1 \
+      || { echo "hermes gateway run --help failed:"; cat /tmp/gw-help.txt; exit 1; }; \
+    for flag in --verbose --external-supervisor; do \
+      grep -q -- "$flag" /tmp/gw-help.txt \
+        || { echo "gateway run no longer accepts $flag"; cat /tmp/gw-help.txt; exit 1; }; \
+    done; \
+    rm -f /tmp/gw-help.txt
+
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
