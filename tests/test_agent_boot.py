@@ -461,3 +461,101 @@ def test_a_junk_verbosity_still_boots_the_gateway():
 
     assert health_gateway.gateway_command("loud") == BASE_ARGV + ["-v"]
     assert health_gateway.gateway_command("") == BASE_ARGV + ["-v"]
+
+
+# --- the model credential ---------------------------------------------------
+
+
+def _load_health_gateway():
+    """Load health_gateway.py without putting the service dir on sys.path.
+
+    It does bare ``import grounding`` / ``import render_config``, which normally
+    needs sys.path. Pre-seeding sys.modules under those names resolves them from
+    the copies this module already loaded, so the import works and nothing leaks
+    into the modules collected after this one.
+    """
+    import sys
+
+    saved = {name: sys.modules.get(name) for name in ("grounding", "render_config")}
+    sys.modules["grounding"] = grounding
+    sys.modules["render_config"] = render_config
+    try:
+        return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def _fake_openrouter(monkeypatch, *, payload=None, http_status=None, boom=False):
+    """Stand in for OpenRouter's /api/v1/key without touching the network."""
+    import io
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    class _Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _urlopen(request, timeout=None):
+        if boom:
+            raise OSError("dns went away")
+        if http_status is not None:
+            raise urllib.error.HTTPError(
+                "https://openrouter.ai/api/v1/key", http_status, "nope", {}, None
+            )
+        return _Response(_json.dumps({"data": payload or {}}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+
+
+def test_a_provisioning_key_is_not_a_working_credential(monkeypatch):
+    """OpenRouter's two key kinds are indistinguishable by shape.
+
+    A provisioning key authenticates fine and is then refused for every
+    completion with 401 "User not found." Cleo shipped on one and answered
+    every message "Provider authentication failed", while /health reported
+    openrouter_key_present: true — present, and useless.
+    """
+    health_gateway = _load_health_gateway()
+    _fake_openrouter(
+        monkeypatch, payload={"is_provisioning_key": True, "is_management_key": True}
+    )
+
+    assert health_gateway.openrouter_key_kind("sk-or-v1-whatever") == "provisioning"
+
+
+def test_a_real_inference_key_reads_as_usable(monkeypatch):
+    health_gateway = _load_health_gateway()
+    _fake_openrouter(
+        monkeypatch, payload={"is_provisioning_key": False, "is_management_key": False}
+    )
+
+    assert health_gateway.openrouter_key_kind("sk-or-v1-whatever") == "inference"
+
+
+def test_a_rejected_key_is_reported_as_rejected(monkeypatch):
+    health_gateway = _load_health_gateway()
+    _fake_openrouter(monkeypatch, http_status=401)
+
+    assert health_gateway.openrouter_key_kind("sk-or-v1-whatever") == "rejected"
+
+
+def test_an_unreachable_check_never_condemns_a_working_key(monkeypatch):
+    """A flaky network must not make a healthy agent look broken.
+
+    "unknown" is the only honest answer when the check itself could not run,
+    and /health treats it as such — degrade only on a positively-identified
+    bad key.
+    """
+    health_gateway = _load_health_gateway()
+    _fake_openrouter(monkeypatch, boom=True)
+
+    assert health_gateway.openrouter_key_kind("sk-or-v1-whatever") == "unknown"
+    assert health_gateway.openrouter_key_kind("") == "unknown"
