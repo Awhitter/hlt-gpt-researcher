@@ -26,9 +26,32 @@ REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 #
 # What actually stops the outage is the freshness guard below: the OOM kills the
 # whole container (indexer and MCP server share it), Render restarts, and the
-# boot reindex used to immediately re-run the work that caused the OOM. The real
-# fixes are a larger plan or moving indexing out of the web service; until then a
-# repo too big to index stays stale instead of taking the service down with it.
+# boot reindex used to immediately re-run the work that caused the OOM.
+#
+# And the indexer CANNOT be moved to a cron job, which is the obvious next idea:
+# Render disks are "accessible by only a single service instance" and "you can't
+# add a disk to a cron job service", so a separate service has nowhere to write
+# the index this one serves. Indexing has to live here, which means the only
+# levers are the size of the work and the size of the plan.
+
+# Repos to leave alone entirely. A repo whose FULL rebuild does not fit in the
+# container is unrecoverable once gitnexus sets its incrementalInProgress flag:
+# every later run is forced down the full-rebuild path and OOMs the container,
+# taking the MCP server with it. Listing it here keeps its last good index on
+# disk and served, at the cost of that index going stale — a stale answer beats
+# a daily outage. Remove the entry once the plan can hold the rebuild.
+SKIP_REPOS="${CODEGRAPH_SKIP_REPOS:-}"
+
+is_skipped() {
+  local slug="$1"
+  [[ -z "$SKIP_REPOS" ]] && return 1
+  local entry
+  IFS=',' read -ra _skips <<< "$SKIP_REPOS"
+  for entry in "${_skips[@]}"; do
+    [[ "$(echo "$entry" | xargs)" == "$slug" ]] && return 0
+  done
+  return 1
+}
 
 # Skip repos indexed more recently than this. A container restart must not mean
 # a fresh full index of everything: that is what made a single OOM self-
@@ -80,6 +103,14 @@ FAILED_REPOS=()
 index_repo() {
   local slug="$1"
   local full="$2"
+  if is_skipped "$slug"; then
+    local stamp="$REPOS_DIR/$slug/.hlt-indexed-at"
+    local since="never indexed"
+    [[ -f "$stamp" ]] && since="last indexed $(cat "$stamp")"
+    echo "[codegraph] SKIPPING $slug — in CODEGRAPH_SKIP_REPOS ($since)." \
+         "Its index is FROZEN and answers about it will go stale." >&2
+    return
+  fi
   if is_fresh "$slug"; then
     echo "[codegraph] $slug indexed $(cat "$REPOS_DIR/$slug/.hlt-indexed-at") — still fresh, skipping"
     return
