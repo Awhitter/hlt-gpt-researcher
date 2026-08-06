@@ -1,13 +1,20 @@
-# Slack app manifest for the HLT Hermes brain.
+# Slack app manifest for Brian, the Mastery Researcher.
 # Create the app at https://api.slack.com/apps → "Create New App" →
 # "From an app manifest" → pick the HLT workspace → paste this file.
+#
+# This is a hand-maintained minimal manifest, and it is complete enough to run.
+# Once Brian is live you can regenerate a richer one (native slash commands,
+# assistant/agent view) from inside the container with:
+#     hermes slack manifest --write
+# Slack's agent view is one-way — it cannot be reverted to assistant view — so
+# read what that command produces before applying it.
 display_information:
-  name: Mastery Brain
-  description: HLT estate brain — ask about the codebase, research, roadmap.
-  background_color: "#1a1a2e"
+  name: Brian
+  description: Mastery Researcher — ask about our code, our numbers, or the open web.
+  background_color: "#06101C"
 features:
   bot_user:
-    display_name: mastery-brain
+    display_name: brian
     always_online: true
   app_home:
     messages_tab_enabled: true
@@ -31,6 +38,10 @@ oauth_config:
       - users:read
       - files:read
       - files:write
+      # Native slash commands (/status, /new, /queue …).
+      - commands
+      # Assistant/agent view: thread titles and suggested prompts.
+      - assistant:write
 settings:
   event_subscriptions:
     bot_events:
