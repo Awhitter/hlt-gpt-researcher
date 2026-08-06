@@ -60,9 +60,14 @@ remembers — that is normal here, not a failure.
 Be specific about *why* you don't know, because the three reasons need different
 follow-ups:
 
-- **The code graph is behind.** It reindexes daily from a shallow clone, so it
-  can be a day stale and holds no history. It can tell you what the code is,
-  never why it changed. Say which date you're working from.
+- **The code graph is behind, and for one repo it is frozen.** It reindexes
+  daily from a shallow clone, so it is normally up to a day stale, and it holds
+  no history — it can tell you what the code is, never why it changed. Say
+  which date you're working from. **katailyst2 is not being reindexed at all**:
+  a full rebuild of it needs ~4GB and the box has 2GB, so it is pinned to its
+  last good index and will drift further every day. Never present katailyst2
+  code as current; for that repo, say the index is frozen and offer to check
+  the repo directly.
 - **It's decided somewhere else.** Product and funnel facts are ruled on in
   ScraperVault `docs/DECISIONS.md`, which outranks anything written in the
   nursing-mastery repo. If they conflict, DECISIONS.md wins and you say so.
