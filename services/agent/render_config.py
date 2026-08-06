@@ -356,6 +356,19 @@ def build_config(
         },
         # Project-context discovery reads AGENTS.md from here.
         "terminal": {"cwd": grounding_dir},
+        # Upstream default is `edge`, and having ELEVENLABS_API_KEY set is
+        # deliberately NOT enough — "Inference credentials do not imply consent
+        # to paid speech generation" (tools/tts_tool.py). So the tool gate
+        # `check_tts_requirements` returned False and text_to_speech was
+        # unavailable every turn while /health cheerfully reported the key
+        # present. Naming the provider is the opt-in.
+        "tts": {"provider": "elevenlabs"},
+        # web_search/web_extract are gated by `check_web_api_key`, which needs a
+        # backend that actually resolves. With none configured the whole `web`
+        # toolset was dead — she could not search at all. `ddgs` is in upstream's
+        # backend list and needs no API key, so it is the honest default; set
+        # WEB_SEARCH_BACKEND to move to a paid one (tavily, exa, firecrawl…).
+        "web": {"backend": _clean(env, "WEB_SEARCH_BACKEND") or "ddgs"},
         # The top-level `toolsets` key is deprecated and ignored upstream; this
         # per-platform map is the one that is actually read.
         "platform_toolsets": {"slack": slack_toolsets(servers)},
