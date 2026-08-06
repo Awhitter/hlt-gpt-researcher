@@ -385,3 +385,59 @@ def test_company_facts_ship_in_the_image_not_in_memory(tmp_path):
     assert summary["briefing_sections"] == ["shared", "cleo"]
     assert not (tmp_path / "memories").exists(), "boot must not pre-seed agent memory"
     assert not (tmp_path / "memory").exists(), "the old wrong-directory seeding is gone"
+
+
+# --- the gateway child's own logging ----------------------------------------
+
+
+def _load_health_gateway():
+    """Load health_gateway.py without putting the service dir on sys.path.
+
+    It does bare ``import grounding`` / ``import render_config``, which normally
+    needs sys.path. Pre-seeding sys.modules under those names resolves them from
+    the copies this module already loaded, so the import works and nothing leaks
+    into the modules collected after this one.
+    """
+    import sys
+
+    saved = {name: sys.modules.get(name) for name in ("grounding", "render_config")}
+    sys.modules["grounding"] = grounding
+    sys.modules["render_config"] = render_config
+    try:
+        return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def test_the_gateway_child_logs_at_info_by_default():
+    """Without -v Hermes prints WARNING and above, and nothing else.
+
+    "Connecting to slack...", the connected confirmation, per-message dispatch
+    and authorization denials are all INFO. Run quiet and a bot that is
+    connected to nothing produces a log stream indistinguishable from a healthy
+    one — which is exactly what happened here: the adapter was present, the
+    process was alive, /health was green, and no Slack event ever arrived with
+    not one line to say so.
+    """
+    assert _load_health_gateway().gateway_command() == ["hermes", "gateway", "-v"]
+
+
+def test_verbosity_is_operator_tunable():
+    health_gateway = _load_health_gateway()
+
+    assert health_gateway.gateway_command("0") == ["hermes", "gateway"]
+    assert health_gateway.gateway_command("2") == ["hermes", "gateway", "-vv"]
+    # argparse counts repeats; -vvv is already DEBUG, so more adds nothing.
+    assert health_gateway.gateway_command("9") == ["hermes", "gateway", "-vvv"]
+
+
+def test_a_junk_verbosity_still_boots_the_gateway():
+    """A typo in an env var must not take the bot down or silence it."""
+    health_gateway = _load_health_gateway()
+
+    assert health_gateway.gateway_command("loud") == ["hermes", "gateway", "-v"]
+    assert health_gateway.gateway_command("") == ["hermes", "gateway", "-v"]

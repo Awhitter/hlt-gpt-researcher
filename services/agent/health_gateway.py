@@ -41,6 +41,28 @@ GATEWAY_ENABLED = os.getenv("AGENT_ENABLE_GATEWAY", "0") == "1"
 MAX_RESTARTS = 5
 BACKOFF_CAP_SECONDS = 60
 
+# Hermes only attaches a stderr handler when the CLI is given -v/-q, and with no
+# flag it prints WARNING and above. Every line describing whether the bot is
+# actually working — "Connecting to slack...", the connected confirmation, the
+# per-message dispatch, and an authorization denial — is INFO. Running without
+# -v therefore produces a log stream that looks healthy for a bot that is
+# connected to nothing, which is the exact failure this service exists to make
+# visible. Default to -v; 0 restores upstream's quiet default and 2+ gives DEBUG.
+GATEWAY_VERBOSITY = os.getenv("AGENT_GATEWAY_VERBOSITY", "1")
+
+
+def gateway_command(verbosity: str = GATEWAY_VERBOSITY) -> list[str]:
+    """The argv for the gateway child, including its verbosity flag."""
+    cmd = ["hermes", "gateway"]
+    try:
+        level = int(verbosity)
+    except (TypeError, ValueError):
+        level = 1
+    if level > 0:
+        # -v, -vv, -vvv — argparse counts the repeats.
+        cmd.append("-" + "v" * min(level, 3))
+    return cmd
+
 app = FastAPI(title="HLT agent")
 
 
@@ -107,7 +129,9 @@ class GatewaySupervisor:
             with self._lock:
                 # Inherit stdout/stderr so Hermes' own logs land in Render's log
                 # stream, which is where anyone debugging this will actually look.
-                self._proc = subprocess.Popen(["hermes", "gateway"], cwd=str(HERMES_HOME))
+                cmd = gateway_command()
+                logger.info("gateway argv: %s", " ".join(cmd))
+                self._proc = subprocess.Popen(cmd, cwd=str(HERMES_HOME))
                 self._started_at = time.time()
                 proc = self._proc
 
