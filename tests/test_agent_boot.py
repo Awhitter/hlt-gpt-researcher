@@ -701,3 +701,19 @@ def test_mounted_servers_without_the_mcp_sdk_are_reported_dead():
 
     assert supervisor.mcp_sdk_available == (_iu.find_spec("mcp") is not None)
     assert "mcp_sdk_available" in supervisor.snapshot()
+
+
+def test_paid_speech_needs_an_explicit_provider():
+    """`check_tts_requirements` resolves the CONFIGURED provider, and upstream
+    defaults to `edge` — a key alone leaves text_to_speech gated off every turn
+    ("Inference credentials do not imply consent to paid speech generation").
+    """
+    assert render_config.build_config(FULL_ENV)["tts"]["provider"] == "elevenlabs"
+
+
+def test_web_search_has_a_backend_that_needs_no_key():
+    """With no backend configured `check_web_api_key` is False and the whole
+    `web` toolset is unavailable — she cannot search at all."""
+    assert render_config.build_config(FULL_ENV)["web"]["backend"] == "ddgs"
+    override = render_config.build_config({**FULL_ENV, "WEB_SEARCH_BACKEND": "tavily"})
+    assert override["web"]["backend"] == "tavily"
