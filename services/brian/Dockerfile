@@ -22,9 +22,14 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
-RUN chmod +x /app/entrypoint.sh /app/seed_memory.py \
+# /app/grounding holds AGENTS.md — Brian's durable briefing, loaded by Hermes'
+# project-context discovery from terminal.cwd. It stays root-owned and
+# world-readable so the agent can read it but never rewrite its own facts.
+RUN chmod +x /app/entrypoint.sh \
     && mkdir -p /data/hermes \
-    && chown -R hermes:hermes /app /data /opt/hermes
+    && chown -R hermes:hermes /app /data /opt/hermes \
+    && chown -R root:root /app/grounding \
+    && chmod -R a-w,a+rX /app/grounding
 
 ENV HERMES_HOME=/data/hermes
 ENV PORT=8080

@@ -1,14 +1,15 @@
-"""Port-owner and supervisor for the ``hlt-hermes`` Render service.
+"""Port-owner and supervisor for Brian, the Mastery Researcher.
 
 Render runs this as a **web service**: something has to bind ``$PORT`` or the
-health check fails and the deploy is rolled back. Hermes' own Slack gateway
-talks to Slack over Socket Mode — an outbound WebSocket — and never binds a
-port, so it cannot be the container's main process on its own.
+health check fails and the deploy is rolled back. Hermes' Slack gateway talks
+to Slack over Socket Mode — an outbound WebSocket — and never binds a port, so
+it cannot be the container's main process on its own.
 
-So this module owns the port, boots Hermes' config, supervises the gateway as
+So this module owns the port, boots Brian's config, supervises the gateway as
 a child process, and reports what actually happened. ``/health`` answers from
-observed state (is the child alive? did the config get written?) rather than
-from "an env var is set", so a green check means the agent is really up.
+observed state (is the child alive? did the config get written? which tools is
+he allowed?) rather than from "an env var is set", so a green check means the
+agent is really up and really constrained.
 """
 from __future__ import annotations
 
@@ -25,21 +26,21 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 
+import grounding
 import render_config
-import seed_memory
 
-logging.basicConfig(level=logging.INFO, format="[hermes] %(levelname)s %(message)s")
-logger = logging.getLogger("hlt-hermes")
+logging.basicConfig(level=logging.INFO, format="[brian] %(levelname)s %(message)s")
+logger = logging.getLogger("brian")
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", "/data/hermes"))
-GATEWAY_ENABLED = os.getenv("HERMES_ENABLE_GATEWAY", "0") == "1"
+GATEWAY_ENABLED = os.getenv("BRIAN_ENABLE_GATEWAY", "0") == "1"
 
 # Give up after this many crashes so a bad config surfaces in /health instead
 # of hiding behind an endless restart loop.
 MAX_RESTARTS = 5
 BACKOFF_CAP_SECONDS = 60
 
-app = FastAPI(title="HLT Hermes")
+app = FastAPI(title="Brian — Mastery Researcher")
 
 
 class GatewaySupervisor:
@@ -77,7 +78,7 @@ class GatewaySupervisor:
 
     def start(self) -> None:
         if not GATEWAY_ENABLED:
-            logger.info("gateway disabled (HERMES_ENABLE_GATEWAY != 1) — serving health only")
+            logger.info("gateway disabled (BRIAN_ENABLE_GATEWAY != 1) — serving health only")
             return
         if not self.cli_present:
             self._gave_up_reason = (
@@ -138,20 +139,28 @@ BOOT: dict[str, Any] = {}
 
 
 def boot() -> None:
-    seed_memory.main()
+    BOOT.update(grounding.install())
     BOOT.update(render_config.render())
     for key, value in BOOT.items():
         logger.info("config %s: %s", key, value)
     if not BOOT.get("openrouter_key_present"):
-        logger.warning("OPENROUTER_API_KEY is not set — Hermes has no model credentials")
+        logger.warning("OPENROUTER_API_KEY is not set — Brian has no model credentials")
+    if GATEWAY_ENABLED and not BOOT.get("slack_admins_configured"):
+        # Hermes disables slash-command gating entirely when no admin list is
+        # configured, which means every workspace member can run /model, /yolo
+        # and /cron. Loud, because it is silent otherwise.
+        logger.warning(
+            "SLACK_ADMIN_USERS is unset — slash-command gating is DISABLED and "
+            "every workspace member can run every command"
+        )
+    if GATEWAY_ENABLED and not BOOT.get("slack_channel_allowlist"):
+        logger.warning("SLACK_ALLOWED_CHANNELS is unset — Brian will answer in any channel")
     supervisor.start()
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     gateway = supervisor.snapshot()
-    memory_dir = HERMES_HOME / "memory"
-    seeds = sorted(p.name for p in memory_dir.glob("*.md")) if memory_dir.exists() else []
 
     if not GATEWAY_ENABLED:
         status, mode = "ok", "readiness_gateway"
@@ -162,18 +171,17 @@ def health() -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "status": status,
-        "service": "hlt-hermes",
+        "service": "brian",
         "mode": mode,
         "hermes_home": str(HERMES_HOME),
-        "seeded_memory": seeds,
         "config": BOOT,
         "gateway": gateway,
     }
     if mode == "readiness_gateway":
         payload["note"] = (
-            "Hermes is installed and configured but the Slack gateway is off. "
-            "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and HERMES_ENABLE_GATEWAY=1 to "
-            "bring the agent up — see services/hermes/README.md."
+            "Brian is installed and configured but the Slack gateway is off. "
+            "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and BRIAN_ENABLE_GATEWAY=1 to "
+            "bring him up — see services/brian/README.md."
         )
     elif mode == "gateway_down":
         payload["note"] = gateway["stopped_reason"] or (

@@ -1,4 +1,4 @@
-# Mastery Brain sidecars on Render (codegraph + Hermes).
+# Mastery Research sidecars on Render (codegraph + Brian).
 # Apply via Render Dashboard → Blueprints after this lands on the default branch,
 # or: https://dashboard.render.com/blueprints/new?repo=https://github.com/Awhitter/hlt-gpt-researcher
 # GPT Researcher API/MCP stay on Railway; UI on Vercel.
@@ -44,12 +44,20 @@ services:
       - key: CODEGRAPH_MCP_TOKEN
         sync: false
 
+  # Brian, the Mastery Researcher.
+  #
+  # The service keeps the hostname `hlt-hermes`: Render cannot rename a service
+  # in place, and changing `name` here would make the blueprint create a second
+  # service and orphan this one's 5GB disk. The agent identity — bot name, K2
+  # registry row, docs, env prefix — is Brian. "Hermes" is only the upstream
+  # runtime, and must not be used as the agent's name: `agent:hermes` in
+  # Katailyst2 is the fleet orchestrator persona, a different thing entirely.
   - type: web
     name: hlt-hermes
     runtime: docker
     plan: starter
     region: oregon
-    rootDir: services/hermes
+    rootDir: services/brian
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     disk:
@@ -86,8 +94,19 @@ services:
       # The go-live switch. Declared here so it is visible as a knob, but left
       # dashboard-owned (sync: false) so a blueprint re-sync can't silently
       # switch the agent back off. Set to "1" once the Slack tokens exist.
-      - key: HERMES_ENABLE_GATEWAY
+      - key: BRIAN_ENABLE_GATEWAY
+        sync: false
+      # Slack user IDs allowed to run privileged slash commands (/model, /cron,
+      # /yolo). REQUIRED before going live: with no admin list, Hermes disables
+      # slash gating entirely and every workspace member can run every command.
+      - key: SLACK_ADMIN_USERS
+        sync: false
+      # Channel allowlist. Covers group DMs but NOT 1:1 DMs.
+      - key: SLACK_ALLOWED_CHANNELS
         sync: false
       # Optional model override; defaults to anthropic/claude-sonnet-5.
       - key: HERMES_MODEL
+        sync: false
+      # Comma-separated provider fallbacks for 429/503/overload.
+      - key: HERMES_FALLBACK_PROVIDERS
         sync: false

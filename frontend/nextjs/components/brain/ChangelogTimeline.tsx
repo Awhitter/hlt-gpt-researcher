@@ -61,7 +61,7 @@ export default function ChangelogTimeline() {
         </h2>
         <p className="mt-3 text-sm leading-relaxed text-slate-300">
           Plain-English releases across the estate. Select an entry to expand
-          details — Hermes and Linear can enrich this feed over time.
+          details — Brian and Linear can enrich this feed over time.
         </p>
       </header>
 
