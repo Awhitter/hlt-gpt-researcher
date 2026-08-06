@@ -109,6 +109,12 @@ services:
       # Channel allowlist. Covers group DMs but NOT 1:1 DMs.
       - key: SLACK_ALLOWED_CHANNELS
         sync: false
+      # "true" lets any workspace member talk to the agent. Hermes otherwise
+      # denies unknown senders outright, so without this the bot is silent for
+      # everyone. Safe only because the Slack toolset is read-only and
+      # privileged slash commands are gated to SLACK_ADMIN_USERS.
+      - key: GATEWAY_ALLOW_ALL_USERS
+        sync: false
       # Optional model override; defaults to anthropic/claude-sonnet-5.
       - key: HERMES_MODEL
         sync: false

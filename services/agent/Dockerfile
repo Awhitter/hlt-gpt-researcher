@@ -7,16 +7,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Hermes agent from upstream. This install is REQUIRED: a container without the
-# CLI can only ever serve a health stub, so fail the build loudly rather than
-# shipping a service that looks green and does nothing. Render keeps the last
+# Hermes agent from upstream, WITH the [slack] extra. slack-bolt and slack-sdk
+# are optional dependencies upstream, so a plain `-e /opt/hermes` builds and
+# runs fine and then logs "No adapter available for slack" at boot — the
+# gateway process stays alive serving cron, the health check stays green, and
+# the bot never connects to Slack at all. Both the CLI and the extra are
+# asserted here so that failure is a red build, not a silent one. Render keeps the last
 # live deploy when a build fails, so a broken upstream never takes the
 # service down.
 ARG HERMES_REF=main
 RUN git clone --depth=1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes \
-    && pip install --no-cache-dir -e /opt/hermes \
-    && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; }
+    && pip install --no-cache-dir -e "/opt/hermes[slack]" \
+    && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
+    && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; }
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

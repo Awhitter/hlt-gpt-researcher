@@ -13,6 +13,7 @@ agent is really up and really constrained.
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import shutil
@@ -59,6 +60,17 @@ class GatewaySupervisor:
     def cli_present(self) -> bool:
         return shutil.which("hermes") is not None
 
+    @property
+    def slack_adapter_available(self) -> bool:
+        """Whether Hermes can actually build a Slack adapter.
+
+        slack-bolt is an optional extra upstream. Without it the gateway starts,
+        logs "No adapter available for slack", keeps running for cron, and never
+        connects — so `running: True` on its own is not evidence the bot can
+        hear anyone. This is the check that tells those two states apart.
+        """
+        return importlib.util.find_spec("slack_bolt") is not None
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             running = self._proc is not None and self._proc.poll() is None
@@ -66,6 +78,7 @@ class GatewaySupervisor:
                 "requested": GATEWAY_ENABLED,
                 "running": running,
                 "cli_present": self.cli_present,
+                "slack_adapter_available": self.slack_adapter_available,
                 "restarts": self._restarts,
                 "last_exit_code": self._last_exit_code,
                 "uptime_seconds": (
@@ -164,8 +177,13 @@ def health() -> dict[str, Any]:
 
     if not GATEWAY_ENABLED:
         status, mode = "ok", "readiness_gateway"
-    elif gateway["running"]:
+    elif gateway["running"] and gateway["slack_adapter_available"]:
         status, mode = "ok", "gateway"
+    elif gateway["running"]:
+        # Alive, but deaf: the process supervises cron happily while no Slack
+        # adapter exists. Reporting this as healthy is how a bot sits silent
+        # for days behind a green check.
+        status, mode = "degraded", "gateway_no_slack_adapter"
     else:
         status, mode = "degraded", "gateway_down"
 
@@ -183,6 +201,12 @@ def health() -> dict[str, Any]:
             "The agent is installed and configured but the Slack gateway is off. "
             "Set SLACK_BOT_TOKEN, SLACK_APP_TOKEN and AGENT_ENABLE_GATEWAY=1 to "
             "bring it up — see services/agent/README.md."
+        )
+    elif mode == "gateway_no_slack_adapter":
+        payload["note"] = (
+            "The gateway is running but Hermes could not build a Slack adapter, "
+            "so the bot is connected to nothing. slack-bolt is an optional "
+            "upstream extra — the image must install hermes-agent[slack]."
         )
     elif mode == "gateway_down":
         payload["note"] = gateway["stopped_reason"] or (

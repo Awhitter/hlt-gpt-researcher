@@ -134,6 +134,16 @@ def build_slack(env: Mapping[str, str]) -> dict[str, Any]:
 def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
     """`platforms.slack` — the namespace that carries the good Slack features."""
     extra: dict[str, Any] = {
+        # Hermes defaults every messaging platform to a pairing/allowlist policy
+        # and DENIES unknown senders. For a workspace bot that means silence for
+        # everyone but a named list — so DMs and channels are opened explicitly
+        # here, and GATEWAY_ALLOW_ALL_USERS carries the matching env opt-in.
+        #
+        # This is only safe because the toolset above is locked to read-only
+        # research tools and privileged slash commands are admin-gated. Do not
+        # open these without both.
+        "dm_policy": "open",
+        "group_policy": "open",
         # Real Block Kit: section headers, native tables, nested lists.
         "rich_blocks": True,
         # 👍/👎 on answers, so we learn what lands.
@@ -257,6 +267,11 @@ def render(
         "slack_toolsets": list(SLACK_TOOLSETS),
         "slack_admins_configured": bool(_csv(env, "SLACK_ADMIN_USERS")),
         "slack_channel_allowlist": bool(_csv(env, "SLACK_ALLOWED_CHANNELS")),
+        "slack_senders_allowed": (
+            "all"
+            if (_clean(env, "GATEWAY_ALLOW_ALL_USERS") or "").lower() == "true"
+            else ("allowlist" if _csv(env, "SLACK_ALLOWED_USERS") else "none")
+        ),
         "mcp_mounted": sorted(servers),
         "mcp_unconfigured": [n for n, _, _ in MCP_TARGETS if n not in servers],
         "mcp_without_token": sorted(
