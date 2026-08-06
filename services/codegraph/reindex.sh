@@ -17,13 +17,18 @@ DEFAULT_REPOS=(
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 
-# gitnexus is Node, and an unbounded heap lets one repo's analyze grow past the
-# container limit — the kernel then kills the WHOLE container, taking the MCP
-# server down with it. Render restarts, the boot reindex runs again, and the
-# service crash-loops on a schedule (observed: every ~5 minutes for hours,
-# 2026-08-06). Capping the heap turns "the service dies" into "one repo's index
-# is stale and the failure is recorded" — index_repo already handles that.
-export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1400}"
+# NOTE: do NOT add a --max-old-space-size cap here expecting it to prevent the
+# OOM. The service already runs with NODE_OPTIONS=--max-old-space-size=640 and
+# the container still died using OVER 2GB (2026-08-06), so the memory is NOT in
+# V8's old space — it is native: tree-sitter parsers, SQLite, and gitnexus'
+# worker processes. A heap cap cannot bound those, and adding one here is worse
+# than useless because it reads like a fix.
+#
+# What actually stops the outage is the freshness guard below: the OOM kills the
+# whole container (indexer and MCP server share it), Render restarts, and the
+# boot reindex used to immediately re-run the work that caused the OOM. The real
+# fixes are a larger plan or moving indexing out of the web service; until then a
+# repo too big to index stays stale instead of taking the service down with it.
 
 # Skip repos indexed more recently than this. A container restart must not mean
 # a fresh full index of everything: that is what made a single OOM self-
