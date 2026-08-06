@@ -83,3 +83,11 @@ services:
         sync: false
       - key: SLACK_APP_TOKEN
         sync: false
+      # The go-live switch. Declared here so it is visible as a knob, but left
+      # dashboard-owned (sync: false) so a blueprint re-sync can't silently
+      # switch the agent back off. Set to "1" once the Slack tokens exist.
+      - key: HERMES_ENABLE_GATEWAY
+        sync: false
+      # Optional model override; defaults to anthropic/claude-sonnet-5.
+      - key: HERMES_MODEL
+        sync: false

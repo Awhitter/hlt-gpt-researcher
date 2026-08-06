@@ -51,7 +51,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             )
 
         provided = header.split(" ", 1)[1].strip()
-        if not provided or not hmac.compare_digest(provided, self._token):
+        # Encode both sides: compare_digest raises TypeError on non-ASCII str,
+        # which would surface a 500 instead of a 401.
+        if not provided or not hmac.compare_digest(
+            provided.encode("utf-8"), self._token.encode("utf-8")
+        ):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid bearer token"},

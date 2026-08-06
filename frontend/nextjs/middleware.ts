@@ -60,11 +60,25 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Gate everything except:
+     * Every /api route, matched positively and unconditionally. The handler
+     * above is what lets /api/auth/login and /api/auth/logout through.
+     *
+     * This entry exists so that no static-asset exclusion in the page matcher
+     * below can ever carve a hole in the backend proxies. It previously could:
+     * a bare `.*\.png$` alternative matches the WHOLE pathname, not just the
+     * last segment, so `/api/files/anything.png` skipped the gate entirely and
+     * reached a DELETE proxy that attaches the server-held API_AUTH_KEY.
+     */
+    "/api/:path*",
+    /*
+     * Pages and everything else, minus genuine static assets:
      * - _next internals (static chunks, image optimizer)
      * - PWA plumbing (sw.js, workbox chunks, manifest.json)
-     * - static assets (favicon, /img, embed.js, svg/png/ico files)
+     * - favicon, /img, embed.js
+     *
+     * Every exclusion here is anchored — a prefix ending in `/`, or a literal
+     * filename ending in `$`. Never add a bare `.*\.ext$` alternative.
      */
-    "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.json|sw\\.js|workbox-.*\\.js|embed\\.js|img/|.*\\.svg$|.*\\.png$|.*\\.ico$).*)",
+    "/((?!api/|_next/static/|_next/image|favicon\\.ico$|manifest\\.json$|sw\\.js$|workbox-[^/]*\\.js$|embed\\.js$|img/).*)",
   ],
 };

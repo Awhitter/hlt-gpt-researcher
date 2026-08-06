@@ -7,11 +7,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Optional: install Hermes agent from upstream when available.
+# Hermes agent from upstream. This install is REQUIRED: a container without the
+# CLI can only ever serve a health stub, so fail the build loudly rather than
+# shipping a service that looks green and does nothing. Render keeps the last
+# live deploy when a build fails, so a broken upstream never takes the
+# service down.
 ARG HERMES_REF=main
 RUN git clone --depth=1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes \
-    && pip install --no-cache-dir -e /opt/hermes || true
+    && pip install --no-cache-dir -e /opt/hermes \
+    && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; }
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

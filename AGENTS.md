@@ -135,6 +135,16 @@ stays in readiness-gateway mode until Slack tokens exist — see
 `services/hermes/slack-app-manifest.yaml` and the README for the 3-minute
 enable flow.
 
+`hlt-hermes` internals: `health_gateway.py` is the main process because Hermes
+reaches Slack over Socket Mode and never binds a port — it would fail Render's
+health check as PID 1. That module seeds memory, renders
+`$HERMES_HOME/config.yaml` from env (`render_config.py`), supervises
+`hermes gateway` as a child, and serves `/health`. Do not add config keys to
+Hermes by hand: `render_config.py` is the only writer, and `tests/test_hermes_boot.py`
+pins the schema. `/health` reports observed state (`gateway.running`,
+`config.mcp_mounted`), so treat `status: degraded` / `mode: gateway_down` as a
+real outage even though the HTTP code stays 200.
+
 AI observability: HLT-hosted GPT Researcher emits Langfuse observations when
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. `/health`
 reports redacted readiness under `observability.langfuse`; prompt/output capture

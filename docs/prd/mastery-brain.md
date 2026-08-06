@@ -53,10 +53,14 @@ production data.
 Mastery Research UI (Vercel)
   → GPT Researcher API + MCP (Railway)  [synced fork + HLT overlay]
   → Code-graph MCP (Render)             [GitNexus indexes 5 repos]
-Hermes agent (Render VM)
+Hermes agent (Render VM)               [built; gateway off until Slack app exists]
   → mounts GPTR MCP, code graph, Katailyst2, Linear
-  → Slack/Telegram gateway for the team
+  → Slack gateway (Socket Mode) for the team
 ```
+
+The Hermes box is the one part of this diagram that is not yet answering
+anyone. Everything in it is deployed and configured; `HERMES_ENABLE_GATEWAY=1`
+plus a pair of Slack tokens is all that remains.
 
 ### Estate repos (code scope)
 
@@ -101,13 +105,13 @@ Override via `HLT_CODEBASE_REPOS`.
 
 ## Rollout phases
 
-| Phase | Deliverable |
-|-------|-------------|
-| 1 | Upstream sync + tests + Railway redeploy |
-| 2 | This PRD |
-| 3 | Code-graph service on Render + Code scope wiring |
-| 4 | Hermes on Render with Slack + MCP mounts |
-| 5 | Team Brain UI tabs (Ask / Codebase / Vision / Changelog / Roadmap) |
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| 1 | Upstream sync + tests + Railway redeploy | shipped |
+| 2 | This PRD | shipped |
+| 3 | Code-graph service on Render + Code scope wiring | shipped — `hlt-codegraph` indexes 5 repos |
+| 4 | Hermes on Render with Slack + MCP mounts | **built, not switched on** — container installs the CLI and renders its MCP config at boot; blocked on creating the Slack app (see `services/hermes/README.md`) |
+| 5 | Team Brain UI tabs (Ask / Codebase / Vision / Changelog / Roadmap) | shipped |
 
 ## Cost envelope (indicative)
 

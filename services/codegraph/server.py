@@ -6,6 +6,7 @@ structural graph stays the source of truth without embedding GitNexus.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -249,6 +250,19 @@ def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> st
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):  # noqa: ANN001
+    """Liveness only. Deliberately says nothing about what we index.
+
+    Render's ipAllowList is 0.0.0.0/0, so this endpoint is world-readable. It
+    used to return repo slugs, branches and 40-char commit SHAs for five
+    private repositories — a map of the estate, free to anyone who guessed the
+    hostname. Index truth moved to /readiness, behind the bearer token.
+    """
+    return JSONResponse({"status": "ok", "service": "hlt-codegraph"})
+
+
+@mcp.custom_route("/readiness", methods=["GET"])
+async def readiness_check(request):  # noqa: ANN001
+    """Per-repository index truth. Authenticated (see BearerAuthMiddleware)."""
     repos = []
     if os.path.isdir(REPOS_DIR):
         repos = sorted(
@@ -263,24 +277,53 @@ async def health_check(request):  # noqa: ANN001
             "repos": repos,
             "repositories": [_repo_readiness(repo) for repo in REPO_GITHUB],
             "gitnexus_home": GITNEXUS_HOME,
-            "auth_required": bool(AUTH_TOKEN),
         }
     )
 
 
+# Only liveness is public. "/" used to be exempt too, which on a
+# streamable-HTTP MCP app is a live transport path, not a landing page.
+PUBLIC_PATHS = frozenset({"/health"})
+
+
+def auth_failure(path: str, authorization: str, token: str | None) -> tuple[int, str] | None:
+    """Return ``(status, detail)`` when a request must be rejected, else ``None``.
+
+    Split out from the middleware so the decision itself can be tested — this
+    is the whole perimeter of the sidecar, and it previously failed open.
+    """
+    if path in PUBLIC_PATHS:
+        return None
+
+    # Fail CLOSED. CODEGRAPH_MCP_TOKEN is `sync: false` in render.yaml, so a
+    # blank value is one dashboard slip away — and an unauthenticated tool
+    # surface here serves every private repo's source via `gitnexus query`.
+    # 503 rather than exiting: a hard exit deploy-loops, where this leaves the
+    # instance up and legible.
+    if not token:
+        return 503, "Service is not configured with an auth token"
+
+    provided = ""
+    if authorization.lower().startswith("bearer "):
+        provided = authorization[7:].strip()
+    # Encode both sides: compare_digest raises TypeError on non-ASCII str,
+    # which would turn a 401 into a 500.
+    if not hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
+        return 401, "Unauthorized"
+    return None
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in {"/health", "/"}:
+        failure = auth_failure(
+            request.url.path, request.headers.get("authorization", ""), AUTH_TOKEN
+        )
+        if failure is None:
             return await call_next(request)
-        if not AUTH_TOKEN:
-            return await call_next(request)
-        auth = request.headers.get("authorization", "")
-        provided = ""
-        if auth.lower().startswith("bearer "):
-            provided = auth[7:].strip()
-        if provided != AUTH_TOKEN:
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        return await call_next(request)
+        status, detail = failure
+        if status == 503:
+            logger.error("CODEGRAPH_MCP_TOKEN is unset — refusing all authenticated routes")
+        return JSONResponse({"detail": detail}, status_code=status)
 
 
 app = mcp.streamable_http_app()
