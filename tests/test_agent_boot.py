@@ -302,6 +302,24 @@ def test_soul_is_installed_where_hermes_reads_it(tmp_path):
     assert "Cleo" in (tmp_path / "SOUL.md").read_text(encoding="utf-8")
 
 
+def test_a_soul_written_under_the_old_marker_is_still_ours(tmp_path):
+    """Renaming the marker must not orphan files already on the persistent disk.
+
+    It did: switching this container from Brian to Cleo left Brian's SOUL.md in
+    place, because the new code read the old marker as a hand-edit. The box ran
+    live wearing the wrong identity until this was fixed.
+    """
+    (tmp_path / "SOUL.md").write_text(
+        f"{grounding.LEGACY_MARKERS[0]}\n# Brian\n", encoding="utf-8"
+    )
+
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
+
+    assert summary["soul_installed"] is True
+    assert summary["soul_preserved_operator_edit"] is False
+    assert "Cleo" in (tmp_path / "SOUL.md").read_text(encoding="utf-8")
+
+
 def test_hand_edited_soul_is_preserved(tmp_path):
     (tmp_path / "SOUL.md").write_text("# my own persona\n", encoding="utf-8")
 

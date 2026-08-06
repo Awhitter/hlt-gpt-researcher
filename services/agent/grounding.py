@@ -29,6 +29,16 @@ from typing import Any
 # hand-edited one alone. Hermes extends the same courtesy to its own default.
 MARKER = "<!-- managed-by: hlt-agent-boot -->"
 
+# Markers this boot used to write. Renaming the marker without honouring the old
+# one orphans every file already on the disk: install() reads it as a hand-edit,
+# preserves it, and the container silently keeps serving the previous agent's
+# identity. That is exactly what happened switching this box from Brian to Cleo.
+LEGACY_MARKERS = ("<!-- managed-by: hlt-brian-boot -->",)
+
+
+def _is_managed(text: str) -> bool:
+    return MARKER in text or any(marker in text for marker in LEGACY_MARKERS)
+
 GROUNDING_SRC = Path(__file__).resolve().parent / "grounding"
 AGENT_IDS = ("cleo", "brian")
 DEFAULT_AGENT = "cleo"
@@ -84,7 +94,7 @@ def install(
                 existing = soul_dest.read_text(encoding="utf-8")
             except OSError:
                 existing = ""
-        if existing and MARKER not in existing:
+        if existing and not _is_managed(existing):
             summary["soul_preserved_operator_edit"] = True
         else:
             soul_dest.write_text(
