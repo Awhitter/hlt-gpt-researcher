@@ -8,7 +8,7 @@ import RoadmapPanel from "@/components/brain/RoadmapPanel";
 import AudiencePanel from "@/components/brain/AudiencePanel";
 import LibraryPanel from "@/components/brain/LibraryPanel";
 import Modal from "@/components/Settings/Modal";
-import { BrainTabId } from "@/lib/brainTabs";
+import { BRAIN_TABS, BrainTabId } from "@/lib/brainTabs";
 import { ChatBoxSettings } from "@/types/data";
 
 type Props = {
@@ -20,14 +20,10 @@ type Props = {
   setChatBoxSettings: React.Dispatch<React.SetStateAction<ChatBoxSettings>>;
 };
 
-const secondaryTabs: Array<[BrainTabId, string]> = [
-  ["audience", "Audience"],
-  ["codebase", "Codebases"],
-  ["library", "Library"],
-  ["vision", "Vision"],
-  ["changelog", "Changelog"],
-  ["roadmap", "Roadmap"],
-];
+// Ask is not in this list: it is the always-on surface behind the shell, not a
+// tab. Everything else comes from BRAIN_TABS so there is one registry rather
+// than two that drift — these had already forked ("Codebase" vs "Codebases").
+const secondaryTabs = BRAIN_TABS.filter((tab) => tab.id !== "ask");
 
 export default function BrainShell({
   activeTab,
@@ -43,7 +39,7 @@ export default function BrainShell({
 
       <details
         className={`group mx-auto mb-10 w-full max-w-full px-4 text-center sm:max-w-5xl ${
-          activeTab === "ask" ? "-mt-24 sm:-mt-32" : "mt-0"
+          activeTab === "ask" ? "mt-6" : "mt-0"
         }`}
       >
         <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium text-slate-500 transition hover:text-slate-300">
@@ -52,10 +48,12 @@ export default function BrainShell({
         </summary>
         <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.025] p-3 text-left">
           <div className="flex flex-wrap items-center gap-2">
-            {secondaryTabs.map(([id, label]) => (
+            {secondaryTabs.map(({ id, label, description }) => (
               <button
                 key={id}
                 type="button"
+                title={description}
+                aria-current={activeTab === id ? "page" : undefined}
                 onClick={() => onTabChange(id)}
                 className={`rounded-md border px-3 py-1.5 text-xs transition ${
                   activeTab === id
