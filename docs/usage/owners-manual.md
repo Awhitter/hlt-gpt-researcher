@@ -89,7 +89,9 @@ Depth controls breadth as well as effort: Fast, Balanced, and Deep use up to 5,
 3–20. Source-page images are collected automatically and retain their source
 page; generated illustrations are opt-in with
 `include_generated_images=true` and never synthesize a named real person's
-likeness.
+likeness. Logos, icons, and SVG chrome are rejected; when the first scrape finds
+only those, the researcher checks a small set of cited pages for a useful hero
+image and returns none if it still cannot find one.
 
 The MCP service keeps a bounded hot cache for live `GPTResearcher` objects and a
 SQLite metadata store for completed research context, source metadata, status,

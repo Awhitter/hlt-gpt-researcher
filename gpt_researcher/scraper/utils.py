@@ -13,6 +13,30 @@ import bs4
 from bs4 import BeautifulSoup
 
 
+def is_likely_content_image(image_url: str, alt_text: str = "") -> bool:
+    """Reject common chrome/brand assets before they reach a research report."""
+
+    parsed = urlparse(image_url)
+    path = parsed.path.lower()
+    description = f"{path} {alt_text.lower()}"
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if path.endswith((".svg", ".ico")):
+        return False
+    noise_terms = (
+        "favicon",
+        "logo",
+        "sprite",
+        "tracking-pixel",
+        "spacer.",
+        "placeholder",
+        "games-assets",
+        "dmca compliant",
+        "site icon",
+    )
+    return not any(term in description for term in noise_terms)
+
+
 def get_relevant_images(soup: BeautifulSoup, url: str) -> list:
     """Extract relevant images from the page"""
     image_urls = []
@@ -23,6 +47,7 @@ def get_relevant_images(soup: BeautifulSoup, url: str) -> list:
         if (
             not resolved_url.startswith(("http://", "https://"))
             or resolved_url in seen_urls
+            or not is_likely_content_image(resolved_url, alt_text)
         ):
             return
         seen_urls.add(resolved_url)

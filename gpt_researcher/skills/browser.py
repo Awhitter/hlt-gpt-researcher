@@ -8,7 +8,7 @@ from gpt_researcher.utils.workers import WorkerPool
 
 from ..actions.utils import stream_output
 from ..actions.web_scraping import scrape_urls
-from ..scraper.utils import get_image_hash
+from ..scraper.utils import get_image_hash, is_likely_content_image
 
 
 class BrowserManager:
@@ -104,6 +104,10 @@ class BrowserManager:
 
         # Process images in descending order of their scores
         for img in sorted(images, key=lambda im: im["score"], reverse=True):
+            if not is_likely_content_image(
+                img.get("url", ""), img.get("alt_text", "")
+            ):
+                continue
             img_hash = get_image_hash(img['url'])
             if (
                 img_hash
@@ -123,3 +127,42 @@ class BrowserManager:
                     break
 
         return unique_images
+
+    async def enrich_research_images(self, max_pages: int = 6, k: int = 4) -> list[dict]:
+        """Backfill useful source images when the normal scrape found only chrome."""
+
+        useful_existing = []
+        for image in self.researcher.get_research_images():
+            url = image.get("url", "") if isinstance(image, dict) else str(image)
+            alt_text = image.get("alt_text", "") if isinstance(image, dict) else ""
+            if is_likely_content_image(url, alt_text):
+                useful_existing.append(image)
+        self.researcher.research_images = useful_existing
+        if useful_existing:
+            return useful_existing
+
+        source_urls = []
+        seen_urls = set()
+        for source in getattr(self.researcher, "research_sources", []):
+            if not isinstance(source, dict):
+                continue
+            source_url = source.get("url")
+            if (
+                isinstance(source_url, str)
+                and source_url.startswith(("http://", "https://"))
+                and source_url not in seen_urls
+            ):
+                seen_urls.add(source_url)
+                source_urls.append(source_url)
+            if len(source_urls) >= max_pages:
+                break
+
+        if not source_urls:
+            return []
+
+        _scraped_content, images = await scrape_urls(
+            source_urls, self.researcher.cfg, self.worker_pool
+        )
+        enriched = self.select_top_images(images, k=k)
+        self.researcher.add_research_images(enriched)
+        return enriched

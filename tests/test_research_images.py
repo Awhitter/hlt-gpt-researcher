@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from bs4 import BeautifulSoup
 
 import gpt_researcher.skills.image_generator as image_skill
-from gpt_researcher.scraper.utils import get_relevant_images
+import gpt_researcher.skills.browser as browser_skill
+from gpt_researcher.scraper.utils import get_relevant_images, is_likely_content_image
 from gpt_researcher.skills.browser import BrowserManager
 
 
@@ -129,3 +130,70 @@ def test_lowercase_runtime_config_enables_image_provider(monkeypatch):
 
     assert generator.is_enabled() is True
     assert generator.image_provider.model_name == "models/example"
+
+
+def test_image_quality_filter_rejects_logos_icons_and_svg_artifacts():
+    assert not is_likely_content_image(
+        "https://example.com/assets/company-logo-scroll.svg", "Company logo"
+    )
+    assert not is_likely_content_image(
+        "https://example.com/favicon.png", "Site icon"
+    )
+    assert is_likely_content_image(
+        "https://example.com/uploads/Alec-Whitters.jpg", "Alec Whitters, CEO"
+    )
+
+
+def test_image_enrichment_replaces_junk_with_source_page_hero(monkeypatch):
+    async def fake_scrape_urls(urls, _cfg, _worker_pool):
+        assert urls == ["https://example.com/alec", "https://example.com/about"]
+        return [], [
+            {
+                "url": "https://example.com/assets/company-logo.svg",
+                "score": 5,
+                "source_url": "https://example.com/about",
+                "alt_text": "Company logo",
+            },
+            {
+                "url": "https://example.com/uploads/alec-whitters.jpg",
+                "score": 5,
+                "source_url": "https://example.com/alec",
+                "alt_text": "Alec Whitters",
+            },
+        ]
+
+    monkeypatch.setattr(browser_skill, "scrape_urls", fake_scrape_urls)
+
+    class FakeResearcher:
+        cfg = SimpleNamespace(max_scraper_workers=1, scraper_rate_limit_delay=0)
+        research_sources = [
+            {"url": "https://example.com/alec"},
+            {"url": "https://example.com/about"},
+            {"url": "https://example.com/alec"},
+        ]
+        research_images = [
+            {
+                "url": "https://example.com/assets/old-logo.svg",
+                "source_url": "https://example.com/alec",
+                "alt_text": "Old logo",
+            }
+        ]
+
+        def get_research_images(self):
+            return self.research_images
+
+        def add_research_images(self, images):
+            self.research_images.extend(images)
+
+    researcher = FakeResearcher()
+    manager = BrowserManager(researcher)
+
+    asyncio.run(manager.enrich_research_images(max_pages=6, k=4))
+
+    assert researcher.research_images == [
+        {
+            "url": "https://example.com/uploads/alec-whitters.jpg",
+            "source_url": "https://example.com/alec",
+            "alt_text": "Alec Whitters",
+        }
+    ]
