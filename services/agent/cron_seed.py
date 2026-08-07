@@ -126,3 +126,68 @@ def seed(deliver: str, dry_run: bool = False) -> dict[str, list[str]]:
             result["failed"].append(brief["name"])
 
     return result
+
+
+# A brief that has never run is not a working brief — that is the failure this
+# whole service keeps hitting, most recently a lane that sat dark so long its
+# agent had never fired once behind a healthy stat. So the first boot that can
+# deliver also schedules a ONE-SHOT proof a few minutes out.
+#
+# `--repeat 1` makes it a finite one-shot: the scheduler auto-deletes the job
+# once the repeat limit is reached. That auto-delete is also why this needs a
+# sentinel — the job vanishes from jobs.json, so the name-based idempotency
+# above would happily re-create it on the next deploy and the channel would get
+# a smoke message every merge.
+#
+# The prompt asks for real identifiers on purpose. "Did cron fire" is the easy
+# half; the half that actually breaks is whether a CRON session — a standalone
+# agent on the scheduler's own thread pool, outside the gateway's dispatch — has
+# her MCP tools at all. An answer with a NUR number proves both.
+SMOKE_NAME = "nm-brief-smoke"
+SMOKE_SENTINEL = ".brief-smoke-seeded"
+SMOKE_PROMPT = (
+    "This is a one-off check that scheduled briefs work end to end — say so in "
+    "your first line. Then, in no more than four lines, name one thing that "
+    "moved in Nursing Mastery in the last week and one open NUR issue, each "
+    "with its real identifier, so we can see you can reach your sources on a "
+    "schedule and not just in chat. If you cannot reach a source, say which one "
+    "and stop — that result is more useful than a guess."
+)
+
+
+def seed_smoke(deliver: str, dry_run: bool = False) -> str:
+    """Schedule the one-shot proof. Returns what happened, for /health."""
+    if not deliver or not DELIVER_TARGET.match(deliver):
+        return "skipped-no-target"
+
+    home = Path(os.environ.get("HERMES_HOME") or "/data/hermes")
+    sentinel = home / SMOKE_SENTINEL
+    if sentinel.exists():
+        return "already-run"
+
+    cmd = [
+        "hermes", "cron", "create", "5m", SMOKE_PROMPT,
+        "--name", SMOKE_NAME, "--deliver", deliver,
+        "--skill", "weekly-brief", "--repeat", "1",
+    ]
+    if dry_run:
+        return "would-create"
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("smoke brief failed: %s", exc)
+        return "failed"
+    if done.returncode != 0:
+        logger.warning(
+            "smoke brief exited %s: %s", done.returncode, (done.stderr or done.stdout)[:300]
+        )
+        return "failed"
+
+    # Written only after a successful create, so a failed attempt retries on the
+    # next boot instead of marking itself done.
+    try:
+        sentinel.write_text("seeded\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("smoke brief ran but the sentinel could not be written: %s", exc)
+        return "created-unsentinelled"
+    return "created"

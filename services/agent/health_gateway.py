@@ -288,7 +288,11 @@ def boot() -> None:
             # it here — the gateway child inherits this environment.
             os.environ["SLACK_HOME_CHANNEL"] = channel
             BOOT["cron_briefs"] = cron_seed.seed(f"slack:{channel}")
-            logger.info("config cron_briefs: %s", BOOT["cron_briefs"])
+            BOOT["cron_smoke"] = cron_seed.seed_smoke(f"slack:{channel}")
+            logger.info(
+                "config cron_briefs: %s (smoke: %s)",
+                BOOT["cron_briefs"], BOOT["cron_smoke"],
+            )
         else:
             # Without a home channel a brief has nowhere to land, and a job
             # created with a bad deliver target fails silently every week.

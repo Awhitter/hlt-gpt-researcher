@@ -956,3 +956,49 @@ def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):
         lambda cmd, **kw: __import__("subprocess").CompletedProcess(cmd, 0, "", ""),
     )
     assert cron_seed.seed("slack:C0BN349TRU7")["created"]
+
+
+def test_the_one_shot_proof_runs_once_ever(tmp_path, monkeypatch):
+    """A brief that has never fired is not a working brief. But the scheduler
+    auto-deletes a finite one-shot once it runs, so name-based idempotency would
+    re-create it on every deploy and the channel would get a smoke message every
+    merge. The sentinel is what stops that."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", fake_run)
+
+    assert cron_seed.seed_smoke("slack:C0BN349TRU7") == "created"
+    assert cron_seed.seed_smoke("slack:C0BN349TRU7") == "already-run"
+    assert len(calls) == 1
+    # Finite one-shot, or it repeats forever every five minutes.
+    assert "--repeat" in calls[0] and calls[0][calls[0].index("--repeat") + 1] == "1"
+
+
+def test_a_failed_proof_is_retried_not_marked_done(tmp_path, monkeypatch):
+    """Writing the sentinel before knowing the create succeeded would burn the
+    single attempt and leave the pipeline unproven forever."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        cron_seed.subprocess, "run",
+        lambda cmd, **kw: __import__("subprocess").CompletedProcess(cmd, 1, "", "boom"),
+    )
+
+    assert cron_seed.seed_smoke("slack:C0BN349TRU7") == "failed"
+    assert not (tmp_path / cron_seed.SMOKE_SENTINEL).exists()
+
+
+def test_the_proof_asks_for_a_real_identifier():
+    """'Did cron fire' is the easy half. The half that breaks is whether a cron
+    session — a standalone agent on the scheduler's own thread pool, outside the
+    gateway's dispatch — has her MCP tools at all."""
+    cron_seed = _cron_seed()
+    assert "NUR" in cron_seed.SMOKE_PROMPT
+    assert "real identifier" in cron_seed.SMOKE_PROMPT
+    assert "cannot reach a source" in cron_seed.SMOKE_PROMPT
