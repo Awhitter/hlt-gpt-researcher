@@ -2,6 +2,7 @@ from backend.server.hlt_grounding import (
     _code_report_authority_hazards,
     extract_source_refs,
     merge_report_delivery_receipt,
+    normalize_source_refs,
     prepare_report_delivery,
     prepare_report_record,
     report_is_memory_eligible,
@@ -108,6 +109,33 @@ def test_source_extraction_removes_only_unmatched_markdown_closer():
 
     assert refs[0]["path"] == "app/(site)/applications/[id]/page.tsx"
     assert refs[0]["url"] == route_url
+
+
+def test_encoded_dynamic_route_dedupes_against_opened_source_ref():
+    path = "app/(site)/articles/[slug]/page.tsx"
+    canonical_url = (
+        f"https://github.com/Awhitter/nursing-mastery/blob/{SHA}/{path}#L1-L80"
+    )
+    encoded_url = canonical_url.replace("[", "%5B").replace("]", "%5D")
+
+    refs = normalize_source_refs(
+        [
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": SHA,
+                "path": path,
+                "line": 1,
+                "endLine": 80,
+                "url": canonical_url,
+                "exists": True,
+            }
+        ],
+        f"[Article route]({encoded_url})",
+    )
+
+    assert len(refs) == 1
+    assert refs[0]["path"] == path
+    assert refs[0]["exists"] is True
 
 
 def test_code_scoped_delivery_blocks_an_answer_without_validator_backed_sources():

@@ -122,11 +122,12 @@ def extract_source_refs(answer: str) -> list[dict[str, Any]]:
         if not match:
             continue
         line = int(match.group("line")) if match.group("line") else None
+        path = urllib.parse.unquote(match.group("path"))
         key = (
             match.group("org"),
             match.group("repo"),
             match.group("sha").lower(),
-            match.group("path"),
+            path,
             line,
         )
         if key in seen:
@@ -157,7 +158,9 @@ def normalize_source_refs(value: Any, answer: str = "") -> list[dict[str, Any]]:
                 continue
             repo = str(raw.get("repo") or "").strip()
             sha = str(raw.get("commitSha") or "").strip().lower()
-            path = str(raw.get("path") or "").strip().lstrip("/")
+            path = urllib.parse.unquote(
+                str(raw.get("path") or "").strip().lstrip("/")
+            )
             url = str(raw.get("url") or "").strip()
             if not repo or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
                 continue
@@ -197,7 +200,7 @@ def _source_ref_from_exact_url(value: Any) -> dict[str, Any] | None:
     return {
         "repo": f"{match.group('org')}/{match.group('repo')}",
         "commitSha": match.group("sha").lower(),
-        "path": match.group("path"),
+        "path": urllib.parse.unquote(match.group("path")),
         "line": int(match.group("line")) if match.group("line") else None,
         "endLine": int(match.group("end_line")) if match.group("end_line") else None,
         "url": value.strip(),
