@@ -20,7 +20,7 @@ cites sources.
 | Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app | live |
 | Agents (Claude Code, Cursor, Katailyst) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
 | Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` | live |
-| Humans, in Slack | **Brian**, the Mastery Researcher | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | **installed, not switched on** |
+| Humans, in Slack | **Cleo**, Nursing Mastery product-owner facilitator | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | live |
 
 The research core is the provider layer. Katailyst2 is the canonical
 registry/orchestration layer for product-specific facilitator agents. The
@@ -29,7 +29,7 @@ can boot Cleo, the Nursing Mastery product-owner/facilitator, or Brian, the
 general Mastery Researcher. Cleo using this provider is one use case; it does
 not change the core's scope.
 
-("Hermes" is only the upstream runtime Brian runs on. The Render hostname still
+("Hermes" is only the upstream runtime the selected agent runs on. The Render hostname still
 says `hlt-hermes` because Render cannot rename a service in place.)
 
 - UI + MCP default to **Auto scope** (estate context when the question needs
