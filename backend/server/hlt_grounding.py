@@ -471,6 +471,19 @@ def _code_report_authority_hazards(
             "A declared interface was used to infer ownership, persistence, or orchestration."
         )
 
+    if re.search(
+        r"\b(?:definitions?|implementation|write path|ownership|system of record)\b"
+        r"[^.\n]{0,120}\b(?:likely|probably|presumably)\b"
+        r"|\b(?:likely|probably|presumably)\b[^.\n]{0,100}"
+        r"\b(?:file|path|route|schema|blueprint|repository)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        hazards.append(
+            "A speculative file, schema, route, or ownership location was presented "
+            "without opened source evidence."
+        )
+
     marketo_absolute = re.search(
         r"\b(?:marketo (?:is not used|does not (?:store|send))|"
         r"emails? (?:are|is) not being sent(?: or leads added)? in marketo|"

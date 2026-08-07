@@ -221,6 +221,32 @@ def test_code_delivery_allows_scoped_marketo_uncertainty():
     assert report["verificationStatus"] == "verified"
 
 
+def test_code_delivery_blocks_speculative_change_location():
+    answer = (
+        "The dashboard imports the onboarding bridge, with question definitions "
+        "likely in a blueprint or capture schema."
+    )
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": SHA,
+                "path": "app/(site)/dashboard/page.tsx",
+                "url": (
+                    "https://github.com/Awhitter/nursing-mastery/blob/"
+                    f"{SHA}/app/(site)/dashboard/page.tsx#L100-L140"
+                ),
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is True
+    assert "speculative file" in report["unsupportedClaims"][0]
+
+
 def test_file_read_mcp_payload_becomes_a_visible_validated_source():
     source_url = (
         f"https://github.com/Awhitter/nursing-mastery/blob/{SHA}/"

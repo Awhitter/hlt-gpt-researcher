@@ -222,6 +222,7 @@ def test_code_teammate_audit_forbids_global_marketo_and_interface_leaps():
     assert "Never infer capture, persistence, ownership" in prompt
     assert "inactive Marketo pilot" in prompt
     assert "Absence is local to this evidence set" in prompt
+    assert "Delete speculative implementation-location phrases" in prompt
 
 
 @pytest.mark.asyncio
