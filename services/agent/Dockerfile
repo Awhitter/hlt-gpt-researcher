@@ -30,8 +30,12 @@ WORKDIR /app
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
 ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10
-RUN git clone --depth=1 --branch "${HERMES_REF}" \
-      https://github.com/NousResearch/hermes-agent.git /opt/hermes \
+RUN git init /opt/hermes \
+    && git -C /opt/hermes remote add origin \
+      https://github.com/NousResearch/hermes-agent.git \
+    && git -C /opt/hermes fetch --depth=1 origin "${HERMES_REF}" \
+    && git -C /opt/hermes checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \

@@ -488,6 +488,10 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     dockerfile = (SERVICE_DIR / "Dockerfile").read_text(encoding="utf-8")
 
     assert "ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10" in dockerfile
+    assert 'fetch --depth=1 origin "${HERMES_REF}"' in dockerfile
+    assert "checkout --detach FETCH_HEAD" in dockerfile
+    assert 'rev-parse HEAD)" = "${HERMES_REF}"' in dockerfile
+    assert '--branch "${HERMES_REF}"' not in dockerfile
     assert "mcp_prefixed_tool_name('codegraph', 'context')" in dockerfile
     assert "mcp__codegraph__context" in dockerfile
     assert "ENV HERMES_UPSTREAM_REF=${HERMES_REF}" in dockerfile
