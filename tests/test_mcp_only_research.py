@@ -102,6 +102,26 @@ def test_explicit_numbered_questions_keep_their_system_targets():
     ]
 
 
+def test_numbered_questions_ignore_replayed_prior_research_context():
+    current = (
+        "1) What attributes do we capture? 2) When do we capture email? "
+        "3) How does job search work? 4) What onboarding questions do we ask? "
+        "5) Do we use Marketo?"
+    )
+    query = (
+        f"Please answer: {current} HLT research scope instructions: prior "
+        f"research exists on: {current}"
+    )
+
+    assert extract_numbered_questions(query) == [
+        "What attributes do we capture?",
+        "When do we capture email?",
+        "How does job search work?",
+        "What onboarding questions do we ask?",
+        "Do we use Marketo?",
+    ]
+
+
 def test_mcp_only_planning_does_not_rewrite_numbered_questions(monkeypatch):
     query = (
         "Please answer: 1) How does Nursing Mastery job search work? "
