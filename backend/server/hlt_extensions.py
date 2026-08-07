@@ -107,9 +107,11 @@ _PUBLIC_PREFIXES: tuple[str, ...] = (
 # The canonical HLT estate repositories for codebase-scoped research. Override
 # with a comma-separated HLT_CODEBASE_REPOS env when the estate map changes.
 _DEFAULT_CODEBASE_REPOS = (
-    "Awhitter/nursing-mastery (nurse-facing frontend — the career home)",
-    "Awhitter/ScraperVault (nurse-recruiting backend — jobs, employers, people, applications)",
-    "Awhitter/katailyst2 (AI primitives, registry, and creation engine)",
+    "Awhitter/hlt-gpt-researcher (Mastery Research reusable core and source integrations)",
+    "Awhitter/nursing-mastery (one nurse-facing consumer — the career home)",
+    "Awhitter/ScraperVault (capture pipeline, jobs, applications, recruiting operations and receipts)",
+    "HLT-Master/hlt-web-service (HLT account API — signed-in identity, career preferences, and consent state)",
+    "Awhitter/katailyst2 (AI primitives, registry, orchestration, and product/facilitator agents)",
     "Awhitter/MMM2 (multimedia engine)",
     "Awhitter/evidence-based-business (EBB — metrics and analytics layer)",
 )
@@ -177,8 +179,15 @@ _ESTATE_GLOSSARY = (
     "HLT / Higher Learning Technologies (hltcorp.com) is a ~25-person healthcare "
     "education company whose current focus is nurse recruiting. 'Nursing Mastery' "
     "means www.nursingmastery.com — HLT's own nurse recruiting platform (job "
-    "board, Nurse Pay Check pay-comparison tool, career content; code lives in "
-    "the Awhitter/nursing-mastery repo, data in Awhitter/ScraperVault). HLT also "
+    "board, Nurse Pay Check pay-comparison tool, career content; its experience "
+    "lives in Awhitter/nursing-mastery). Person data is intentionally split: the "
+    "HLT account API owns signed-in identity, career preferences, and consent "
+    "state; ScraperVault owns the capture pipeline, jobs, applications, recruiting "
+    "operations, and receipts. Confirm the current implementation and sync "
+    "freshness before describing a field as available in both systems. "
+    "'Mastery Research' is the reusable research core/provider, not the Nursing "
+    "Mastery product. K2-managed product and facilitator agents may use that core "
+    "for Nursing Mastery or other products. HLT also "
     "ships Mastery-branded exam-prep apps (NCLEX etc.); only interpret a question "
     "that way when it is explicitly about test prep. Other estate names: "
     "Katailyst2 (AI registry/orchestration), MMM2 (media generation), EBB "
@@ -329,26 +338,34 @@ def _scope_instruction(key: str) -> str:
         return (
             "Answer as a careful internal code researcher for nontechnical teammates. "
             "Use available codebase/repository context (prefer codegraph MCP "
-            "tools: list_repos, repo_overview, query, context, impact, trace, and "
-            "verify_source_ref when available). "
+            "tools: search_source to discover real files, read_source to inspect "
+            "exact current lines, then verify_source_ref; use list_repos, "
+            "repo_overview, query, context, impact, and trace for structure). "
             "The canonical HLT "
             f"repositories are: {repos}. Prefer these repositories' implementation "
             "files, repo maps, pull requests, and architecture notes over generic "
             "web sources, ignore legacy/archived repositories unless explicitly "
-            "asked, and say which repository each finding came from. Treat "
-            "ScraperVault as recruiting/profile/application authority, Nursing "
-            "Mastery as the nurse-facing experience, Katailyst as capability "
-            "authority, and EBB/PostHog as measurement evidence. Distinguish "
-            "implemented now, documented intent, roadmap, and unknown. Every "
+            "asked, and say which repository each finding came from. Do not assume "
+            "that one repository owns every part of a person record: trace each "
+            "field and workflow across the HLT account API, ScraperVault, and its "
+            "consumer experience. Treat Katailyst2 as registry/orchestration and "
+            "product-agent authority, while Mastery Research remains a reusable "
+            "research provider. Treat EBB/PostHog as measurement evidence, not "
+            "person or application authority. Distinguish current implementation, "
+            "dated operational receipt, documented intent, roadmap, and unknown. "
+            "A proposal or historical receipt is not proof of current live state. Every "
             "implementation claim must cite a retrieved existing file, route, "
             "symbol, schema, or configuration using an immutable GitHub URL with "
             "the exact 40-character commit SHA; validate the path before presenting "
             "it as verified. Never invent a file, endpoint, queue, database field, "
-            "or integration. If Marketo or another live system was not inspected, "
-            "say it is unavailable rather than guessing. Structure the answer as: "
-            "Direct answer; What happens and when; What data is captured and where "
-            "it is stored; Where the behavior lives; How to change it; Sources, "
-            "freshness, and anything that could not be verified."
+            "or integration. Marketo is not a built-in live Mastery Research source. "
+            "Treat Marketo or any other external SaaS as unavailable unless an "
+            "active live-system source was mounted and inspected in this run; code, "
+            "environment examples, and old campaign receipts prove neither access "
+            "nor current readiness. Structure the answer as: Direct answer; Current "
+            "implementation and evidence; Authority and permissions; Documented "
+            "direction (clearly labeled); Unknown or unavailable; How to verify or "
+            "change it; Sources and freshness."
         )
     return _SCOPE_INSTRUCTIONS[key]
 
@@ -967,7 +984,14 @@ def prepare_research_request(
             if "media" not in hlt_scope_metadata["degraded_sources"]:
                 hlt_scope_metadata["degraded_sources"].append("media")
     next_mcp_enabled = bool(mcp_enabled or expanded_configs)
-    next_mcp_strategy = "fast" if depth == "fast" else "deep"
+    # "Fast" may shorten prose and reduce public-web breadth, but it must not
+    # turn an internal implementation answer into a single evidence call. The
+    # one-pass path is what let a thin result become confident fiction.
+    next_mcp_strategy = (
+        "deep"
+        if bool(scope.get("codebase"))
+        else ("fast" if depth == "fast" else "deep")
+    )
 
     if (
         not enabled_keys

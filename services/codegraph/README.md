@@ -1,11 +1,21 @@
 # HLT Codegraph MCP (GitNexus)
 
-Indexes the five estate repos into a GitNexus knowledge graph and exposes
-structural tools over streamable HTTP for GPT Researcher + Hermes.
+Maintains seven current estate checkouts and exposes source tools over
+streamable HTTP for GPT Researcher and agent consumers. Five repositories have
+GitNexus structural indexes; `HLT-Master/hlt-web-service` and Mastery Research
+itself are deliberately source-only so account and provider answers can inspect
+current code without risking another memory-heavy graph rebuild.
 
 ## Tools
 
-- `list_repos`, `query`, `context`, `impact`, `trace`, `repo_overview`
+- Exact source evidence: `search_source`, `read_source`, `verify_source_ref`
+- Structural analysis: `list_repos`, `query`, `context`, `impact`, `trace`,
+  `repo_overview`
+
+Implementation questions should start with `search_source`, follow promising
+matches with `read_source`, and cite the returned immutable URL. The structural
+tools explain relationships but are not a substitute for reading the current
+file before making a behavior claim.
 
 ## Endpoints
 
@@ -13,6 +23,7 @@ structural tools over streamable HTTP for GPT Researcher + Hermes.
 |------|------|---------|
 | `/health` | public | liveness only — `{"status","service"}` |
 | `/readiness` | bearer | per-repo index status, branch, commit SHA, `gitnexus_home` |
+| `/verify-source` | bearer | validates one repo/path/full-commit tuple in the private checkout |
 | `/mcp` | bearer | the tool surface |
 
 `/health` is deliberately bare. Render's ipAllowList is `0.0.0.0/0`, so
@@ -29,6 +40,7 @@ service **fails closed**: every path except `/health` returns 503.
 | `CODEGRAPH_MCP_TOKEN` | Bearer auth for `/mcp` and `/readiness`; unset ⇒ 503 |
 | `CODEGRAPH_REPOS` | Optional `slug\|org/repo,...` override |
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
+| `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools but not GitNexus (default `hlt-web-service,hlt-gpt-researcher`) |
 | `CODEGRAPH_SKIP_INDEX_ON_BOOT` | `1` to skip boot reindex |
 | `PORT` | Bind port (Render sets this) |
 

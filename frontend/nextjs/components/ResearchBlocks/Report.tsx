@@ -5,13 +5,16 @@ import { markdownToHtml } from "../../helpers/markdownHelper";
 import "../../styles/markdown.css";
 import { useResearchHistoryContext } from "../../hooks/ResearchHistoryContext";
 import { ChatMessage } from "../../types/data";
+import type { ReportVerification } from "@/lib/reportTrust";
 
 export default function Report({
   answer,
   researchId,
+  verification,
 }: {
   answer: string;
   researchId?: string;
+  verification?: ReportVerification;
 }) {
   const [htmlContent, setHtmlContent] = useState("");
   const { getChatMessages } = useResearchHistoryContext();
@@ -68,6 +71,26 @@ export default function Report({
             </div>
           )}
         </div>
+
+        {verification?.isCodeScoped ? (
+          <div
+            role="status"
+            className={`mb-4 rounded-md border px-3 py-2 text-sm ${
+              verification.status === "verified" &&
+              !verification.deliveryBlocked
+                ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-100"
+                : "border-amber-300/30 bg-amber-300/10 text-amber-100"
+            }`}
+          >
+            <span className="font-semibold">
+              {verification.status === "verified" &&
+              !verification.deliveryBlocked
+                ? "Repository sources verified"
+                : "Source check stopped an unverified answer"}
+            </span>
+            {verification.reason ? ` — ${verification.reason}` : ""}
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap content-center items-center gap-[15px]">
           <div className="log-message w-full whitespace-pre-wrap text-base font-light leading-[1.72] text-white">

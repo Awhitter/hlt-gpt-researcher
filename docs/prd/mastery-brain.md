@@ -3,11 +3,15 @@
 **Status:** Active  
 **Owner:** Alec Whitters / HLT  
 **Repo:** `hlt-gpt-researcher` (Mastery Research)  
-**Last updated:** 2026-08-02
+**Last updated:** 2026-08-06
 
 ## Vision
 
-Mastery Brain is the personal research OS for HLT’s product estate. Nontechnical teammates can talk to it, see what each codebase can do, ask “can we do X?”, store vision, and watch an interactive changelog of what shipped — powered by a maxed-out GPT Researcher, a code-graph MCP over the estate repos, and a persistent Hermes agent that learns across sessions.
+Mastery Brain is HLT’s reusable research core. Nontechnical teammates and
+product-specific agents can ask it about any part of the estate, combine
+internal sources with the public web, and receive a source-checked report. It
+is a provider to Nursing Mastery and other use cases; it is not itself the
+Nursing Mastery product or product agent.
 
 It leans toward **2027**: frontier models via OpenRouter (swappable), subagents for parallel research, MCP-native integrations (Katailyst2, Linear, code graph, media), and highly interactive visuals — not a static FAQ wiki.
 
@@ -28,8 +32,9 @@ Codebase, Audience, Library, Vision, Changelog, Roadmap, and technical
 preferences remain available through progressive disclosure.
 
 Implementation answers use a stable plain-English order: direct answer;
-what happens and when; data captured and storage; where behavior lives; how
-to change it; sources/freshness/unknowns. Change-oriented answers may create
+current implementation and evidence; authority and permissions; documented
+direction; unknown/unavailable; how to verify or change it; sources and
+freshness. Change-oriented answers may create
 a source-linked Linear request after confirmation; they never edit code or
 production data.
 
@@ -37,38 +42,55 @@ production data.
 
 - Implementation claims cite an existing file, route, symbol, schema, or
   configuration at an exact commit SHA.
-- GitHub paths are validated before a report becomes `verified`; partial or
-  unavailable validation stays visible.
+- GitHub paths are validated before a report becomes `verified`. For
+  Code-scoped live research, partial or unavailable model output is discarded
+  before UI delivery and before Markdown/PDF/DocX generation; the user gets a
+  source-check notice instead.
 - Legacy reports remain readable but begin as `unverified` and cannot feed
   future research memory until revalidated.
 - Repository readiness is per repo: branch, commit SHA, index timestamp,
   status, and error. One healthy repo cannot turn the whole estate green.
-- ScraperVault owns recruiting/profile/application truth; Nursing Mastery is
-  the nurse-facing consumer; Katailyst owns capabilities; EBB/PostHog provide
-  measurement evidence. Missing live-system access is unavailable, not a guess.
+- Person authority is field- and workflow-specific. The HLT account API owns
+  signed-in identity, career preferences, and consent state. ScraperVault owns
+  capture processing, jobs, applications, recruiting operations, and receipts;
+  its local person projections still serve unlinked and operational lanes.
+  Nursing Mastery is one nurse-facing consumer, Katailyst2 owns reusable
+  registry/orchestration and product-agent context, and EBB/PostHog provide
+  measurement evidence. The report must trace the exact field and flag sync
+  freshness rather than flattening this into one “People database.”
+- A repository can prove code or documented direction, not that an external
+  system is live. Marketo is absent from the built-in live research sources;
+  without an active connector inspected in the run, its current state is
+  unavailable even if code or an older campaign receipt mentions it.
 
 ## Architecture
 
 ```
 Mastery Research UI (Vercel)
   → GPT Researcher API + MCP (Railway)  [synced fork + HLT overlay]
-  → Code-graph MCP (Render)             [GitNexus indexes 5 repos]
-Brian, the Mastery Researcher (Render) [built; gateway off until Slack app exists]
-  → mounts GPTR MCP, code graph, Katailyst2, Linear
-  → Slack gateway (Socket Mode) for the team
+  → Code/source MCP (Render)             [5 structural indexes + 2 source-only checkouts]
+Katailyst2                               [agent registry/orchestration authority]
+  → product/facilitator agents call the Mastery Research provider
+Agent runtime adapter (Render)           [Cleo or Brian; gateway deployment]
+  → mounts GPTR MCP, code/source MCP, Katailyst2, Linear
 ```
 
-Brian is the one part of this diagram that is not yet answering
-anyone. Everything in it is deployed and configured; `BRIAN_ENABLE_GATEWAY=1`
-plus a pair of Slack tokens is all that remains.
+The reusable core and browser are separate from the agents that facilitate a
+particular product conversation. Katailyst2 is the canonical home for those
+agent capabilities and routing. `services/agent` is the deployment adapter for
+the Cleo (Nursing Mastery product-owner/facilitator) and Brian (general
+researcher) personas; it does not make the research core Nursing-Mastery-only.
 
 ### Estate repos (code scope)
 
+- `Awhitter/hlt-gpt-researcher` — reusable research core and integrations
 - `Awhitter/MMM2` — multimedia engine  
 - `Awhitter/katailyst2` — AI primitives / registry / command hub  
 - `Awhitter/evidence-based-business` (ebb) — metrics  
 - `Awhitter/ScraperVault` — recruiting data backend  
 - `Awhitter/nursing-mastery` — nurse-facing product surface  
+- `HLT-Master/hlt-web-service` — HLT account API (exact source search; no
+  structural GitNexus index)
 
 Override via `HLT_CODEBASE_REPOS`.
 
@@ -77,7 +99,7 @@ Override via `HLT_CODEBASE_REPOS`.
 | Source | Role |
 |--------|------|
 | Deep web (Tavily / Firecrawl) | External research |
-| Code-graph MCP (`CODEGRAPH_MCP_*`) | Structural code Q&A (preferred for Code scope) |
+| Code/source MCP (`CODEGRAPH_MCP_*`) | Exact current source + structural code Q&A (preferred for Code scope) |
 | GitHub MCP | Fallback code/search |
 | Katailyst2 MCP | Registry, skills, playbooks |
 | Cloudinary | Media library |
@@ -109,8 +131,8 @@ Override via `HLT_CODEBASE_REPOS`.
 |-------|-------------|--------|
 | 1 | Upstream sync + tests + Railway redeploy | shipped |
 | 2 | This PRD | shipped |
-| 3 | Code-graph service on Render + Code scope wiring | shipped — `hlt-codegraph` indexes 5 repos |
-| 4 | Brian on Render with Slack + MCP mounts | **built, not switched on** — container installs the CLI and renders its MCP config at boot; blocked on creating the Slack app (see `services/brian/README.md`) |
+| 3 | Code/source service on Render + Code scope wiring | shipped — five structural indexes plus source-only HLT API and Mastery Research checkouts |
+| 4 | Cleo/Brian runtime adapter on Render with Slack + MCP mounts | built; runtime and permission readiness are reported by `/health` (see `services/agent/README.md`) |
 | 5 | Team Brain UI tabs (Ask / Codebase / Vision / Changelog / Roadmap) | shipped |
 
 ## Cost envelope (indicative)

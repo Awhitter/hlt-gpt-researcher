@@ -137,6 +137,38 @@ def test_scope_resolution_uses_configured_backends(monkeypatch):
     assert "fire-secret" not in json.dumps(metadata)
 
 
+def test_fast_code_scope_keeps_fast_prose_but_upgrades_source_retrieval(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("CODEGRAPH_MCP_URL", "https://codegraph.example/mcp")
+    monkeypatch.setenv("CODEGRAPH_MCP_TOKEN", "codegraph-secret")
+    monkeypatch.setattr(
+        hlt_extensions,
+        "_codegraph_repository_readiness",
+        lambda: [
+            {
+                "repo": "nursing-mastery",
+                "status": "ready",
+                "commitSha": "a" * 40,
+                "indexedAt": "2026-08-06T00:00:00Z",
+            }
+        ],
+    )
+
+    _, mcp_enabled, mcp_strategy, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="Where does Nursing Mastery capture email?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={"codebase": True, "depth": "fast"},
+    )
+
+    assert mcp_enabled is True
+    assert mcp_strategy == "deep"
+    assert [config["name"] for config in configs] == ["codegraph"]
+    assert metadata["depth"] == "fast"
+
+
 def test_codebase_scope_partial_with_only_katailyst(monkeypatch):
     clear_hlt_env(monkeypatch)
     set_firecrawl_import(monkeypatch, False)
@@ -207,13 +239,19 @@ def test_codebase_instruction_names_estate_repos(monkeypatch):
     )
 
     for repo in (
+        "Awhitter/hlt-gpt-researcher",
         "Awhitter/nursing-mastery",
         "Awhitter/ScraperVault",
+        "HLT-Master/hlt-web-service",
         "Awhitter/katailyst2",
         "Awhitter/MMM2",
         "Awhitter/evidence-based-business",
     ):
         assert repo in task
+
+    assert "Do not assume that one repository owns every part of a person record" in task
+    assert "active live-system source" in task
+    assert "ScraperVault as recruiting/profile/application authority" not in task
 
 
 def test_codebase_prefers_codegraph_over_github(monkeypatch):

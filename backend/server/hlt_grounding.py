@@ -23,6 +23,27 @@ _GITHUB_PERMALINK = re.compile(
     r"blob/(?P<sha>[0-9a-fA-F]{40})/(?P<path>[^\s)#?]+)"
     r"(?:#L(?P<line>\d+)(?:-L(?P<end_line>\d+))?)?"
 )
+_GITHUB_CODE_LINK = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
+    r"(?P<kind>blob|tree)/(?P<ref>[^/\s)#?]+)/(?P<path>[^\s)#?]+)"
+)
+_SCOPE_INSTRUCTION_MARKER = "HLT research scope instructions:"
+
+
+def sanitize_user_visible_research_data(value: Any) -> Any:
+    """Remove internal prompt suffixes from user-facing events and logs."""
+    if isinstance(value, str):
+        return value.split(_SCOPE_INSTRUCTION_MARKER, 1)[0].rstrip()
+    if isinstance(value, list):
+        return [sanitize_user_visible_research_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_user_visible_research_data(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: sanitize_user_visible_research_data(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def extract_source_refs(answer: str) -> list[dict[str, Any]]:
@@ -97,8 +118,55 @@ def normalize_source_refs(value: Any, answer: str = "") -> list[dict[str, Any]]:
     return deduped
 
 
+def _validate_source_ref_with_codegraph(ref: dict[str, Any]) -> dict[str, Any] | None:
+    """Ask the authenticated source checkout before calling GitHub directly."""
+    base_url = str(os.getenv("CODEGRAPH_MCP_URL") or "").strip().rstrip("/")
+    token = str(os.getenv("CODEGRAPH_MCP_TOKEN") or "").strip()
+    if not base_url or not token:
+        return None
+    if base_url.endswith("/mcp"):
+        base_url = base_url[:-4]
+    request = urllib.request.Request(
+        f"{base_url}/verify-source",
+        data=json.dumps(
+            {
+                "repo": ref["repo"],
+                "path": ref["path"],
+                "commitSha": ref["commitSha"],
+            }
+        ).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=6) as response:  # noqa: S310 - operator-configured internal service
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("exists"), bool):
+        return None
+    if (
+        str(body.get("repo") or "").lower() != str(ref["repo"]).lower()
+        or str(body.get("commitSha") or "").lower() != ref["commitSha"]
+        or str(body.get("path") or "").lstrip("/") != ref["path"]
+    ):
+        return None
+    validated = dict(ref)
+    validated["exists"] = body["exists"]
+    validated["indexedAt"] = body.get("indexedAt") or validated.get("indexedAt")
+    validated["validationMethod"] = "codegraph"
+    validated["validatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return validated
+
+
 def _validate_source_ref(ref: dict[str, Any]) -> dict[str, Any]:
-    """Validate one immutable GitHub source without trusting model prose."""
+    """Validate one immutable repository source without trusting model prose."""
+    codegraph_result = _validate_source_ref_with_codegraph(ref)
+    if codegraph_result is not None:
+        return codegraph_result
     repo = ref["repo"]
     path = urllib.parse.quote(ref["path"], safe="/")
     sha = urllib.parse.quote(ref["commitSha"], safe="")
@@ -107,10 +175,15 @@ def _validate_source_ref(ref: dict[str, Any]) -> dict[str, Any]:
         method="GET",
         headers={"Accept": "application/vnd.github+json"},
     )
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    token = (
+        os.getenv("GITHUB_TOKEN")
+        or os.getenv("GH_TOKEN")
+        or os.getenv("GITHUB_MCP_TOKEN")
+    )
     if token:
         request.add_header("Authorization", f"Bearer {token}")
     validated = dict(ref)
+    validated["validationMethod"] = "github"
     validated["validatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         with urllib.request.urlopen(request, timeout=6) as response:  # noqa: S310 - fixed GitHub API host
@@ -187,6 +260,80 @@ def prepare_report_record(
     ]
     normalized["sourceFreshness"] = max(indexed_times) if indexed_times else None
     return normalized
+
+
+def _mutable_github_code_links(answer: str) -> list[str]:
+    links: list[str] = []
+    for match in _GITHUB_CODE_LINK.finditer(answer or ""):
+        if match.group("kind") == "blob" and re.fullmatch(
+            r"[0-9a-fA-F]{40}", match.group("ref")
+        ):
+            continue
+        links.append(match.group(0))
+    return links
+
+
+def _requires_code_grounding(scope_metadata: dict[str, Any] | None) -> bool:
+    if not isinstance(scope_metadata, dict):
+        return False
+    active = scope_metadata.get("active_sources")
+    return isinstance(active, list) and "codebase" in active
+
+
+def _blocked_delivery_answer(record: dict[str, Any]) -> str:
+    reason = str(
+        record.get("verificationReason")
+        or "Exact repository evidence was unavailable."
+    )
+    return (
+        "# I couldn't verify this answer yet\n\n"
+        "I reached the research service, but it did not return enough exact, current "
+        "repository evidence to support a trustworthy answer. I will not turn a plausible "
+        "guess into a current fact.\n\n"
+        f"**What failed:** {reason}\n\n"
+        "**What to do:** Try the question again. If this repeats, the Code source needs "
+        "attention before this assistant can answer implementation questions safely."
+    )
+
+
+def prepare_report_delivery(
+    answer: str,
+    scope_metadata: dict[str, Any] | None,
+    *,
+    source_refs: Any = None,
+    validate_sources: bool = False,
+) -> dict[str, Any]:
+    """Prepare the exact answer that may reach the UI and report artifacts.
+
+    Stored-report quarantine is not enough: a live code answer must fail closed
+    before websocket delivery and before Markdown/PDF/DOCX generation.
+    """
+    record = prepare_report_record(
+        {"answer": str(answer or ""), "sourceRefs": source_refs or []},
+        validate_sources=validate_sources,
+    )
+    mutable_links = _mutable_github_code_links(str(answer or ""))
+    for link in mutable_links:
+        claim = (
+            "Repository source is not an immutable 40-character commit permalink: "
+            f"{link}"
+        )
+        if claim not in record["unsupportedClaims"]:
+            record["unsupportedClaims"].append(claim)
+    if mutable_links:
+        record["verificationStatus"] = "partial"
+        record["verificationReason"] = (
+            "One or more repository links use a branch, tag, tree, or short "
+            "commit instead of an exact file commit."
+        )
+
+    blocked = _requires_code_grounding(scope_metadata) and (
+        record["verificationStatus"] != "verified" or bool(record["unsupportedClaims"])
+    )
+    record["deliveryBlocked"] = blocked
+    if blocked:
+        record["answer"] = _blocked_delivery_answer(record)
+    return record
 
 
 def report_is_memory_eligible(report: dict[str, Any]) -> bool:
