@@ -112,6 +112,10 @@ SLACK_PLATFORM_HINT = (
     "inventory of your tools.\n"
     "Query the source before you describe it. Saying a system 'holds our voice "
     "and personas' without opening it looks like an answer and contains none.\n"
+    "Never answer an orientation question — 'help me understand X', 'how does X "
+    "work' — from structure alone. Pull recent changes too and LEAD with what "
+    "moved. This product merges hundreds of PRs a fortnight, so a description "
+    "that omits last week is a stale snapshot the reader will act on.\n"
     "Ground every answer, and put the evidence at the END as a short Sources "
     "list — the identifier, file or registry ref you actually opened — instead "
     "of scattering them mid-sentence where they break the reading.\n"
@@ -363,12 +367,27 @@ def build_config(
         # unavailable every turn while /health cheerfully reported the key
         # present. Naming the provider is the opt-in.
         "tts": {"provider": "elevenlabs"},
-        # web_search/web_extract are gated by `check_web_api_key`, which needs a
-        # backend that actually resolves. With none configured the whole `web`
-        # toolset was dead — she could not search at all. `ddgs` is in upstream's
-        # backend list and needs no API key, so it is the honest default; set
-        # WEB_SEARCH_BACKEND to move to a paid one (tavily, exa, firecrawl…).
-        "web": {"backend": _clean(env, "WEB_SEARCH_BACKEND") or "ddgs"},
+        # Per-tool provider selection, which is the documented surface — see
+        # upstream's Nous Tool Gateway: `tools.web_search.provider` /
+        # `tools.image_generation.provider`, with `use_gateway` routing a call
+        # through a Portal subscription instead of our own key.
+        #
+        # `check_web_api_key` needs a backend that actually resolves; with none
+        # configured the ENTIRE `web` toolset is unavailable and she cannot
+        # search at all. Firecrawl is a first-class backend and we hold a key,
+        # so it is the default here — `ddgs` remains the keyless fallback for a
+        # deploy with no Firecrawl credit.
+        "tools": {
+            "web_search": {
+                "provider": _clean(env, "WEB_SEARCH_BACKEND")
+                or ("firecrawl" if _clean(env, "FIRECRAWL_API_KEY") else "ddgs")
+            },
+            "image_generation": {"provider": "fal"},
+        },
+        "web": {
+            "backend": _clean(env, "WEB_SEARCH_BACKEND")
+            or ("firecrawl" if _clean(env, "FIRECRAWL_API_KEY") else "ddgs")
+        },
         # The top-level `toolsets` key is deprecated and ignored upstream; this
         # per-platform map is the one that is actually read.
         "platform_toolsets": {"slack": slack_toolsets(servers)},

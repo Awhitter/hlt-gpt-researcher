@@ -397,7 +397,7 @@ def test_company_facts_ship_in_the_image_not_in_memory(tmp_path):
     """
     summary = grounding.install(agent="cleo", home=tmp_path, env={})
 
-    assert summary["briefing_sections"] == ["shared", "cleo", "team"]
+    assert summary["briefing_sections"] == ["shared", "cleo"]
     assert not (tmp_path / "memories").exists(), "boot must not pre-seed agent memory"
     assert not (tmp_path / "memory").exists(), "the old wrong-directory seeding is gone"
 
@@ -663,16 +663,18 @@ def test_posthog_is_mounted_and_granted():
     assert "mcp-posthog" in config["platform_toolsets"]["slack"]
 
 
-def test_the_briefing_carries_the_team_not_just_the_code(tmp_path):
+def test_the_briefing_carries_the_business_not_just_the_code(tmp_path):
     """A marketing lead got an answer about `proxy.ts` because the briefing only
-    described the codebase and never said non-engineers exist."""
+    described the codebase.
+
+    Team context is deliberately NOT duplicated here — `global-team-context` in
+    the Katailyst registry owns it fleet-wide, and a local copy is a second
+    canon that drifts.
+    """
     summary = grounding.install(agent="cleo", home=tmp_path, env={})
 
-    assert summary["briefing_sections"] == ["shared", "cleo", "team"]
+    assert summary["briefing_sections"] == ["shared", "cleo"]
     briefing = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
-    for person in ("Emily Whitters", "Justin Leas", "Kim Lehrman", "Jason Shaw"):
-        assert person in briefing
-    # the business, not only the code
     assert "NCLEX RN Mastery is the mass surface" in briefing
     assert "Cedar Rapids" in briefing, "a tried-and-failed campaign must not be re-proposed"
 
@@ -717,3 +719,32 @@ def test_web_search_has_a_backend_that_needs_no_key():
     assert render_config.build_config(FULL_ENV)["web"]["backend"] == "ddgs"
     override = render_config.build_config({**FULL_ENV, "WEB_SEARCH_BACKEND": "tavily"})
     assert override["web"]["backend"] == "tavily"
+
+
+def test_an_orientation_answer_must_carry_recent_change():
+    """"help me understand nursing mastery" returned a static architecture tour
+    while sign-in and data ownership had just moved (#712, #556).
+
+    The briefing routed orientation questions to structure only — "code graph
+    for how" — so last week never appeared. A description of a system that
+    merges hundreds of PRs a fortnight, minus what just changed, is a stale
+    snapshot the reader acts on.
+    """
+    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
+    assert "orientation question is never answered from structure alone" in soul
+    assert "recent_changes" in soul
+
+    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
+    assert "orientation question" in hint
+    assert "LEAD with what" in hint
+
+
+def test_capabilities_use_the_documented_provider_surface():
+    """`tools.<tool>.provider` is upstream's Tool Gateway surface. A missing
+    backend leaves check_web_api_key False and the whole web toolset dead."""
+    with_key = render_config.build_config({**FULL_ENV, "FIRECRAWL_API_KEY": "fc-x"})
+    assert with_key["tools"]["web_search"]["provider"] == "firecrawl"
+    assert with_key["tools"]["image_generation"]["provider"] == "fal"
+
+    # keyless deploys must still resolve a backend, or web search silently dies
+    assert render_config.build_config(FULL_ENV)["tools"]["web_search"]["provider"] == "ddgs"
