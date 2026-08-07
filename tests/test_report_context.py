@@ -163,6 +163,33 @@ def test_code_report_context_keeps_ten_question_sources_in_view():
     assert "BROAD_SEARCH_CONTEXT" not in compacted
 
 
+def test_code_report_context_keeps_late_workflow_sources_in_view():
+    sources = [
+        {
+            "tool_name": "read_source",
+            "title": f"opened workflow evidence {index}",
+            "url": (
+                "https://github.com/Awhitter/repo/blob/"
+                + f"{index:x}" * 40
+                + f"/workflow-{index}.ts#L1-L200"
+            ),
+            "content": f"WORKFLOW_{index}_EVIDENCE\n" + (chr(64 + index) * 20_000),
+        }
+        for index in range(1, 18)
+    ]
+
+    compacted = compact_report_context(
+        "BROAD_SEARCH_CONTEXT",
+        sources,
+        max_chars=50_000,
+        opened_sources_only=True,
+    )
+
+    assert len(compacted) <= 50_000
+    assert all(f"WORKFLOW_{index}_EVIDENCE" in compacted for index in range(1, 18))
+    assert "BROAD_SEARCH_CONTEXT" not in compacted
+
+
 def test_code_report_without_opened_file_states_evidence_is_missing():
     compacted = compact_report_context(
         "A broad result that sounds plausible",
@@ -185,6 +212,8 @@ def test_code_teammate_prompt_prevents_inference_and_authority_flattening():
     assert "not verified in the opened sources for this run" in prompt
     assert "silently audit every use" in prompt
     assert "Never add likely, standard, illustrative, or inferred fields" in prompt
+    assert "scan every opened-file block" in prompt
+    assert "implemented path but not live runtime use" in prompt
     assert "not verified" in prompt
     assert "What attributes do we capture?" in prompt
 
@@ -223,6 +252,8 @@ def test_code_teammate_audit_forbids_global_marketo_and_interface_leaps():
     assert "inactive Marketo pilot" in prompt
     assert "Absence is local to this evidence set" in prompt
     assert "Delete speculative implementation-location phrases" in prompt
+    assert "Never say evidence was not opened" in prompt
+    assert "implemented code from live-runtime readback" in prompt
 
 
 @pytest.mark.asyncio
