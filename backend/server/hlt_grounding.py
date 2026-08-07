@@ -448,6 +448,65 @@ def _requires_code_grounding(scope_metadata: dict[str, Any] | None) -> bool:
     return isinstance(active, list) and "codebase" in active
 
 
+def _code_report_authority_hazards(
+    answer: str,
+    source_refs: list[dict[str, Any]],
+) -> list[str]:
+    """Catch high-risk authority leaps before a code report is delivered.
+
+    Path validation proves that a cited file exists, not that every conclusion
+    drawn from it is valid. These checks cover the most damaging recurring
+    errors while the writer's source-authority audit handles normal nuance.
+    """
+
+    text = str(answer or "")
+    hazards: list[str] = []
+    if re.search(
+        r"\binterface\b[\s\S]{0,700}\b(?:indicat(?:e|es|ing)|therefore|so)\b"
+        r"[\s\S]{0,350}\b(?:owns?|owned by|system of record|orchestrat(?:e|es|ed|ing))\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        hazards.append(
+            "A declared interface was used to infer ownership, persistence, or orchestration."
+        )
+
+    marketo_absolute = re.search(
+        r"\b(?:marketo (?:is not used|does not (?:store|send))|"
+        r"emails? (?:are|is) not being sent(?: or leads added)? in marketo|"
+        r"we do not (?:store|send)[^.\n]{0,100}\bmarketo)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if marketo_absolute:
+        marketo_authority_paths = [
+            str(ref.get("path") or "").lower()
+            for ref in source_refs
+            if any(
+                marker in str(ref.get("path") or "").lower()
+                for marker in ("marketo", "integrations", "providers", "destinations")
+            )
+            and not any(
+                weak in str(ref.get("path") or "").lower()
+                for weak in (
+                    "/tests/",
+                    "/test/",
+                    "/scripts/",
+                    "/docs/",
+                    "/components/",
+                    "/app/(dashboard)/",
+                    "/page.tsx",
+                )
+            )
+        ]
+        if not marketo_authority_paths:
+            hazards.append(
+                "An estate-wide negative Marketo claim lacks an opened provider, integration, "
+                "destination, or live-readback source."
+            )
+    return hazards
+
+
 def _blocked_delivery_answer(record: dict[str, Any]) -> str:
     reason = str(
         record.get("verificationReason")
@@ -499,6 +558,20 @@ def prepare_report_delivery(
             "One or more repository links use a branch, tag, tree, or short "
             "commit instead of an exact file commit."
         )
+
+    if _requires_code_grounding(scope_metadata):
+        for claim in _code_report_authority_hazards(
+            str(answer or ""),
+            record["sourceRefs"],
+        ):
+            if claim not in record["unsupportedClaims"]:
+                record["unsupportedClaims"].append(claim)
+        if record["unsupportedClaims"] and record["verificationStatus"] == "verified":
+            record["verificationStatus"] = "partial"
+            record["verificationReason"] = (
+                "Repository paths were validated, but the report made an unsupported "
+                "source-authority claim."
+            )
 
     if (
         _requires_code_grounding(scope_metadata)

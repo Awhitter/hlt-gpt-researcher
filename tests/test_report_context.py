@@ -5,6 +5,7 @@ import pytest
 import gpt_researcher.skills.writer as writer_module
 from gpt_researcher.skills.writer import (
     ReportGenerator,
+    code_teammate_audit_prompt,
     code_teammate_report_prompt,
     compact_report_context,
 )
@@ -188,13 +189,48 @@ def test_code_teammate_prompt_prevents_inference_and_authority_flattening():
     assert "What attributes do we capture?" in prompt
 
 
+def test_opened_source_context_labels_interface_and_ui_evidence_limits():
+    source = {
+        "tool_name": "read_source",
+        "title": "campaign dashboard",
+        "url": (
+            "https://github.com/Awhitter/katailyst2/blob/"
+            + "d" * 40
+            + "/app/(dashboard)/content/campaigns/page.tsx#L1-L30"
+        ),
+        "content": "interface LifecycleSignals { email?: string }",
+    }
+
+    compacted = compact_report_context(
+        "search noise",
+        [source],
+        max_chars=20_000,
+        opened_sources_only=True,
+    )
+
+    assert "presentation or caller surface" in compacted
+    assert "declared interface or type proves a data shape" in compacted
+    assert "repository location alone does not prove" in compacted.lower()
+
+
+def test_code_teammate_audit_forbids_global_marketo_and_interface_leaps():
+    prompt = code_teammate_audit_prompt(
+        "Who owns these fields, and do we send them to Marketo?",
+        "An interface is in K2, so K2 owns them and Marketo is not used.",
+    )
+
+    assert "Never infer capture, persistence, ownership" in prompt
+    assert "inactive Marketo pilot" in prompt
+    assert "Absence is local to this evidence set" in prompt
+
+
 @pytest.mark.asyncio
 async def test_code_only_writer_automatically_uses_teammate_contract(monkeypatch):
-    captured = {}
+    captured = []
 
     async def fake_generate_report(**kwargs):
-        captured.update(kwargs)
-        return "grounded answer"
+        captured.append(kwargs)
+        return "draft answer" if len(captured) == 1 else "audited grounded answer"
 
     monkeypatch.setattr(writer_module, "generate_report", fake_generate_report)
     researcher = SimpleNamespace(
@@ -223,8 +259,13 @@ async def test_code_only_writer_automatically_uses_teammate_contract(monkeypatch
 
     report = await ReportGenerator(researcher).write_report()
 
-    assert report == "grounded answer"
-    assert "Lead with the answer" in captured["custom_prompt"]
-    assert "How does this route work?" in captured["custom_prompt"]
-    assert "OPENED_ROUTE_EVIDENCE" in captured["context"]
-    assert "BROAD_SEARCH_CONTEXT" not in captured["context"]
+    assert report == "audited grounded answer"
+    assert len(captured) == 2
+    assert "Lead with the answer" in captured[0]["custom_prompt"]
+    assert "How does this route work?" in captured[0]["custom_prompt"]
+    assert "Audit and rewrite the draft" in captured[1]["custom_prompt"]
+    assert "draft answer" in captured[1]["custom_prompt"]
+    assert captured[0]["websocket"] is None
+    assert captured[1]["websocket"] is None
+    assert "OPENED_ROUTE_EVIDENCE" in captured[0]["context"]
+    assert "BROAD_SEARCH_CONTEXT" not in captured[0]["context"]
