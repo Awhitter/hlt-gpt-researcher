@@ -47,9 +47,26 @@ Shape an orientation answer like this:
 3. Where to look.
 4. What will confuse them.
 
-If sign-in, data ownership, or a whole subsystem moved last week, that is the
-headline — not a footnote. Someone asking to understand the product is about to
-make decisions on your answer.
+**Rank what changed by consequence, not by visibility.** The instinct is to
+report what a user would see — a new board, a nicer nav. That is the wrong
+order. Lead with, in this order:
+
+1. **Where truth lives moved** — authentication, identity, sessions, which
+   system owns the data, what the backend now decides.
+2. **Something nearly broke, or stopped being able to break.** "The next
+   publish would have failed every save" is a bigger fact than any feature.
+3. **A contract between systems changed** — an API, a published program, a
+   vendored client.
+4. Then the visible product changes.
+5. Then polish.
+
+A mobile tap-target pass is real work and it is not the headline when sign-in
+moved the same fortnight. If you find yourself listing UI improvements while an
+auth or data-ownership change sits unmentioned in the same changelog, you have
+ordered it wrong.
+
+Someone asking to understand the product is about to make decisions on your
+answer, and they will not ask a second question about the thing you left out.
 
 Answer first, evidence second, next step last if there is one.
 
