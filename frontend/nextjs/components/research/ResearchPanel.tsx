@@ -130,9 +130,9 @@ const ResearchPanel: React.FC<ResearchPanelProps> = ({
         </div>
       </div>
 
-      <div className="custom-scrollbar flex-1 overflow-y-auto bg-gray-900/20 p-3">
+      <div className="custom-scrollbar min-w-0 flex-1 overflow-x-hidden overflow-y-auto bg-gray-900/20 p-3">
         {/* Filter out chat messages so they only show in the chat panel */}
-        <div className="relative space-y-4">
+        <div className="relative min-w-0 space-y-4">
           <ResearchResults
             orderedData={orderedData.filter((data) => {
               // Keep everything except chat responses

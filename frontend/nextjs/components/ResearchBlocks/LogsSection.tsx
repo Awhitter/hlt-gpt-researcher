@@ -38,11 +38,11 @@ const LogsSection = ({
   const latestLog = logs[logs.length - 1];
 
   return (
-    <div className="bg-black/24 container mt-4 h-auto w-full shrink-0 rounded-lg border border-solid border-gray-700/35 p-4 shadow-lg backdrop-blur-md">
+    <div className="bg-black/24 container mt-4 h-auto min-w-0 w-full shrink-0 rounded-lg border border-solid border-gray-700/35 p-4 shadow-lg backdrop-blur-md">
       <div className="flex flex-col gap-3 pb-0 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-4">
-          <img src="/img/chat-check.svg" alt="logs" width={20} height={20} />
-          <div>
+        <div className="flex min-w-0 flex-1 items-start gap-4">
+          <img className="shrink-0" src="/img/chat-check.svg" alt="logs" width={20} height={20} />
+          <div className="min-w-0 flex-1">
             <h3 className="text-sm font-bold uppercase leading-[152.5%] tracking-[0.08em] text-white">
               Research activity
             </h3>
@@ -56,7 +56,7 @@ const LogsSection = ({
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="inline-flex items-center justify-center rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/[0.08]"
+          className="inline-flex shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/[0.08]"
         >
           {expanded ? "Collapse logs" : `Show ${logs.length} events`}
         </button>

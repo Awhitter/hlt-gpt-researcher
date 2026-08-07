@@ -102,7 +102,7 @@ export default function MobileLayout({
             {loading && (
               <button
                 onClick={onStop}
-                className="p-2 rounded-full bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-red-500/20 text-red-300 hover:bg-red-500/30"
                 aria-label="Stop research"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -114,7 +114,7 @@ export default function MobileLayout({
             {showResult && onNewResearch && (
               <button
                 onClick={onNewResearch}
-                className="p-2 rounded-full bg-sky-500/20 text-sky-300 hover:bg-sky-500/30"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-sky-500/20 text-sky-300 hover:bg-sky-500/30"
                 aria-label="New research"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -130,7 +130,7 @@ export default function MobileLayout({
                 setShowSettings(false);
                 if (toggleSidebar) toggleSidebar();
               }}
-              className="p-2 rounded-full bg-gray-800/50 text-gray-300 hover:bg-gray-700/50"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-800/50 text-gray-300 hover:bg-gray-700/50"
               aria-label="View history"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -146,7 +146,7 @@ export default function MobileLayout({
               <button
                 type="button"
                 onClick={signOut}
-                className="px-1.5 py-2 text-[11px] font-medium text-gray-400 hover:text-white"
+                className="min-h-11 px-2 py-2 text-[11px] font-medium text-gray-400 hover:text-white"
               >
                 Sign out
               </button>
@@ -157,7 +157,7 @@ export default function MobileLayout({
                 setShowSettings(!showSettings);
                 setShowHistory(false);
               }}
-              className="p-2 rounded-full bg-gray-800/50 text-gray-300 hover:bg-gray-700/50"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-800/50 text-gray-300 hover:bg-gray-700/50"
               aria-label="Settings"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

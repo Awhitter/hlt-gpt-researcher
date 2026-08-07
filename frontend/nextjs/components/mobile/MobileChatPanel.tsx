@@ -42,18 +42,20 @@ const ChatMessage = memo(({
   type,
   content,
   html,
-  metadata
+  metadata,
+  isPrimaryReport,
 }: {
   type: string,
   content: string,
   html: string,
-  metadata?: any
+  metadata?: any,
+  isPrimaryReport?: boolean,
 }) => {
   if (type === 'question') {
     // User question - now with teal/turquoise color to match theme
     return (
-      <div className="flex items-start justify-end space-x-2 py-1 max-w-full animate-fade-in">
-        <div className="flex-1 bg-teal-600/80 border border-teal-500/50 rounded-2xl px-4 py-3 text-sm text-white font-medium ml-10 shadow-md">
+      <div className="flex max-w-full items-start justify-end space-x-2 py-1 animate-fade-in">
+        <div className="ml-10 min-w-0 flex-1 break-words rounded-2xl border border-teal-500/50 bg-teal-600/80 px-4 py-3 text-sm font-medium text-white shadow-md">
           {content}
         </div>
         <div className="w-8 h-8 rounded-full bg-teal-600 flex items-center justify-center flex-shrink-0 shadow-md">
@@ -92,11 +94,14 @@ const ChatMessage = memo(({
 
     // AI response - with darker color
     return (
-      <div className="flex flex-col space-y-2 py-1 max-w-full animate-fade-in">
-        <div className="flex items-start space-x-2">
+      <div
+        className="flex max-w-full flex-col space-y-2 py-1 animate-fade-in"
+        data-primary-report={isPrimaryReport ? "true" : undefined}
+      >
+        <div className="flex min-w-0 items-start space-x-2">
           <AssistantAvatar />
-          <div className="flex-1 ai-message-bubble rounded-2xl px-4 py-3 text-sm text-white mr-4 shadow-lg">
-            <div className="markdown-content prose prose-sm prose-invert max-w-none">
+          <div className="ai-message-bubble mr-4 min-w-0 max-w-full flex-1 rounded-2xl px-4 py-3 text-sm text-white shadow-lg">
+            <div className="markdown-content prose prose-sm prose-invert min-w-0 max-w-full">
               <div dangerouslySetInnerHTML={{ __html: html }} />
             </div>
 
@@ -216,12 +221,18 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
   const [showPreferences, setShowPreferences] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [renderedMessages, setRenderedMessages] = useState<{id: string, content: string, html: string, type: string, metadata?: any}[]>([]);
+  const positionedReportRef = useRef("");
+  const [renderedMessages, setRenderedMessages] = useState<{id: string, content: string, html: string, type: string, metadata?: any, isPrimaryReport?: boolean}[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Process markdown in messages - memoized for performance
   useEffect(() => {
     const chatMessages = buildMobileReportMessages(orderedData, answer, question);
+    const primaryReportIndex = answer.trim()
+      ? chatMessages.findIndex(
+          (message) => message.type === "chat" && message.content === answer,
+        )
+      : -1;
 
     const processMessages = async () => {
       try {
@@ -237,7 +248,8 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
                   content: msg.content,
                   html,
                   type: msg.type,
-                  metadata: (msg as ChatData).metadata
+                  metadata: (msg as ChatData).metadata,
+                  isPrimaryReport: index === primaryReportIndex,
                 };
               } catch (error) {
                 console.error('Error processing markdown:', error);
@@ -247,7 +259,8 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
                   content: msg.content,
                   html: `<p>${msg.content}</p>`,
                   type: msg.type,
-                  metadata: (msg as ChatData).metadata
+                  metadata: (msg as ChatData).metadata,
+                  isPrimaryReport: index === primaryReportIndex,
                 };
               }
             } else {
@@ -335,19 +348,38 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
     }
   }, []);
 
-  // Scroll when messages change or loading/processing state changes
+  // Keep live work and follow-up chat pinned to the latest message. When a
+  // completed report first appears, anchor its beginning instead of dropping
+  // a returning reader at the Sources footer.
   useEffect(() => {
-    // Use requestAnimationFrame to ensure DOM has updated
     requestAnimationFrame(() => {
+      const container = chatContainerRef.current;
+      const primaryReport = container?.querySelector<HTMLElement>(
+        '[data-primary-report="true"]',
+      );
+
+      if (
+        container &&
+        primaryReport &&
+        answer.trim() &&
+        !loading &&
+        positionedReportRef.current !== answer
+      ) {
+        positionedReportRef.current = answer;
+        container.scrollTop = Math.max(0, primaryReport.offsetTop - 8);
+        return;
+      }
+
       scrollToBottom();
     });
-  }, [renderedMessages.length, loading, isProcessingChat, scrollToBottom]);
+  }, [answer, renderedMessages, loading, isProcessingChat, scrollToBottom]);
 
   // Also handle mutations in the DOM that might affect scroll height
   useEffect(() => {
     if (!chatContainerRef.current) return;
 
     const observer = new MutationObserver(() => {
+      if (positionedReportRef.current === answer && !isProcessingChat) return;
       requestAnimationFrame(scrollToBottom);
     });
 
@@ -358,7 +390,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
     });
 
     return () => observer.disconnect();
-  }, [scrollToBottom]);
+  }, [answer, isProcessingChat, scrollToBottom]);
 
   // Determine if we need to show intro message
   const showIntroMessage = !answer.trim() && (
@@ -401,7 +433,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
       {/* Chat Messages Area */}
       <div
         ref={chatContainerRef}
-        className="flex-1 overflow-y-auto px-3 py-2 space-y-3 custom-scrollbar"
+        className="custom-scrollbar min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-3 py-2"
       >
         {/* Welcome/Intro message when no content */}
         {showIntroMessage && !loading && (
@@ -434,6 +466,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
             content={message.content}
             html={message.html}
             metadata={message.metadata}
+            isPrimaryReport={message.isPrimaryReport}
           />
         ))}
 
@@ -472,7 +505,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
             <button
               type="submit"
               disabled={!chatPromptValue.trim() || isProcessingChat || isSubmitting}
-              className={`absolute right-3 bottom-[50%] translate-y-[50%] w-9 h-9 flex items-center justify-center rounded-full ${
+              className={`absolute right-2 bottom-[50%] flex h-11 w-11 translate-y-[50%] items-center justify-center rounded-full ${
                 chatPromptValue.trim() && !isProcessingChat && !isSubmitting
                   ? 'bg-gradient-to-r from-teal-500 to-teal-600 hover:from-teal-400 hover:to-teal-500 text-white shadow-md'
                   : 'bg-gray-700 text-gray-400 cursor-not-allowed'
@@ -567,6 +600,8 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.05);
           position: relative;
           overflow: hidden;
+          min-width: 0;
+          max-width: 100%;
         }
 
         .ai-message-bubble::before {
@@ -589,6 +624,9 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
         /* Improved markdown content styling */
         .markdown-content {
           line-height: 1.6;
+          min-width: 0;
+          max-width: 100%;
+          overflow-wrap: anywhere;
         }
 
         .markdown-content ul, .markdown-content ol {
@@ -618,6 +656,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
         .markdown-content a {
           color: #5eead4;
           text-decoration: none;
+          overflow-wrap: anywhere;
         }
 
         .markdown-content a:hover {

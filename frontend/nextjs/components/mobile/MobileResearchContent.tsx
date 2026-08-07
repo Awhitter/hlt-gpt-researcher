@@ -237,7 +237,7 @@ export default function MobileResearchContent({
           {!localLoading && !localProcessing && currentResearchId && onShareClick && (
             <button 
               onClick={onShareClick}
-              className="flex items-center text-xs px-3 py-1.5 rounded-md bg-gradient-to-r from-teal-700/70 to-teal-600/70 text-teal-200 border border-teal-600/40 shadow-sm"
+              className="flex min-h-11 items-center rounded-md border border-teal-600/40 bg-gradient-to-r from-teal-700/70 to-teal-600/70 px-3 py-2 text-xs text-teal-200 shadow-sm"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
                 <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
