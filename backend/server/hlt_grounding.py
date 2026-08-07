@@ -23,6 +23,11 @@ _GITHUB_PERMALINK = re.compile(
     r"blob/(?P<sha>[0-9a-fA-F]{40})/(?P<path>[^\s)#?]+)"
     r"(?:#L(?P<line>\d+)(?:-L(?P<end_line>\d+))?)?"
 )
+_GITHUB_PERMALINK_EXACT = re.compile(
+    r"^https://github\.com/(?P<org>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/"
+    r"blob/(?P<sha>[0-9a-fA-F]{40})/(?P<path>.+?)"
+    r"(?:#L(?P<line>\d+)(?:-L(?P<end_line>\d+))?)?$"
+)
 _GITHUB_CODE_LINK = re.compile(
     r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
     r"(?P<kind>blob|tree)/(?P<ref>[^/\s)#?]+)/(?P<path>[^\s)#?]+)"
@@ -172,6 +177,100 @@ def normalize_source_refs(value: Any, answer: str = "") -> list[dict[str, Any]]:
             seen.add(key)
             deduped.append(ref)
     return deduped
+
+
+def _source_ref_from_exact_url(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, str):
+        return None
+    match = _GITHUB_PERMALINK_EXACT.fullmatch(value.strip())
+    if not match:
+        return None
+    return {
+        "repo": f"{match.group('org')}/{match.group('repo')}",
+        "commitSha": match.group("sha").lower(),
+        "path": match.group("path"),
+        "line": int(match.group("line")) if match.group("line") else None,
+        "endLine": int(match.group("end_line")) if match.group("end_line") else None,
+        "url": value.strip(),
+        "exists": None,
+    }
+
+
+def source_refs_from_research_sources(
+    sources: Any,
+    *,
+    max_refs: int = 12,
+) -> list[dict[str, Any]]:
+    """Recover exact refs from file-reading MCP results.
+
+    Search results are discovery, not evidence. Only read_source and
+    verify_source_ref payloads are promoted into the delivery receipt.
+    """
+
+    candidates: list[dict[str, Any]] = []
+
+    def visit(value: Any, *, trusted: bool = False, depth: int = 0) -> None:
+        if depth > 8 or len(candidates) >= max_refs * 4:
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, trusted=trusted, depth=depth + 1)
+            return
+        if isinstance(value, dict):
+            tool_name = str(value.get("tool_name") or value.get("tool") or "")
+            normalized_tool = tool_name.split("__")[-1].split(".")[-1].split("/")[-1]
+            is_file_evidence = trusted or normalized_tool in {
+                "read_source",
+                "verify_source_ref",
+            }
+            if is_file_evidence:
+                direct = {
+                    "repo": value.get("repo"),
+                    "commitSha": value.get("commitSha") or value.get("commit_sha"),
+                    "path": value.get("path"),
+                    "line": (
+                        value.get("line")
+                        or value.get("startLine")
+                        or value.get("start_line")
+                    ),
+                    "endLine": value.get("endLine") or value.get("end_line"),
+                    "url": value.get("url") or value.get("href"),
+                    "indexedAt": value.get("indexedAt") or value.get("indexed_at"),
+                    "exists": value.get("exists"),
+                }
+                normalized = normalize_source_refs([direct])
+                if normalized:
+                    candidates.extend(normalized)
+                exact_url = _source_ref_from_exact_url(
+                    value.get("url") or value.get("href")
+                )
+                if exact_url:
+                    candidates.append(exact_url)
+            for key in (
+                "structured_content",
+                "results",
+                "result",
+                "content",
+                "body",
+                "text",
+            ):
+                if key in value:
+                    visit(value[key], trusted=is_file_evidence, depth=depth + 1)
+            return
+        if not isinstance(value, str) or not trusted:
+            return
+        exact_url = _source_ref_from_exact_url(value)
+        if exact_url:
+            candidates.append(exact_url)
+        candidate = value.strip()
+        if candidate.startswith(("{", "[")):
+            try:
+                visit(json.loads(candidate), trusted=True, depth=depth + 1)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+    visit(sources)
+    return normalize_source_refs(candidates)[:max_refs]
 
 
 def _validate_source_ref_with_codegraph(ref: dict[str, Any]) -> dict[str, Any] | None:
@@ -389,6 +488,25 @@ def prepare_report_delivery(
             "One or more repository links use a branch, tag, tree, or short "
             "commit instead of an exact file commit."
         )
+
+    if (
+        _requires_code_grounding(scope_metadata)
+        and record["verificationStatus"] == "verified"
+    ):
+        missing_sources = [
+            ref for ref in record["sourceRefs"]
+            if str(ref.get("url") or "") not in record["answer"]
+        ]
+        if missing_sources:
+            source_lines = [
+                f"- [{ref['repo']} · {ref['path']}]({ref['url']})"
+                for ref in missing_sources[:8]
+            ]
+            record["answer"] = (
+                record["answer"].rstrip()
+                + "\n\n## Sources\n\n"
+                + "\n".join(source_lines)
+            )
 
     blocked = _requires_code_grounding(scope_metadata) and (
         record["verificationStatus"] != "verified" or bool(record["unsupportedClaims"])

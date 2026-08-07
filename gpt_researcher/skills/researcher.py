@@ -455,9 +455,13 @@ class ResearchConductor:
                                     "url": url,
                                     "title": title,
                                     "query": query,
-                                    "source_type": "mcp"
+                                    "source_type": "mcp",
+                                    "tool_name": result.get("tool_name"),
                                 }
                                 all_mcp_context.append(context_entry)
+                                self.researcher.add_research_sources([context_entry])
+                                if isinstance(url, str) and url.startswith(("https://", "http://")):
+                                    self.researcher.visited_urls.add(url)
                         
                         self.logger.info(f"Added {len(mcp_results)} MCP results for query: {query}")
                         

@@ -197,3 +197,7 @@ def test_mcp_research_can_search_then_read_a_discovered_source(monkeypatch):
     ]
     assert any("consentStatus: accepted" in item["body"] for item in results)
     assert results[-1]["body"] == "The exact identity route records accepted consent."
+    read_result = next(item for item in results if item["tool_name"] == "read_source")
+    assert read_result["href"].startswith(
+        "https://github.com/Awhitter/nursing-mastery/blob/"
+    )

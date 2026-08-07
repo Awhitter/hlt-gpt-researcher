@@ -4,6 +4,7 @@ MCP Research Execution Skill
 Handles research execution using selected MCP tools as a skill component.
 """
 import asyncio
+import json
 import logging
 from typing import List, Dict, Any
 
@@ -193,10 +194,41 @@ class MCPResearchSkill:
             List[Dict[str, str]]: Formatted search results
         """
         search_results = []
+
+        def formatted_result(
+            *,
+            title: Any,
+            href: Any,
+            body: Any,
+        ) -> Dict[str, str]:
+            if not isinstance(body, str):
+                body = json.dumps(body, default=str)
+            return {
+                "title": str(title or f"Result from {tool_name}"),
+                "href": str(href or f"mcp://{tool_name}"),
+                "body": body,
+                # Preserve provenance so delivery grounding can distinguish a
+                # file that was actually opened from a broad search result.
+                "tool_name": tool_name,
+            }
         
         try:
+            # Some MCP adapters return their structured payload as JSON text.
+            # Decode that shape before formatting it so exact read_source URLs
+            # and file metadata are not buried in an opaque body string.
+            if isinstance(result, str):
+                candidate = result.strip()
+                if candidate.startswith(("{", "[")):
+                    try:
+                        return self._process_tool_result(tool_name, json.loads(candidate))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
             # 1) First: handle MCP result wrapper with structured_content/content
-            if isinstance(result, dict) and ("structured_content" in result or "content" in result):
+            if isinstance(result, dict) and (
+                "structured_content" in result
+                or isinstance(result.get("content"), list)
+            ):
                 search_results = []
                 # Prefer structured_content when present
                 structured = result.get("structured_content")
@@ -205,18 +237,18 @@ class MCPResearchSkill:
                     if isinstance(items, list):
                         for i, item in enumerate(items):
                             if isinstance(item, dict):
-                                search_results.append({
-                                    "title": item.get("title", f"Result from {tool_name} #{i+1}"),
-                                    "href": item.get("href", item.get("url", f"mcp://{tool_name}/{i}")),
-                                    "body": item.get("body", item.get("content", str(item)))
-                                })
+                                search_results.append(formatted_result(
+                                    title=item.get("title", f"Result from {tool_name} #{i+1}"),
+                                    href=item.get("href", item.get("url", f"mcp://{tool_name}/{i}")),
+                                    body=item.get("body", item.get("content", item)),
+                                ))
                     # If no items array but structured is dict, treat as single
                     elif isinstance(structured, dict):
-                        search_results.append({
-                            "title": structured.get("title", f"Result from {tool_name}"),
-                            "href": structured.get("href", structured.get("url", f"mcp://{tool_name}")),
-                            "body": structured.get("body", structured.get("content", str(structured)))
-                        })
+                        search_results.append(formatted_result(
+                            title=structured.get("title", f"Result from {tool_name}"),
+                            href=structured.get("href", structured.get("url", f"mcp://{tool_name}")),
+                            body=structured.get("body", structured.get("content", structured)),
+                        ))
                 # Fallback to content if provided (MCP spec: list of {type: text, text: ...})
                 if not search_results:
                     content_field = result.get("content")
@@ -238,11 +270,11 @@ class MCPResearchSkill:
                         body_text = content_field
                     else:
                         body_text = str(result)
-                    search_results.append({
-                        "title": f"Result from {tool_name}",
-                        "href": f"mcp://{tool_name}",
-                        "body": body_text,
-                    })
+                    search_results.append(formatted_result(
+                        title=f"Result from {tool_name}",
+                        href=f"mcp://{tool_name}",
+                        body=body_text,
+                    ))
                 return search_results
 
             # 2) If the result is already a list, process each item normally
@@ -252,46 +284,55 @@ class MCPResearchSkill:
                     if isinstance(item, dict):
                         # Use the item as is if it has required fields
                         if "title" in item and ("content" in item or "body" in item):
-                            search_result = {
-                                "title": item.get("title", ""),
-                                "href": item.get("href", item.get("url", f"mcp://{tool_name}/{i}")),
-                                "body": item.get("body", item.get("content", str(item))),
-                            }
+                            search_result = formatted_result(
+                                title=item.get("title", ""),
+                                href=item.get("href", item.get("url", f"mcp://{tool_name}/{i}")),
+                                body=item.get("body", item.get("content", item)),
+                            )
                             search_results.append(search_result)
                         else:
                             # Create a search result with a generic title
-                            search_result = {
-                                "title": f"Result from {tool_name}",
-                                "href": f"mcp://{tool_name}/{i}",
-                                "body": str(item),
-                            }
+                            search_result = formatted_result(
+                                title=f"Result from {tool_name}",
+                                href=f"mcp://{tool_name}/{i}",
+                                body=item,
+                            )
                             search_results.append(search_result)
             # 3) If the result is a dict (non-MCP wrapper), use it as a single search result
             elif isinstance(result, dict):
-                # If the result is a dictionary, use it as a single search result
-                search_result = {
-                    "title": result.get("title", f"Result from {tool_name}"),
-                    "href": result.get("href", result.get("url", f"mcp://{tool_name}")),
-                    "body": result.get("body", result.get("content", str(result))),
-                }
-                search_results.append(search_result)
+                items = result.get("results")
+                if isinstance(items, list):
+                    for i, item in enumerate(items):
+                        if not isinstance(item, dict):
+                            continue
+                        search_results.append(formatted_result(
+                            title=item.get("title", f"Result from {tool_name} #{i+1}"),
+                            href=item.get("href", item.get("url", f"mcp://{tool_name}/{i}")),
+                            body=item.get("body", item.get("content", item)),
+                        ))
+                else:
+                    search_results.append(formatted_result(
+                        title=result.get("title", f"Result from {tool_name}"),
+                        href=result.get("href", result.get("url", f"mcp://{tool_name}")),
+                        body=result.get("body", result.get("content", result)),
+                    ))
             else:
                 # For any other type, convert to string and use as a single search result
-                search_result = {
-                    "title": f"Result from {tool_name}",
-                    "href": f"mcp://{tool_name}",
-                    "body": str(result),
-                }
+                search_result = formatted_result(
+                    title=f"Result from {tool_name}",
+                    href=f"mcp://{tool_name}",
+                    body=result,
+                )
                 search_results.append(search_result)
                 
         except Exception as e:
             logger.error(f"Error processing tool result from {tool_name}: {e}")
             # Fallback: create a basic result
-            search_result = {
-                "title": f"Result from {tool_name}",
-                "href": f"mcp://{tool_name}",
-                "body": str(result),
-            }
+            search_result = formatted_result(
+                title=f"Result from {tool_name}",
+                href=f"mcp://{tool_name}",
+                body=result,
+            )
             search_results.append(search_result)
         
         return search_results
