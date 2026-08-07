@@ -270,7 +270,11 @@ class MCPResearchSkill:
         return str(tool_name or "").split("__")[-1].split(".")[-1].split("/")[-1]
 
     @staticmethod
-    def _hlt_source_search_seeds(query: str) -> list[str]:
+    def _hlt_source_search_seeds(
+        query: str,
+        *,
+        hlt_scoped: bool = False,
+    ) -> list[str]:
         """Return precise discovery seeds for the Nursing Mastery facilitator.
 
         Mastery Research remains a reusable core. These seeds activate only for
@@ -280,9 +284,14 @@ class MCPResearchSkill:
         """
 
         text = str(query or "")
-        if HLT_SCOPE_INSTRUCTION_MARKER not in text:
+        marker_present = HLT_SCOPE_INSTRUCTION_MARKER in text
+        if not marker_present and not hlt_scoped:
             return []
-        user_query = text.split(HLT_SCOPE_INSTRUCTION_MARKER, 1)[0].lower()
+        user_query = (
+            text.split(HLT_SCOPE_INSTRUCTION_MARKER, 1)[0]
+            if marker_present
+            else text
+        ).lower()
         seeds: list[str] = []
         if "marketo" in user_query:
             seeds.append(
@@ -309,6 +318,24 @@ class MCPResearchSkill:
             )
         return list(dict.fromkeys(seeds))[:MAX_SEEDED_SOURCE_SEARCHES]
 
+    def _has_hlt_scope_context(self, query: str) -> bool:
+        """Keep HLT scope available when the planner emits child questions.
+
+        MCP retrieval receives the child question as ``query`` while the owning
+        researcher retains the fully prepared request. Inspect both without
+        rewriting the child question or activating HLT hints for generic runs.
+        """
+
+        candidates = [
+            query,
+            getattr(self.researcher, "query", ""),
+            getattr(self.researcher, "parent_query", ""),
+        ]
+        return any(
+            HLT_SCOPE_INSTRUCTION_MARKER in str(candidate or "")
+            for candidate in candidates
+        )
+
     async def _seed_hlt_source_discovery(
         self,
         query: str,
@@ -316,7 +343,10 @@ class MCPResearchSkill:
     ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
         """Run deterministic discovery searches before model-directed research."""
 
-        seeds = self._hlt_source_search_seeds(query)
+        seeds = self._hlt_source_search_seeds(
+            query,
+            hlt_scoped=self._has_hlt_scope_context(query),
+        )
         if not seeds:
             return [], []
         search_tool = next(

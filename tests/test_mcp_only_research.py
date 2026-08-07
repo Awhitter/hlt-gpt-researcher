@@ -443,6 +443,44 @@ def test_hlt_nurse_questions_get_precise_source_discovery_seeds():
     ) == []
 
 
+def test_hlt_child_question_uses_parent_scope_for_source_discovery():
+    skill = MCPResearchSkill(
+        SimpleNamespace(),
+        SimpleNamespace(
+            query=(
+                "Please answer five Nursing Mastery questions.\n\n"
+                "HLT research scope instructions:\n- Use connected code sources."
+            ),
+            parent_query="",
+        ),
+    )
+
+    assert skill._hlt_source_search_seeds(
+        "Exactly when and where do we capture a nurse email?",
+        hlt_scoped=skill._has_hlt_scope_context(
+            "Exactly when and where do we capture a nurse email?"
+        ),
+    ) == ["QuickStartBridge EmailCaptureCard POST /api/identity email capture"]
+
+
+def test_generic_child_question_does_not_activate_hlt_source_discovery():
+    skill = MCPResearchSkill(
+        SimpleNamespace(),
+        SimpleNamespace(
+            query="How does a generic job search product work?",
+            parent_query="",
+        ),
+    )
+
+    assert not skill._has_hlt_scope_context(
+        "Exactly when and where do we capture an email?"
+    )
+    assert skill._hlt_source_search_seeds(
+        "Exactly when and where do we capture an email?",
+        hlt_scoped=False,
+    ) == []
+
+
 def test_hlt_seeded_discovery_opens_source_before_model_research(monkeypatch):
     source_url = (
         "https://github.com/Awhitter/nursing-mastery/blob/"
@@ -521,3 +559,89 @@ def test_hlt_seeded_discovery_opens_source_before_model_research(monkeypatch):
         }
     ]
     assert any("getJobs" in item["body"] for item in results)
+
+
+def test_hlt_seeded_discovery_runs_for_scoped_parent_and_plain_child(monkeypatch):
+    source_url = (
+        "https://github.com/Awhitter/nursing-mastery/blob/"
+        + "a" * 40
+        + "/components/identity/EmailCaptureCard.tsx#L20-L70"
+    )
+    search_tool = FakeTool(
+        "search_source",
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "repo": "Awhitter/nursing-mastery",
+                        "commitSha": "a" * 40,
+                        "path": "components/identity/EmailCaptureCard.tsx",
+                        "line": 40,
+                        "authority": 4,
+                        "score": 10,
+                        "url": source_url,
+                    }
+                ]
+            }
+        ),
+    )
+    read_tool = FakeTool(
+        "read_source",
+        json.dumps(
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": "a" * 40,
+                "path": "components/identity/EmailCaptureCard.tsx",
+                "url": source_url,
+                "content": "await fetch('/api/identity', { method: 'POST' })",
+            }
+        ),
+    )
+
+    class NoToolCallLLM:
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, _messages):
+            return AIMessage(content="The opened component posts the captured email.")
+
+    monkeypatch.setattr(
+        "gpt_researcher.llm_provider.generic.base.GenericLLMProvider.from_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(llm=NoToolCallLLM()),
+    )
+    cfg = SimpleNamespace(
+        strategic_llm_model="test-model",
+        strategic_llm_provider="test-provider",
+        llm_kwargs={},
+    )
+    researcher = SimpleNamespace(
+        mcp_only=True,
+        query=(
+            "Please answer five Nursing Mastery questions.\n\n"
+            "HLT research scope instructions:\n- Internal source run."
+        ),
+        parent_query="",
+    )
+
+    asyncio.run(
+        MCPResearchSkill(cfg, researcher).conduct_research_with_tools(
+            "Exactly when and where do we capture a nurse email?",
+            [search_tool, read_tool],
+        )
+    )
+
+    assert search_tool.calls == [
+        {
+            "query_text": (
+                "QuickStartBridge EmailCaptureCard POST /api/identity email capture"
+            )
+        }
+    ]
+    assert read_tool.calls == [
+        {
+            "repo": "Awhitter/nursing-mastery",
+            "path": "components/identity/EmailCaptureCard.tsx",
+            "start_line": 10,
+            "end_line": 100,
+        }
+    ]
