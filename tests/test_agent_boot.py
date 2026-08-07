@@ -995,7 +995,7 @@ def test_a_failed_proof_is_retried_not_marked_done(tmp_path, monkeypatch):
 
 
 def test_the_proof_asks_for_a_real_identifier():
-    """"Did cron fire" is the easy half. The half that breaks is whether a cron
+    """'Did cron fire' is the easy half. The half that breaks is whether a cron
     session — a standalone agent on the scheduler's own thread pool, outside the
     gateway's dispatch — has her MCP tools at all."""
     cron_seed = _cron_seed()
