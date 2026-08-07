@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_NESTING_DEPTH = 4
+MAX_SOURCE_MATCH_NESTING_DEPTH = 8
 MAX_AUTO_OPENED_SOURCES = 2
 
 
@@ -248,7 +249,7 @@ class MCPResearchSkill:
     ) -> list[dict[str, Any]]:
         """Recover concrete repo/path/line matches from search_source payloads."""
 
-        if depth > MAX_TOOL_RESULT_NESTING_DEPTH:
+        if depth > MAX_SOURCE_MATCH_NESTING_DEPTH:
             return []
         if isinstance(value, str):
             candidate = value.strip()
