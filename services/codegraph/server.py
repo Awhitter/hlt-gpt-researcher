@@ -31,6 +31,10 @@ logger = logging.getLogger("hlt-codegraph")
 
 GITNEXUS_HOME = os.getenv("GITNEXUS_HOME", "/data/gitnexus")
 REPOS_DIR = os.getenv("REPOS_DIR", "/data/repos")
+
+# Per-entry body cap. 1200 cut the third bullet off the 2026-08-05 entry — the
+# one saying the next publish would have failed EVERY save on /onboarding.
+BODY_CHARS = 4000
 AUTH_TOKEN = os.getenv("CODEGRAPH_MCP_TOKEN") or os.getenv("GITNEXUS_AUTH_TOKEN")
 REPO_GITHUB = {
     "nursing-mastery": "Awhitter/nursing-mastery",
@@ -249,7 +253,7 @@ def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> st
 
 
 @mcp.tool()
-def recent_changes(repo: str, days: int = 14, limit: int = 25) -> str:
+def recent_changes(repo: str, days: int = 14, limit: int = 80) -> str:
     """What actually shipped in a repo recently, in plain language.
 
     Reads the repo's CHANGELOG.md, which both nursing-mastery and ScraperVault
@@ -281,20 +285,52 @@ def recent_changes(repo: str, days: int = 14, limit: int = 25) -> str:
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(days, 1))).strftime("%Y-%m-%d")
     entries = []
+    in_window = 0
+    bodies_truncated = []
     for match in re.finditer(r"^##\s+(\d{4}-\d{2}-\d{2})\s*[-–—]?\s*(.*)$", text, re.M):
         date, title = match.group(1), match.group(2).strip()
         if date < cutoff:
             break  # newest-first, so the first old entry ends the window
-        body = text[match.end() : text.find("\n## ", match.end())]
-        entries.append({"date": date, "title": title, "body": body.strip()[:1200]})
+        in_window += 1
         if len(entries) >= limit:
-            break
+            continue  # keep counting so the caller learns what it did not get
+        body = text[match.end() : text.find("\n## ", match.end())].strip()
+        if len(body) > BODY_CHARS:
+            bodies_truncated.append(date)
+            body = body[:BODY_CHARS]
+        entries.append({"date": date, "title": title, "body": body})
 
     return json.dumps(
         {
             "repo": repo_key,
             "github": REPO_GITHUB[repo_key],
+            # `since` is what was ASKED for. `covers` is what is actually in
+            # this payload — they differ the moment `limit` bites, and the gap
+            # is the whole bug this reports. Cleo was asked to explain the
+            # product, requested 21 days, received the newest 25 entries
+            # (three days), and correctly said "8/3-8/5" — while the auth
+            # change she needed sat 8 days outside what she was handed. A tool
+            # that names a window it did not deliver makes the reader wrong.
             "since": cutoff,
+            "covers": {
+                "from": entries[-1]["date"] if entries else None,
+                "to": entries[0]["date"] if entries else None,
+            },
+            "complete": len(entries) == in_window and not bodies_truncated,
+            "entries_in_window": in_window,
+            "entries_returned": len(entries),
+            "entries_omitted": max(in_window - len(entries), 0),
+            "bodies_truncated": bodies_truncated,
+            "truncation_note": (
+                None
+                if len(entries) == in_window and not bodies_truncated
+                else (
+                    f"Only {len(entries)} of {in_window} entries since {cutoff} are "
+                    f"included, and {len(bodies_truncated)} body/bodies were cut at "
+                    f"{BODY_CHARS} chars. Do NOT describe this as the full period — "
+                    f"say what you covered, or call again with a smaller `days`."
+                )
+            ),
             "readiness": _repo_readiness(repo_key),
             "entry_count": len(entries),
             "entries": entries,
