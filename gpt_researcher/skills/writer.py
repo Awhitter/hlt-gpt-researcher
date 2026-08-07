@@ -28,8 +28,15 @@ def compact_report_context(
     research_sources=None,
     *,
     max_chars: int | None = None,
+    opened_sources_only: bool = False,
 ) -> str:
-    """Bound final-writing context while preserving opened source evidence."""
+    """Bound final-writing context while preserving opened source evidence.
+
+    Code-only research must not synthesize implementation claims from broad
+    search snippets. When ``opened_sources_only`` is true, the writer receives
+    only the contents returned by ``read_source``. Other report modes retain
+    the broader research context they have always used.
+    """
 
     configured_limit = os.getenv("REPORT_CONTEXT_MAX_CHARS")
     if max_chars is None:
@@ -43,7 +50,7 @@ def compact_report_context(
         if isinstance(context, list)
         else str(context or "")
     )
-    if len(context_text) <= max_chars:
+    if len(context_text) <= max_chars and not opened_sources_only:
         return context_text
 
     priority_blocks = []
@@ -52,7 +59,7 @@ def compact_report_context(
             continue
         tool_name = str(source.get("tool_name") or "")
         normalized_tool = tool_name.split("__")[-1].split(".")[-1].split("/")[-1]
-        if normalized_tool not in {"read_source", "verify_source_ref"}:
+        if normalized_tool != "read_source":
             continue
         content = str(source.get("content") or source.get("body") or "").strip()
         if not content:
@@ -69,10 +76,23 @@ def compact_report_context(
             for block in context_text.split("\n\n---\n\n")
             if block.strip()
         ]
+    candidate_blocks = priority_blocks
+    if not opened_sources_only:
+        candidate_blocks = [*priority_blocks, *general_blocks]
+    elif not priority_blocks:
+        # Give the model an explicit absence rather than broad search results
+        # it could mistake for opened implementation evidence. The downstream
+        # delivery gate still refuses to label an answer source-verified when
+        # no read-source reference exists.
+        candidate_blocks = [
+            "No repository file was opened for this run. State that the "
+            "implementation cannot be verified from the available evidence."
+        ]
+
     selected = []
     seen = set()
     used_chars = 0
-    for block in [*priority_blocks, *general_blocks]:
+    for block in candidate_blocks:
         digest = hashlib.sha256(block.encode("utf-8", errors="ignore")).hexdigest()
         if digest in seen:
             continue
@@ -85,6 +105,26 @@ def compact_report_context(
         selected.append(bounded[:remaining])
         used_chars += len(selected[-1]) + separator_chars
     return "\n\n---\n\n".join(selected)
+
+
+def code_teammate_report_prompt(query: str) -> str:
+    """Build the evidence contract for a direct, code-scoped teammate answer."""
+
+    return f"""Answer this direct implementation question as a clear, practical teammate:
+
+{query}
+
+Use only the opened repository-file evidence in Context below. Follow these rules:
+- Lead with the answer. Do not include research methodology, a table of contents, or a generic introduction.
+- For a normal direct question, aim for 250-700 words. Go longer only when the user explicitly asks for a deep or comprehensive report.
+- Put the exact immutable source link from Context in the same bullet or paragraph as every substantive implementation claim.
+- Distinguish what a system owns or writes from what another repository merely reads, types, projects, or displays. A client interface is not proof of data ownership.
+- Distinguish implemented current behavior from documentation, plans, examples, test fixtures, and historical artifacts.
+- Never add likely, standard, illustrative, or inferred fields or behavior. If an opened source does not prove a detail, say that it is not verified.
+- If sources conflict or cover different workflows, explain the boundary plainly instead of flattening them into one model.
+- Use short sections and plain language. Preserve technical names only when they help someone locate or change the behavior.
+- Do not claim that all facts, the whole system, or the live runtime were verified. Describe only what the cited opened files prove.
+- Do not add a separate references section; source delivery is handled after the answer."""
 from ..utils.llm import construct_subtopics
 
 
@@ -149,7 +189,11 @@ class ReportGenerator:
         context = compact_report_context(
             context,
             self.researcher.get_research_sources(),
+            opened_sources_only=bool(getattr(self.researcher, "mcp_only", False)),
         )
+
+        if getattr(self.researcher, "mcp_only", False) and not custom_prompt:
+            custom_prompt = code_teammate_report_prompt(self.researcher.query)
         
         # Log image availability
         if available_images and self.researcher.verbose:
