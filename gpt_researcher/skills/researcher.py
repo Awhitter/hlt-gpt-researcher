@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 
 from ..actions.agent_creator import choose_agent
 from ..actions.query_processing import get_search_results, plan_research_outline
@@ -16,6 +17,30 @@ from ..actions.utils import stream_output
 from ..document import DocumentLoader, LangChainDocumentLoader, OnlineDocumentLoader
 from ..utils.enum import ReportSource, ReportType
 from ..utils.logging_config import get_json_handler
+
+
+_NUMBERED_QUESTION_MARKER = re.compile(r"(?<!\w)(\d{1,2})\)\s*")
+
+
+def extract_numbered_questions(query: str, *, max_questions: int = 8) -> list[str]:
+    """Preserve explicit numbered questions as independent research tasks."""
+
+    matches = list(_NUMBERED_QUESTION_MARKER.finditer(str(query or "")))
+    numbers = [int(match.group(1)) for match in matches]
+    if len(matches) < 2 or numbers[0] != 1:
+        return []
+    if numbers != list(range(1, len(numbers) + 1)):
+        return []
+
+    questions = []
+    for index, match in enumerate(matches[:max_questions]):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(query)
+        candidate = " ".join(query[match.end() : end].split()).strip()
+        if "?" in candidate:
+            candidate = candidate.split("?", 1)[0].strip() + "?"
+        if candidate:
+            questions.append(candidate)
+    return questions
 
 
 class ResearchConductor:
@@ -61,6 +86,13 @@ class ResearchConductor:
             )
             search_results = []
             self.logger.info("Internal-only planning skipped the public search provider")
+            numbered_questions = extract_numbered_questions(query)
+            if numbered_questions:
+                self.logger.info(
+                    "Preserving %s explicit numbered questions as research tasks",
+                    len(numbered_questions),
+                )
+                return numbered_questions
         else:
             await stream_output(
                 "logs",
