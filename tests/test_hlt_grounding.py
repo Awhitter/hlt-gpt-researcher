@@ -77,6 +77,39 @@ def test_source_extraction_rejects_branch_links():
     assert extract_source_refs("https://github.com/Awhitter/repo/blob/main/file.ts") == []
 
 
+def test_source_extraction_preserves_nextjs_route_group_parentheses():
+    route_url = (
+        f"https://github.com/Awhitter/nursing-mastery/blob/{SHA}/"
+        "app/(site)/jobs/(board)/page.tsx#L1-L120"
+    )
+
+    refs = extract_source_refs(f"[Current job board route]({route_url})")
+
+    assert refs == [
+        {
+            "repo": "Awhitter/nursing-mastery",
+            "commitSha": SHA,
+            "path": "app/(site)/jobs/(board)/page.tsx",
+            "line": 1,
+            "endLine": 120,
+            "url": route_url,
+            "exists": None,
+        }
+    ]
+
+
+def test_source_extraction_removes_only_unmatched_markdown_closer():
+    route_url = (
+        f"https://github.com/Awhitter/nursing-mastery/blob/{SHA}/"
+        "app/(site)/applications/[id]/page.tsx"
+    )
+
+    refs = extract_source_refs(f"See [the application route]({route_url}).")
+
+    assert refs[0]["path"] == "app/(site)/applications/[id]/page.tsx"
+    assert refs[0]["url"] == route_url
+
+
 def test_code_scoped_delivery_blocks_an_answer_without_validator_backed_sources():
     report = prepare_report_delivery(
         "Marketo is not implemented and onboarding lives in invented/file.ts.",
