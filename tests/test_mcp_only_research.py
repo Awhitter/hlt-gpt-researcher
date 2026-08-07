@@ -424,3 +424,100 @@ def test_nested_mcp_text_payload_preserves_exact_read_source_url():
 
     assert result[0]["href"] == url
     assert result[0]["tool_name"] == "read_source"
+
+
+def test_hlt_nurse_questions_get_precise_source_discovery_seeds():
+    marker = "\n\nHLT research scope instructions:\n- Keep this internal."
+
+    assert MCPResearchSkill._hlt_source_search_seeds(
+        "How does Nursing Mastery job search work?" + marker
+    ) == ["getJobs getCuratedJobs getRankedJobs job search"]
+    assert MCPResearchSkill._hlt_source_search_seeds(
+        "Exactly when and where do we capture a nurse email?" + marker
+    ) == ["QuickStartBridge EmailCaptureCard POST /api/identity email capture"]
+    assert MCPResearchSkill._hlt_source_search_seeds(
+        "Do we store or send these emails in Marketo?" + marker
+    ) == ["growth-signal-sync upsertMarketoLeadByEmail personKey marketoLeadId"]
+    assert MCPResearchSkill._hlt_source_search_seeds(
+        "How does job search work?"
+    ) == []
+
+
+def test_hlt_seeded_discovery_opens_source_before_model_research(monkeypatch):
+    source_url = (
+        "https://github.com/Awhitter/nursing-mastery/blob/"
+        + "a" * 40
+        + "/lib/jobs/feed.ts#L20-L80"
+    )
+    search_tool = FakeTool(
+        "search_source",
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "repo": "Awhitter/nursing-mastery",
+                        "commitSha": "a" * 40,
+                        "path": "lib/jobs/feed.ts",
+                        "line": 40,
+                        "authority": 4,
+                        "score": 10,
+                        "url": source_url,
+                    }
+                ]
+            }
+        ),
+    )
+    read_tool = FakeTool(
+        "read_source",
+        json.dumps(
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": "a" * 40,
+                "path": "lib/jobs/feed.ts",
+                "url": source_url,
+                "content": "export async function getJobs(filters) {}",
+            }
+        ),
+    )
+
+    class NoToolCallLLM:
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, messages):
+            assert any("high-value source matches" in str(message.content) for message in messages)
+            return AIMessage(content="The opened feed contains getJobs.")
+
+    monkeypatch.setattr(
+        "gpt_researcher.llm_provider.generic.base.GenericLLMProvider.from_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(llm=NoToolCallLLM()),
+    )
+    cfg = SimpleNamespace(
+        strategic_llm_model="test-model",
+        strategic_llm_provider="test-provider",
+        llm_kwargs={},
+    )
+    query = (
+        "How does Nursing Mastery job search work?\n\n"
+        "HLT research scope instructions:\n- Internal source run."
+    )
+
+    results = asyncio.run(
+        MCPResearchSkill(
+            cfg,
+            SimpleNamespace(mcp_only=True),
+        ).conduct_research_with_tools(query, [search_tool, read_tool])
+    )
+
+    assert search_tool.calls == [
+        {"query_text": "getJobs getCuratedJobs getRankedJobs job search"}
+    ]
+    assert read_tool.calls == [
+        {
+            "repo": "Awhitter/nursing-mastery",
+            "path": "lib/jobs/feed.ts",
+            "start_line": 10,
+            "end_line": 100,
+        }
+    ]
+    assert any("getJobs" in item["body"] for item in results)

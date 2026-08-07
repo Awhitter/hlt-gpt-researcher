@@ -6,7 +6,8 @@ Handles research execution using selected MCP tools as a skill component.
 import asyncio
 import json
 import logging
-from typing import List, Dict, Any
+import re
+from typing import Any, Dict, List
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
@@ -14,6 +15,8 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_NESTING_DEPTH = 4
 MAX_SOURCE_MATCH_NESTING_DEPTH = 8
 MAX_AUTO_OPENED_SOURCES = 2
+MAX_SEEDED_SOURCE_SEARCHES = 2
+HLT_SCOPE_INSTRUCTION_MARKER = "HLT research scope instructions:"
 
 
 class MCPResearchSkill:
@@ -82,6 +85,32 @@ class MCPResearchSkill:
             search_read_guidance_sent = False
             discovered_source_matches: list[dict[str, Any]] = []
             auto_opened_source_keys: set[tuple[str, str]] = set()
+
+            if bool(getattr(self.researcher, "mcp_only", False)):
+                seeded_results, seeded_matches = await self._seed_hlt_source_discovery(
+                    query,
+                    selected_tools,
+                )
+                research_results.extend(seeded_results)
+                discovered_source_matches.extend(seeded_matches)
+                auto_opened = await self._auto_open_discovered_sources(
+                    discovered_source_matches,
+                    selected_tools,
+                    auto_opened_source_keys,
+                )
+                if auto_opened:
+                    research_results.extend(auto_opened)
+                    messages.append(HumanMessage(content=(
+                        "The runtime opened these high-value source matches derived "
+                        "from the explicit HLT workflow question. Treat them as a "
+                        "starting point, follow their write/import boundaries when "
+                        "needed, and search beyond them for any still-missing claim.\n\n"
+                        + "\n\n".join(
+                            f"{opened.get('href', '')}\n"
+                            f"{str(opened.get('body', ''))[:4000]}"
+                            for opened in auto_opened
+                        )
+                    )))
 
             # Tool results have to go back to the model. A single tool-calling
             # turn cannot discover a path and then inspect that discovered path;
@@ -239,6 +268,100 @@ class MCPResearchSkill:
     @staticmethod
     def _normalized_tool_name(tool_name: Any) -> str:
         return str(tool_name or "").split("__")[-1].split(".")[-1].split("/")[-1]
+
+    @staticmethod
+    def _hlt_source_search_seeds(query: str) -> list[str]:
+        """Return precise discovery seeds for the Nursing Mastery facilitator.
+
+        Mastery Research remains a reusable core. These seeds activate only for
+        HLT-scoped requests and stabilize a small set of recurring product-owner
+        questions whose natural-language wording otherwise produces noisy source
+        matches. They are discovery hints, never evidence by themselves.
+        """
+
+        text = str(query or "")
+        if HLT_SCOPE_INSTRUCTION_MARKER not in text:
+            return []
+        user_query = text.split(HLT_SCOPE_INSTRUCTION_MARKER, 1)[0].lower()
+        seeds: list[str] = []
+        if "marketo" in user_query:
+            seeds.append(
+                "growth-signal-sync upsertMarketoLeadByEmail personKey marketoLeadId"
+            )
+        if "onboarding" in user_query and (
+            "question" in user_query or "change" in user_query
+        ):
+            seeds.append(
+                "QUICK_START_KEYS getProfileBlueprint getCaptureProgram onboarding_v1"
+            )
+        if re.search(r"\bjob search\b|\bsearch work", user_query):
+            seeds.append("getJobs getCuratedJobs getRankedJobs job search")
+        if "email" in user_query and re.search(
+            r"\b(?:capture|captured|when|where)\b",
+            user_query,
+        ):
+            seeds.append(
+                "QuickStartBridge EmailCaptureCard POST /api/identity email capture"
+            )
+        if "nurse" in user_query and "attribute" in user_query:
+            seeds.append(
+                "DashboardResponse profile preferences consent getProfileBlueprint nurse"
+            )
+        return list(dict.fromkeys(seeds))[:MAX_SEEDED_SOURCE_SEARCHES]
+
+    async def _seed_hlt_source_discovery(
+        self,
+        query: str,
+        selected_tools: List,
+    ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+        """Run deterministic discovery searches before model-directed research."""
+
+        seeds = self._hlt_source_search_seeds(query)
+        if not seeds:
+            return [], []
+        search_tool = next(
+            (
+                tool
+                for tool in selected_tools
+                if self._normalized_tool_name(getattr(tool, "name", ""))
+                == "search_source"
+            ),
+            None,
+        )
+        if search_tool is None:
+            return [], []
+
+        formatted: list[dict[str, str]] = []
+        matches: list[dict[str, Any]] = []
+        for seed in seeds:
+            try:
+                args = {"query_text": seed}
+                if hasattr(search_tool, "ainvoke"):
+                    result = await search_tool.ainvoke(args)
+                elif hasattr(search_tool, "invoke"):
+                    result = search_tool.invoke(args)
+                else:
+                    result = (
+                        await search_tool(args)
+                        if asyncio.iscoroutinefunction(search_tool)
+                        else search_tool(args)
+                    )
+            except Exception as error:
+                logger.error("Seeded search_source failed for %s: %s", seed, error)
+                continue
+            formatted.extend(
+                self._process_tool_result(
+                    getattr(search_tool, "name", "search_source"),
+                    result,
+                )
+            )
+            matches.extend(self._extract_source_matches(result))
+        if formatted:
+            logger.info(
+                "Seeded HLT source discovery with %s precise workflow query(s)",
+                len(seeds),
+            )
+        return formatted, matches
 
     @classmethod
     def _extract_source_matches(
