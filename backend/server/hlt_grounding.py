@@ -203,8 +203,8 @@ def source_refs_from_research_sources(
 ) -> list[dict[str, Any]]:
     """Recover exact refs from file-reading MCP results.
 
-    Search results are discovery, not evidence. Only read_source and
-    verify_source_ref payloads are promoted into the delivery receipt.
+    Search and existence-check results are discovery, not claim evidence.
+    Only read_source payloads are promoted into the delivery receipt.
     """
 
     candidates: list[dict[str, Any]] = []
@@ -219,10 +219,7 @@ def source_refs_from_research_sources(
         if isinstance(value, dict):
             tool_name = str(value.get("tool_name") or value.get("tool") or "")
             normalized_tool = tool_name.split("__")[-1].split(".")[-1].split("/")[-1]
-            is_file_evidence = trusted or normalized_tool in {
-                "read_source",
-                "verify_source_ref",
-            }
+            is_file_evidence = trusted or normalized_tool == "read_source"
             if is_file_evidence:
                 direct = {
                     "repo": value.get("repo"),
