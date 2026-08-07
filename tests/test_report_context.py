@@ -136,6 +136,32 @@ def test_code_report_context_keeps_eight_bounded_opened_files_in_view():
     assert "BROAD_SEARCH_CONTEXT" not in compacted
 
 
+def test_code_report_context_keeps_ten_question_sources_in_view():
+    sources = [
+        {
+            "tool_name": "read_source",
+            "title": f"question evidence {index}",
+            "url": (
+                "https://github.com/Awhitter/repo/blob/"
+                + f"{index:x}" * 40
+                + f"/question-{index}.ts#L1-L200"
+            ),
+            "content": f"QUESTION_{index}\n" + (chr(64 + index) * 20_000),
+        }
+        for index in range(1, 11)
+    ]
+
+    compacted = compact_report_context(
+        "BROAD_SEARCH_CONTEXT",
+        sources,
+        max_chars=50_000,
+        opened_sources_only=True,
+    )
+
+    assert all(f"QUESTION_{index}" in compacted for index in range(1, 11))
+    assert "BROAD_SEARCH_CONTEXT" not in compacted
+
+
 def test_code_report_without_opened_file_states_evidence_is_missing():
     compacted = compact_report_context(
         "A broad result that sounds plausible",

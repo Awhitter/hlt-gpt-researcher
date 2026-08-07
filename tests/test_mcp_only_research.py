@@ -7,7 +7,10 @@ from langchain_core.messages import AIMessage
 from gpt_researcher.mcp.research import MCPResearchSkill
 from gpt_researcher.mcp.tool_selector import MCPToolSelector
 from gpt_researcher.prompts import PromptFamily
-from gpt_researcher.skills.researcher import ResearchConductor
+from gpt_researcher.skills.researcher import (
+    ResearchConductor,
+    extract_numbered_questions,
+)
 
 
 class MCPRetrieverFixture:
@@ -79,6 +82,52 @@ def test_mcp_only_planning_does_not_call_a_public_search_provider(monkeypatch):
     result = asyncio.run(conductor.plan_research("Where is email captured?"))
 
     assert result == ["Where is email captured?"]
+
+
+def test_explicit_numbered_questions_keep_their_system_targets():
+    query = (
+        "Please answer briefly: 1) What attributes do we capture for a nurse, "
+        "and which system owns each kind? 2) Exactly when and where do we capture "
+        "a nurse email? 3) How does Nursing Mastery job search work? 4) What "
+        "onboarding questions do we currently ask? 5) Do we currently store or "
+        "send these emails in Marketo? If a source is unavailable, say so."
+    )
+
+    assert extract_numbered_questions(query) == [
+        "What attributes do we capture for a nurse, and which system owns each kind?",
+        "Exactly when and where do we capture a nurse email?",
+        "How does Nursing Mastery job search work?",
+        "What onboarding questions do we currently ask?",
+        "Do we currently store or send these emails in Marketo?",
+    ]
+
+
+def test_mcp_only_planning_does_not_rewrite_numbered_questions(monkeypatch):
+    query = (
+        "Please answer: 1) How does Nursing Mastery job search work? "
+        "2) Do we send email to Marketo?"
+    )
+    researcher = SimpleNamespace(
+        retrievers=[MCPRetrieverFixture],
+        mcp_only=True,
+        websocket=None,
+    )
+    conductor = ResearchConductor(researcher)
+
+    async def planner_must_not_run(**_kwargs):
+        raise AssertionError("the LLM planner rewrote explicit numbered questions")
+
+    monkeypatch.setattr(
+        "gpt_researcher.skills.researcher.plan_research_outline",
+        planner_must_not_run,
+    )
+
+    result = asyncio.run(conductor.plan_research(query))
+
+    assert result == [
+        "How does Nursing Mastery job search work?",
+        "Do we send email to Marketo?",
+    ]
 
 
 class FakeTool:
