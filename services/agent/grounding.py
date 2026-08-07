@@ -82,6 +82,7 @@ def install(
         "soul_installed": False,
         "soul_preserved_operator_edit": False,
         "briefing_sections": [],
+        "skills_installed": [],
     }
 
     # --- identity ---------------------------------------------------------
@@ -118,6 +119,32 @@ def install(
         if path.is_file():
             parts.append(path.read_text(encoding="utf-8").rstrip())
             summary["briefing_sections"].append(name)
+
+    # --- skills -----------------------------------------------------------
+    # Hermes scans a "Skills (mandatory)" index before every reply and loads a
+    # matching one on demand. She shipped with the `skills` toolset granted and
+    # not one skill installed, so the index was empty every turn. Skills also
+    # keep the always-on briefing small: procedure belongs here, not in
+    # AGENTS.md, which is capped by `context_file_max_chars`.
+    skills_src = GROUNDING_SRC / agent / "skills"
+    skills_dest = home_path / "skills"
+    installed: list[str] = []
+    if skills_src.is_dir():
+        for skill_dir in sorted(skills_src.iterdir()):
+            body = skill_dir / "SKILL.md"
+            if not body.is_file():
+                continue
+            dest_dir = skills_dest / skill_dir.name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / "SKILL.md"
+            existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
+            if existing and not _is_managed(existing):
+                continue  # a hand-edited skill is the operator's, not ours
+            dest.write_text(
+                f"{body.read_text(encoding='utf-8')}\n\n{MARKER}\n", encoding="utf-8"
+            )
+            installed.append(skill_dir.name)
+    summary["skills_installed"] = installed
 
     if parts:
         (target / "AGENTS.md").write_text(
