@@ -380,6 +380,12 @@ class GPTResearcher:
         await self._log_event("research", step="research_completed", details={
             "context_length": len(self.context)
         })
+
+        # Search results can include pages that were not successfully scraped
+        # during the main pass. For public-web research, retry a small ordered
+        # set only when the collected images are empty or merely site chrome.
+        if self.report_source == ReportSource.Web.value and not self.mcp_configs:
+            await self.scraper_manager.enrich_research_images()
         
         # Pre-generate images if enabled (happens BEFORE report writing for better UX)
         self.available_images = []
