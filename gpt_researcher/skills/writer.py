@@ -19,6 +19,7 @@ from ..actions import (
 
 
 _DEFAULT_REPORT_CONTEXT_CHARS = 50_000
+_MAX_REPORT_CONTEXT_CHARS = 60_000
 _MAX_REPORT_CONTEXT_BLOCK_CHARS = 18_000
 
 
@@ -36,7 +37,7 @@ def compact_report_context(
             max_chars = int(configured_limit) if configured_limit else _DEFAULT_REPORT_CONTEXT_CHARS
         except ValueError:
             max_chars = _DEFAULT_REPORT_CONTEXT_CHARS
-    max_chars = max(8_000, max_chars)
+    max_chars = min(_MAX_REPORT_CONTEXT_CHARS, max(8_000, max_chars))
     context_text = (
         "\n\n".join(str(item) for item in context)
         if isinstance(context, list)
@@ -60,11 +61,14 @@ def compact_report_context(
         url = str(source.get("url") or source.get("href") or "")
         priority_blocks.append(f"Title: {title}\n{content}\nSource: {url}")
 
-    general_blocks = [
-        block.strip()
-        for block in context_text.split("\n\n---\n\n")
-        if block.strip()
-    ]
+    if isinstance(context, list):
+        general_blocks = [str(block).strip() for block in context if str(block).strip()]
+    else:
+        general_blocks = [
+            block.strip()
+            for block in context_text.split("\n\n---\n\n")
+            if block.strip()
+        ]
     selected = []
     seen = set()
     used_chars = 0

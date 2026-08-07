@@ -25,3 +25,20 @@ def test_small_report_context_is_left_intact():
     context = "small, already useful context"
 
     assert compact_report_context(context, [SimpleNamespace()], max_chars=20_000) == context
+
+
+def test_report_context_override_has_a_sane_upper_bound():
+    context = "x" * 200_000
+
+    compacted = compact_report_context(context, [], max_chars=1_000_000)
+
+    assert 0 < len(compacted) <= 60_000
+
+
+def test_list_context_keeps_opened_chunk_boundaries():
+    context = ["FIRST_CHUNK\n" + "a" * 12_000, "SECOND_CHUNK\n" + "b" * 12_000]
+
+    compacted = compact_report_context(context, [], max_chars=20_000)
+
+    assert "FIRST_CHUNK" in compacted
+    assert "SECOND_CHUNK" in compacted
