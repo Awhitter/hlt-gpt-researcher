@@ -219,7 +219,9 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     render_config.render(env=FULL_ENV, home=tmp_path)
     config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
-    assert config["model"]["provider"] == "openrouter"
+    assert config["model"]["provider"] == "xai-oauth"
+    assert config["model"]["default"] == "grok-4.5"
+    assert config["model"]["max_tokens"] == 32_768
     assert set(config["mcp_servers"]) == {"gpt-researcher", "codegraph", "katailyst2", "linear"}
     # `gateway:` and `memory.seed_paths` were in the old example file and are
     # not real Hermes config keys.
@@ -330,8 +332,36 @@ def test_every_declared_agent_has_a_soul(tmp_path):
 
 def test_model_override_precedence(tmp_path):
     assert render_config.render(env={}, home=tmp_path)["model"] == render_config.DEFAULT_MODEL
-    env = {"HERMES_MODEL": "anthropic/claude-opus-5", "OPENROUTER_MODEL": "ignored/model"}
+    env = {
+        "HERMES_INFERENCE_PROVIDER": "openrouter",
+        "HERMES_MODEL": "anthropic/claude-opus-5",
+        "OPENROUTER_MODEL": "ignored/model",
+    }
     assert render_config.render(env=env, home=tmp_path)["model"] == "anthropic/claude-opus-5"
+
+
+def test_subscription_provider_is_default_but_can_be_overridden(tmp_path):
+    default = render_config.render(env={}, home=tmp_path)
+    assert default["model_provider"] == "xai-oauth"
+    assert default["model"] == "grok-4.5"
+
+    openrouter = render_config.build_config(
+        {"HERMES_INFERENCE_PROVIDER": "openrouter", "OPENROUTER_MODEL": "anthropic/claude-sonnet-5"}
+    )
+    assert openrouter["model"]["provider"] == "openrouter"
+    assert openrouter["model"]["default"] == "anthropic/claude-sonnet-5"
+
+
+def test_single_reply_cap_does_not_reserve_the_whole_context_window(tmp_path):
+    """A diagram request must not pre-authorize 128k output tokens.
+
+    Hermes' upstream default follows the model's maximum output allowance. On
+    OpenRouter that caused a 402 before Cleo could deliver the artifact even
+    though the completed answer would have been small. The cap affects only
+    one generated reply; it does not reduce the model's readable context.
+    """
+    summary = render_config.render(env={}, home=tmp_path)
+    assert summary["max_tokens"] == 32_768
 
 
 def test_summary_reports_what_was_actually_mounted(tmp_path):
@@ -641,6 +671,66 @@ def test_an_unreachable_check_never_condemns_a_working_key(monkeypatch):
 
     assert health_gateway.openrouter_key_kind("sk-or-v1-whatever") == "unknown"
     assert health_gateway.openrouter_key_kind("") == "unknown"
+
+
+def test_missing_active_subscription_auth_degrades_the_gateway(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+        },
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "model_provider": "xai-oauth",
+            "subscription_auth": {"provider": "xai-oauth", "logged_in": False},
+            "slack_auth": {},
+            "mcp_mounted": ["codegraph"],
+        }
+    )
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == "gateway_no_model_credentials"
+    assert "xai-oauth" in payload["note"]
+
+
+def test_openrouter_fallback_state_does_not_condemn_ready_xai(monkeypatch):
+    """The fallback's balance must not make a healthy subscription primary red."""
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+        },
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "model_provider": "xai-oauth",
+            "subscription_auth": {"provider": "xai-oauth", "logged_in": True},
+            "openrouter_key_present": True,
+            "openrouter_key_kind": "rejected",
+            "slack_auth": {},
+            "mcp_mounted": ["codegraph"],
+        }
+    )
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "ok"
+    assert payload["mode"] == "gateway"
 
 
 def _fake_slack(monkeypatch, *, payload=None, scopes="", http_status=None, boom=False):

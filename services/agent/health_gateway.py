@@ -263,6 +263,44 @@ def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
     return "inference"
 
 
+def subscription_auth_readiness(provider: str) -> dict[str, Any]:
+    """Read OAuth-provider readiness without exposing stored tokens.
+
+    Subscription credentials live in Hermes' persistent ``auth.json`` rather
+    than Render environment variables. Checking only ``OPENROUTER_API_KEY``
+    therefore mislabels a subscription-backed agent as credentialless and can
+    miss an expired OAuth grant. Hermes owns token parsing and refresh state;
+    this adapter copies only the non-secret status fields into ``/health``.
+    """
+    result: dict[str, Any] = {
+        "provider": provider,
+        "logged_in": None,
+        "last_refresh": None,
+        "error": "",
+    }
+    try:
+        if provider == "xai-oauth":
+            from hermes_cli.auth import get_xai_oauth_auth_status
+
+            status = get_xai_oauth_auth_status() or {}
+        elif provider == "openai-codex":
+            from hermes_cli.auth import get_codex_auth_status
+
+            status = get_codex_auth_status() or {}
+        else:
+            return result
+    except Exception as exc:
+        # An import/read failure is unknown, not evidence that a working token
+        # is bad. The gateway's real provider call remains the final authority.
+        result["error"] = f"status check unavailable: {type(exc).__name__}"
+        return result
+
+    result["logged_in"] = bool(status.get("logged_in"))
+    result["last_refresh"] = status.get("last_refresh")
+    result["error"] = str(status.get("error") or "")
+    return result
+
+
 def slack_auth_readiness(token: str, timeout: float = 6.0) -> dict[str, Any]:
     """Verify the bot token and, when Slack reports them, its live scopes.
 
@@ -320,9 +358,20 @@ def boot() -> None:
     BOOT.update(render_config.render())
     for key, value in BOOT.items():
         logger.info("config %s: %s", key, value)
-    if not BOOT.get("openrouter_key_present"):
-        logger.warning("OPENROUTER_API_KEY is not set — the agent has no model credentials")
-    else:
+    active_provider = BOOT.get("model_provider") or ""
+    if active_provider in {"xai-oauth", "openai-codex"}:
+        subscription_auth = subscription_auth_readiness(active_provider)
+        BOOT["subscription_auth"] = subscription_auth
+        logger.info("config subscription_auth: %s", subscription_auth)
+        if subscription_auth["logged_in"] is False:
+            logger.error(
+                "%s is the active model provider but its subscription OAuth "
+                "credential is not logged in",
+                active_provider,
+            )
+    elif active_provider == "openrouter" and not BOOT.get("openrouter_key_present"):
+        logger.warning("OPENROUTER_API_KEY is not set — the active provider has no credentials")
+    elif active_provider == "openrouter":
         kind = openrouter_key_kind(os.getenv("OPENROUTER_API_KEY", ""))
         BOOT["openrouter_key_kind"] = kind
         logger.info("config openrouter_key_kind: %s", kind)
@@ -394,7 +443,18 @@ def health() -> dict[str, Any]:
     # every message and answers each one "Provider authentication failed".
     # Only a positively-identified bad key degrades — "unknown" means the boot
     # check could not reach OpenRouter, which is not evidence of anything.
-    model_credentials_bad = BOOT.get("openrouter_key_kind") in {"provisioning", "rejected"}
+    active_provider = BOOT.get("model_provider") or ""
+    if active_provider in {"xai-oauth", "openai-codex"}:
+        model_credentials_bad = (
+            (BOOT.get("subscription_auth") or {}).get("logged_in") is False
+        )
+    elif active_provider == "openrouter":
+        model_credentials_bad = (
+            not BOOT.get("openrouter_key_present")
+            or BOOT.get("openrouter_key_kind") in {"provisioning", "rejected"}
+        )
+    else:
+        model_credentials_bad = False
     # Mounted servers the agent cannot reach are worse than none: she reports
     # having them and then cannot answer from any of them.
     mcp_dead = bool(BOOT.get("mcp_mounted")) and not gateway["mcp_sdk_available"]
@@ -446,12 +506,19 @@ def health() -> dict[str, Any]:
             "hermes-agent[mcp]."
         )
     elif mode == "gateway_no_model_credentials":
-        payload["note"] = (
-            "Slack is connected, but OPENROUTER_API_KEY cannot run inference "
-            f"(kind: {BOOT.get('openrouter_key_kind')}). The bot receives every "
-            "message and replies 'Provider authentication failed'. A provisioning "
-            "key looks identical to an inference key — check /api/v1/key."
-        )
+        if active_provider in {"xai-oauth", "openai-codex"}:
+            payload["note"] = (
+                f"Slack is connected, but the active {active_provider} subscription "
+                "OAuth credential is not logged in. Re-run the provider device-code "
+                "login before treating Cleo as able to answer."
+            )
+        else:
+            payload["note"] = (
+                "Slack is connected, but OPENROUTER_API_KEY cannot run inference "
+                f"(kind: {BOOT.get('openrouter_key_kind')}). The bot receives every "
+                "message and replies 'Provider authentication failed'. A provisioning "
+                "key looks identical to an inference key — check /api/v1/key."
+            )
     elif mode == "gateway_no_slack_adapter":
         payload["note"] = (
             "The gateway is running but Hermes could not build a Slack adapter, "
