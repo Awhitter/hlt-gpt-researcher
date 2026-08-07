@@ -88,3 +88,75 @@ def test_public_health_names_no_repositories():
     flat = json.dumps(payload)
     for repo in server.REPO_GITHUB:
         assert repo not in flat, f"public /health names the {repo} index"
+
+
+# --- recent_changes must not name a window it did not deliver ---------------
+
+
+def _load_codegraph_server():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "services" / "codegraph" / "server.py"
+    spec = importlib.util.spec_from_file_location("hlt_codegraph_server", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_recent_changes_reports_what_it_actually_covered(tmp_path, monkeypatch):
+    """It asked for 21 days, got the newest 25 entries, and said "since 7-17".
+
+    Cleo requested three weeks to explain the product, was handed three days,
+    and the auth change she needed sat outside what she received. A tool that
+    names a window it did not deliver makes its caller confidently wrong.
+    """
+    server = _load_codegraph_server()
+
+    repo = tmp_path / "nursing-mastery"
+    repo.mkdir()
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc)
+    # 40 entries over 8 days — more than any sane `limit`
+    lines = []
+    for i in range(40):
+        day = (today - timedelta(days=i // 5)).strftime("%Y-%m-%d")
+        lines.append(f"## {day} - entry {i}\n\n- body {i}\n")
+    (repo / "CHANGELOG.md").write_text("\n".join(lines), encoding="utf-8")
+
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(server, "_repo_readiness", lambda _repo: {})
+
+    import json
+
+    payload = json.loads(server.recent_changes("nursing-mastery", days=21, limit=10))
+
+    assert payload["entries_returned"] == 10
+    assert payload["entries_in_window"] == 40
+    assert payload["entries_omitted"] == 30
+    assert payload["complete"] is False
+    assert "Do NOT describe this as the full period" in payload["truncation_note"]
+    # and it must say what it really covered, not just what was asked for
+    assert payload["covers"]["to"] >= payload["covers"]["from"]
+
+
+def test_a_complete_window_says_so(tmp_path, monkeypatch):
+    server = _load_codegraph_server()
+    repo = tmp_path / "nursing-mastery"
+    repo.mkdir()
+    from datetime import datetime, timezone
+
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    (repo / "CHANGELOG.md").write_text(f"## {day} - only entry\n\n- short body\n", encoding="utf-8")
+
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(server, "_repo_readiness", lambda _repo: {})
+
+    import json
+
+    payload = json.loads(server.recent_changes("nursing-mastery", days=21))
+    assert payload["complete"] is True
+    assert payload["truncation_note"] is None
