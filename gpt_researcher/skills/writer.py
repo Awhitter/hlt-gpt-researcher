@@ -224,6 +224,7 @@ Use only the opened repository-file evidence in Context. Enforce every rule:
 - A UI page, dashboard, import, or component proves what that surface renders or calls. Never infer downstream storage, sending, ownership, or live runtime state from it alone.
 - A test, script, proof, document, example, campaign artifact, or inactive pilot proves only its named contract or workflow. Never generalize it into current estate-wide behavior.
 - Absence is local to this evidence set. If the opened files do not show a write path or live-system readback, say it was not verified; do not convert missing evidence into "we do not," "is not used," or a permanent capability ban.
+- Delete speculative implementation-location phrases such as "likely in," "probably lives in," or "presumably defined in." Naming the guess as a guess does not make it source-grounded.
 - In particular, an inactive Marketo pilot or asset-approval page cannot prove whether any other workflow stores leads or sends email in Marketo.
 - Remove comparisons, recommendations, summaries, and implementation details that are not directly supported by an opened file.
 - If sources cover different fields or workflows, preserve those boundaries instead of naming one universal People owner.
