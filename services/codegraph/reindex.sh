@@ -7,11 +7,13 @@ export GITNEXUS_HOME
 
 # slug|github_org/repo
 DEFAULT_REPOS=(
+  "hlt-gpt-researcher|Awhitter/hlt-gpt-researcher"
   "mmm2|Awhitter/MMM2"
   "katailyst2|Awhitter/katailyst2"
   "ebb|Awhitter/evidence-based-business"
   "scrapervault|Awhitter/ScraperVault"
   "nursing-mastery|Awhitter/nursing-mastery"
+  "hlt-web-service|HLT-Master/hlt-web-service"
 )
 
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
@@ -41,6 +43,7 @@ REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 # disk and served, at the cost of that index going stale — a stale answer beats
 # a daily outage. Remove the entry once the plan can hold the rebuild.
 SKIP_REPOS="${CODEGRAPH_SKIP_REPOS:-}"
+SOURCE_ONLY_REPOS="${CODEGRAPH_SOURCE_ONLY_REPOS:-hlt-web-service,hlt-gpt-researcher}"
 
 is_skipped() {
   local slug="$1"
@@ -53,6 +56,25 @@ is_skipped() {
   return 1
 }
 
+is_source_only() {
+  local slug="$1"
+  local entry
+  IFS=',' read -ra _source_only <<< "$SOURCE_ONLY_REPOS"
+  for entry in "${_source_only[@]}"; do
+    [[ "$(echo "$entry" | xargs)" == "$slug" ]] && return 0
+  done
+  return 1
+}
+
+freshness_stamp() {
+  local slug="$1"
+  if is_source_only "$slug"; then
+    echo "$REPOS_DIR/$slug/.hlt-source-ready-at"
+  else
+    echo "$REPOS_DIR/$slug/.hlt-indexed-at"
+  fi
+}
+
 # Skip repos indexed more recently than this. A container restart must not mean
 # a fresh full index of everything: that is what made a single OOM self-
 # sustaining. 0 disables the guard.
@@ -63,7 +85,8 @@ mkdir -p "$REPOS_DIR"
 
 is_fresh() {
   local slug="$1"
-  local stamp="$REPOS_DIR/$slug/.hlt-indexed-at"
+  local stamp
+  stamp="$(freshness_stamp "$slug")"
   [[ "$FORCE" == "1" ]] && return 1
   [[ "$FRESH_HOURS" == "0" ]] && return 1
   [[ -f "$stamp" ]] || return 1
@@ -93,8 +116,12 @@ clone_or_update() {
     git clone --depth=1 "$url" "$dest"
   fi
 
-  echo "[codegraph] analyzing $slug"
-  (cd "$dest" && gitnexus analyze --skip-agents-md --skip-skills)
+  if is_source_only "$slug"; then
+    echo "[codegraph] source checkout ready for $slug (structural indexing disabled)"
+  else
+    echo "[codegraph] analyzing $slug"
+    (cd "$dest" && gitnexus analyze --skip-agents-md --skip-skills)
+  fi
 }
 
 FAILED_REPOS=()
@@ -104,7 +131,8 @@ index_repo() {
   local slug="$1"
   local full="$2"
   if is_skipped "$slug"; then
-    local stamp="$REPOS_DIR/$slug/.hlt-indexed-at"
+    local stamp
+    stamp="$(freshness_stamp "$slug")"
     local since="never indexed"
     [[ -f "$stamp" ]] && since="last indexed $(cat "$stamp")"
     echo "[codegraph] SKIPPING $slug — in CODEGRAPH_SKIP_REPOS ($since)." \
@@ -112,11 +140,11 @@ index_repo() {
     return
   fi
   if is_fresh "$slug"; then
-    echo "[codegraph] $slug indexed $(cat "$REPOS_DIR/$slug/.hlt-indexed-at") — still fresh, skipping"
+    echo "[codegraph] $slug refreshed $(cat "$(freshness_stamp "$slug")") — still fresh, skipping"
     return
   fi
   if clone_or_update "$slug" "$full"; then
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$REPOS_DIR/$slug/.hlt-indexed-at"
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(freshness_stamp "$slug")"
     rm -f "$REPOS_DIR/$slug/.hlt-index-error"
     echo "[codegraph] indexed $slug"
   else

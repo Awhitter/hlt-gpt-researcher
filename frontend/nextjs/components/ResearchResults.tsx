@@ -10,7 +10,11 @@ import ResearchProgress from "./brain/ResearchProgress";
 import { preprocessOrderedData } from "../utils/dataProcessing";
 import { Data } from "../types/data";
 import ChangeRequest from "./brain/ChangeRequest";
-import { resolveReportAnswer } from "@/lib/reportTrust";
+import {
+  filterVisibleReportSources,
+  getReportVerification,
+  resolveReportAnswer,
+} from "@/lib/reportTrust";
 
 interface ResearchResultsProps {
   orderedData: Data[];
@@ -54,12 +58,6 @@ export const ResearchResults: React.FC<ResearchResultsProps> = ({
       }
     });
 
-  const sourceComponents = groupedData
-    .filter((data) => data.type === "sourceBlock")
-    .map((data, index) => (
-      <Sources key={`sourceBlock-${index}`} sources={data.items} />
-    ));
-
   const imageComponents = groupedData
     .filter((data) => data.type === "imagesBlock")
     .map((data, index) => (
@@ -73,6 +71,14 @@ export const ResearchResults: React.FC<ResearchResultsProps> = ({
   const finalReport = groupedData
     .filter((data) => data.type === "reportBlock")
     .pop();
+  const reportVerification = getReportVerification(finalReport?.metadata);
+  const sourceComponents = groupedData
+    .filter((data) => data.type === "sourceBlock")
+    .map((data) => filterVisibleReportSources(data.items, reportVerification))
+    .filter((sources) => sources.length > 0)
+    .map((sources, index) => (
+      <Sources key={`sourceBlock-${index}`} sources={sources} />
+    ));
   const subqueriesComponent = groupedData.find(
     (data) => data.content === "subqueries",
   );
@@ -93,7 +99,10 @@ export const ResearchResults: React.FC<ResearchResultsProps> = ({
   return (
     <>
       {initialQuestion && <Question question={initialQuestion.content} />}
-      <ResearchProgress orderedData={orderedData} loading={loading && !hasCompletedRun} />
+      <ResearchProgress
+        orderedData={orderedData}
+        loading={loading && !hasCompletedRun}
+      />
       {pathData && (
         <AccessReport
           accessData={pathData.output}
@@ -102,11 +111,21 @@ export const ResearchResults: React.FC<ResearchResultsProps> = ({
           researchId={pathResearchId}
           hasInlineReport={hasInlineReport}
           onShareClick={onShareClick}
+          verification={reportVerification}
         />
       )}
-      {displayedAnswer && <Report answer={displayedAnswer} researchId={currentResearchId} />}
+      {displayedAnswer && (
+        <Report
+          answer={displayedAnswer}
+          researchId={currentResearchId}
+          verification={reportVerification}
+        />
+      )}
       {initialQuestion && (
-        <ChangeRequest question={initialQuestion.content} answer={displayedAnswer} />
+        <ChangeRequest
+          question={initialQuestion.content}
+          answer={displayedAnswer}
+        />
       )}
       {orderedData.length > 0 && (
         // The phase rail above carries live progress; raw agent activity is

@@ -12,6 +12,16 @@ export type MobileReportMessage = {
   metadata?: unknown;
 };
 
+export type ReportVerification = {
+  status: "verified" | "partial" | "unverified";
+  reason: string;
+  deliveryBlocked: boolean;
+  isCodeScoped: boolean;
+  isInternalOnly: boolean;
+};
+
+type VisibleSource = { name: string; url: string };
+
 type MobileReportInput = {
   type?: unknown;
   content?: unknown;
@@ -41,13 +51,58 @@ export function extractReportSources(answer: string): ReportSourceRef[] {
   return sources;
 }
 
+export function getReportVerification(metadata: unknown): ReportVerification {
+  const value =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>)
+      : {};
+  const rawStatus = value.verificationStatus;
+  const status =
+    rawStatus === "verified" || rawStatus === "partial"
+      ? rawStatus
+      : "unverified";
+  const scope =
+    value.hlt_research_scope && typeof value.hlt_research_scope === "object"
+      ? (value.hlt_research_scope as Record<string, unknown>)
+      : {};
+  const activeSources = Array.isArray(scope.active_sources)
+    ? scope.active_sources
+    : [];
+  return {
+    status,
+    reason:
+      typeof value.verificationReason === "string"
+        ? value.verificationReason
+        : "",
+    deliveryBlocked: value.deliveryBlocked === true,
+    isCodeScoped: activeSources.includes("codebase"),
+    isInternalOnly:
+      activeSources.includes("codebase") &&
+      !activeSources.includes("audience") &&
+      !activeSources.includes("firecrawl"),
+  };
+}
+
+export function filterVisibleReportSources(
+  sources: VisibleSource[],
+  verification: ReportVerification,
+): VisibleSource[] {
+  if (!verification.isInternalOnly) return sources;
+  return sources.filter(
+    (source) => extractReportSources(source.url).length > 0,
+  );
+}
+
 export function isChangeOrientedQuestion(question: string): boolean {
   return /\b(chang(?:e|ed|ing)|edit(?:ed|ing)?|update(?:d|ing)?|modify|modified|replace|remove|add|implement|fix|how (?:can|do|would) (?:i|we))\b/i.test(
     question,
   );
 }
 
-export function resolveReportAnswer(structuredAnswer: string | undefined, legacyAnswer: string): string {
+export function resolveReportAnswer(
+  structuredAnswer: string | undefined,
+  legacyAnswer: string,
+): string {
   return structuredAnswer || legacyAnswer;
 }
 
@@ -63,16 +118,28 @@ export function buildMobileReportMessages(
   for (const item of orderedData) {
     if (item.type === "question" && typeof item.content === "string") {
       hasQuestion = true;
-      messages.push({ type: "question", content: item.content, metadata: item.metadata });
+      messages.push({
+        type: "question",
+        content: item.content,
+        metadata: item.metadata,
+      });
     } else if (item.type === "chat" && typeof item.content === "string") {
-      messages.push({ type: "chat", content: item.content, metadata: item.metadata });
+      messages.push({
+        type: "chat",
+        content: item.content,
+        metadata: item.metadata,
+      });
     } else if (
       item.type === "reportBlock" &&
       typeof item.content === "string" &&
       item.content.trim()
     ) {
       hasReport = true;
-      messages.push({ type: "chat", content: item.content, metadata: item.metadata });
+      messages.push({
+        type: "chat",
+        content: item.content,
+        metadata: item.metadata,
+      });
     }
   }
 
@@ -83,9 +150,13 @@ export function buildMobileReportMessages(
   if (
     !hasReport &&
     legacyAnswer.trim() &&
-    !messages.some((item) => item.type === "chat" && item.content === legacyAnswer)
+    !messages.some(
+      (item) => item.type === "chat" && item.content === legacyAnswer,
+    )
   ) {
-    const questionIndex = messages.findIndex((item) => item.type === "question");
+    const questionIndex = messages.findIndex(
+      (item) => item.type === "question",
+    );
     messages.splice(questionIndex >= 0 ? questionIndex + 1 : 0, 0, {
       type: "chat",
       content: legacyAnswer,

@@ -536,9 +536,11 @@ class ResearchConductor:
                     mcp_context = await self._execute_mcp_research_for_queries([sub_query], mcp_retrievers)
             
             # Get web search context using non-MCP retrievers (if no scraped data provided)
-            if not scraped_data:
+            if not scraped_data and not getattr(self.researcher, "mcp_only", False):
                 scraped_data = await self._scrape_data_by_urls(sub_query, query_domains)
                 self.logger.info(f"Scraped data size: {len(scraped_data)}")
+            elif getattr(self.researcher, "mcp_only", False):
+                self.logger.info("Skipping public web retrieval for an internal-only MCP query")
 
             # Get similar content based on scraped data
             if scraped_data:
@@ -1023,4 +1025,3 @@ class ResearchConductor:
                     "progress": progress
                 }
             )
-

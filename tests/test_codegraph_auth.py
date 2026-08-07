@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -73,6 +75,7 @@ def test_only_health_is_public():
     # "/" is a live transport path on a streamable-HTTP MCP app, not a landing page.
     assert server.auth_failure("/", "", TOKEN) == (401, "Unauthorized")
     assert server.auth_failure("/readiness", "", TOKEN) == (401, "Unauthorized")
+    assert server.auth_failure("/verify-source", "", TOKEN) == (401, "Unauthorized")
 
 
 def test_public_health_names_no_repositories():
@@ -88,6 +91,180 @@ def test_public_health_names_no_repositories():
     flat = json.dumps(payload)
     for repo in server.REPO_GITHUB:
         assert repo not in flat, f"public /health names the {repo} index"
+
+
+def _create_source_repo(path: Path) -> str:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
+    source = path / "app" / "api" / "identity" / "route.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "export const consentStatus = 'interested';\n"
+        "export function captureEmail(email: string) {\n"
+        "  return { email, consentStatus };\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-qm", "fixture"], check=True)
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_search_source_returns_real_lines_and_immutable_links(tmp_path, monkeypatch):
+    sha = _create_source_repo(tmp_path / "nursing-mastery")
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(
+        server,
+        "_repo_readiness",
+        lambda _repo: {"status": "ready", "indexedAt": "2026-08-06T00:00:00Z"},
+    )
+
+    payload = json.loads(server.search_source("Where does email capture set consent status?", "nursing-mastery"))
+
+    assert payload["commitSha"] == sha
+    assert payload["matches"][0]["path"] == "app/api/identity/route.ts"
+    assert any("consentStatus" in match["text"] for match in payload["matches"])
+    assert all(f"/blob/{sha}/" in match["url"] for match in payload["matches"])
+
+
+def test_read_source_returns_bounded_numbered_context(tmp_path, monkeypatch):
+    sha = _create_source_repo(tmp_path / "nursing-mastery")
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(
+        server,
+        "_repo_readiness",
+        lambda _repo: {"status": "ready", "indexedAt": "2026-08-06T00:00:00Z"},
+    )
+
+    payload = json.loads(server.read_source("nursing-mastery", "app/api/identity/route.ts", 2, 3))
+
+    assert payload["commitSha"] == sha
+    assert payload["lines"] == [
+        {"line": 2, "text": "export function captureEmail(email: string) {"},
+        {"line": 3, "text": "  return { email, consentStatus };"},
+    ]
+    assert payload["url"].endswith("#L2-L3")
+
+
+def test_read_source_rejects_path_traversal(tmp_path, monkeypatch):
+    _create_source_repo(tmp_path / "nursing-mastery")
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+
+    payload = json.loads(server.read_source("nursing-mastery", "../secret.txt"))
+
+    assert payload == {"error": "Invalid repository path."}
+
+
+def test_search_source_ranks_implementation_above_stale_planning_docs(tmp_path, monkeypatch):
+    repo = tmp_path / "katailyst2"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    implementation = repo / "lib" / "providers" / "marketo.ts"
+    implementation.parent.mkdir(parents=True)
+    implementation.write_text(
+        "export const truth = '" + ("historical detail " * 60)
+        + "Marketo OAuth connected; asset authoring ready; send remains human gated';\n",
+        encoding="utf-8",
+    )
+    generic = repo / "lib" / "research" / "generic-source.ts"
+    generic.parent.mkdir(parents=True)
+    generic.write_text(
+        "export const generic = 'available live research source';\n",
+        encoding="utf-8",
+    )
+    plan = repo / "docs" / "plans" / "old-marketo-plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text(
+        "Marketo OAuth connected asset authoring ready send remains human gated\n",
+        encoding="utf-8",
+    )
+    generated = repo / ".quality-loop" / "state.csv"
+    generated.parent.mkdir(parents=True)
+    generated.write_text(
+        "Marketo OAuth connected asset authoring ready send remains human gated\n" * 1_100,
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"katailyst2": "Awhitter/katailyst2"})
+    monkeypatch.setattr(
+        server,
+        "_repo_readiness",
+        lambda _repo: {"status": "ready", "indexedAt": "2026-08-06T00:00:00Z"},
+    )
+
+    payload = json.loads(
+        server.search_source(
+            "Is Marketo available as a live research source?",
+            "katailyst2",
+        )
+    )
+
+    assert payload["matches"][0]["path"] == "lib/providers/marketo.ts"
+    assert "Marketo" in payload["matches"][0]["text"]
+    planning = next(match for match in payload["matches"] if match["path"].startswith("docs/plans/"))
+    assert planning["sourceKind"] == "planning"
+    assert not any(match["path"].startswith(".quality-loop/") for match in payload["matches"])
+    assert "not current-state proof" in payload["guidance"]
+
+
+def test_source_only_repository_is_ready_for_exact_source_reads(tmp_path, monkeypatch):
+    repo = tmp_path / "hlt-web-service"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "README.md").write_text("HLT account API\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+    (repo / ".hlt-source-ready-at").write_text(
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+
+    readiness = server._repo_readiness("hlt-web-service")
+
+    assert readiness["status"] == "ready"
+    assert readiness["mode"] == "source"
+    assert readiness["error"] is None
+
+
+def test_verify_source_ref_checks_the_exact_private_checkout(tmp_path, monkeypatch):
+    sha = _create_source_repo(tmp_path / "nursing-mastery")
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(
+        server,
+        "_repo_readiness",
+        lambda _repo: {"status": "ready", "indexedAt": "2026-08-06T00:00:00Z"},
+    )
+
+    payload = json.loads(
+        server.verify_source_ref(
+            "Awhitter/nursing-mastery",
+            "app/api/identity/route.ts",
+            sha,
+        )
+    )
+
+    assert payload["exists"] is True
+    assert payload["commitSha"] == sha
+    assert payload["path"] == "app/api/identity/route.ts"
+    assert f"/blob/{sha}/app/api/identity/route.ts" in payload["url"]
 
 
 # --- recent_changes must not name a window it did not deliver ---------------

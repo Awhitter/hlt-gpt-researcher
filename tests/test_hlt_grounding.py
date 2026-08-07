@@ -1,7 +1,9 @@
 from backend.server.hlt_grounding import (
     extract_source_refs,
+    prepare_report_delivery,
     prepare_report_record,
     report_is_memory_eligible,
+    sanitize_user_visible_research_data,
 )
 
 
@@ -71,3 +73,139 @@ def test_missing_validated_path_becomes_unsupported_claim():
 
 def test_source_extraction_rejects_branch_links():
     assert extract_source_refs("https://github.com/Awhitter/repo/blob/main/file.ts") == []
+
+
+def test_code_scoped_delivery_blocks_an_answer_without_validator_backed_sources():
+    report = prepare_report_delivery(
+        "Marketo is not implemented and onboarding lives in invented/file.ts.",
+        {"active_sources": ["codebase", "recruiting"]},
+    )
+
+    assert report["deliveryBlocked"] is True
+    assert report["verificationStatus"] == "unverified"
+    assert "Marketo is not implemented" not in report["answer"]
+    assert "couldn't verify" in report["answer"].lower()
+
+
+def test_code_scoped_delivery_preserves_a_validator_backed_answer():
+    answer = "Email capture is implemented in the identity route."
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": SHA,
+                "path": "app/api/profile/route.ts",
+                "line": 12,
+                "url": URL,
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is False
+    assert report["verificationStatus"] == "verified"
+    assert report["answer"] == answer
+
+
+def test_mutable_or_short_github_code_link_blocks_code_scoped_delivery():
+    mutable = "https://github.com/Awhitter/ScraperVault/blob/7f71718/models/user.py"
+    report = prepare_report_delivery(
+        f"Definitive source: {mutable}",
+        {"active_sources": ["codebase"]},
+    )
+
+    assert report["deliveryBlocked"] is True
+    assert any("immutable" in claim.lower() for claim in report["unsupportedClaims"])
+
+
+def test_public_web_report_is_not_subject_to_code_delivery_gate():
+    answer = "A public market overview without repository claims."
+    report = prepare_report_delivery(answer, {"active_sources": ["firecrawl"]})
+
+    assert report["deliveryBlocked"] is False
+    assert report["answer"] == answer
+
+
+def test_user_visible_log_data_hides_internal_scope_instructions_recursively():
+    payload = {
+        "output": "Original question\n\nHLT research scope instructions:\n- secret implementation detail",
+        "metadata": [
+            "A clean subquery",
+            "Original question\n\nHLT research scope instructions:\n- more internals",
+        ],
+    }
+
+    sanitized = sanitize_user_visible_research_data(payload)
+
+    assert sanitized["output"] == "Original question"
+    assert sanitized["metadata"] == ["A clean subquery", "Original question"]
+
+
+def test_private_repo_validation_uses_the_configured_github_mcp_token(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'{"type":"file"}'
+
+    def open_request(request, timeout):
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_MCP_TOKEN", "private-repo-token")
+    monkeypatch.setattr("backend.server.hlt_grounding.urllib.request.urlopen", open_request)
+
+    report = prepare_report_record({"answer": f"Implemented here: {URL}"}, validate_sources=True)
+
+    assert report["verificationStatus"] == "verified"
+    assert captured == {"authorization": "Bearer private-repo-token", "timeout": 6}
+
+
+def test_private_repo_validation_prefers_the_authenticated_codegraph(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return (
+                b'{"repo":"Awhitter/nursing-mastery","commitSha":"'
+                + SHA.encode()
+                + b'","path":"app/api/profile/route.ts","exists":true,'
+                b'"indexedAt":"2026-08-06T00:00:00Z"}'
+            )
+
+    def open_request(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["body"] = request.data
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setenv("CODEGRAPH_MCP_URL", "https://codegraph.example/mcp")
+    monkeypatch.setenv("CODEGRAPH_MCP_TOKEN", "codegraph-token")
+    monkeypatch.setattr("backend.server.hlt_grounding.urllib.request.urlopen", open_request)
+
+    report = prepare_report_record({"answer": f"Implemented here: {URL}"}, validate_sources=True)
+
+    assert report["verificationStatus"] == "verified"
+    assert report["sourceRefs"][0]["validationMethod"] == "codegraph"
+    assert captured["url"] == "https://codegraph.example/verify-source"
+    assert captured["authorization"] == "Bearer codegraph-token"
+    assert b'"path": "app/api/profile/route.ts"' in captured["body"]
+    assert captured["timeout"] == 6

@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 from .multi_agent_runner import run_multi_agent_task
 from .hlt_extensions import prepare_research_request as prepare_hlt_research_request
 from .report_store import get_report_store
-from .hlt_grounding import prepare_report_record
+from .hlt_grounding import (
+    prepare_report_delivery,
+    sanitize_user_visible_research_data,
+)
 
 # Import chat agent
 try:
@@ -139,7 +142,9 @@ class CustomLogsHandler:
 
     async def send_json(self, data: Dict[str, Any]) -> None:
         """Store log data and send to websocket"""
-        enriched_data = self._with_run_metadata(data)
+        enriched_data = sanitize_user_visible_research_data(
+            self._with_run_metadata(data)
+        )
 
         # Send to websocket for real-time display
         if self.websocket:
@@ -307,6 +312,12 @@ async def handle_start_command(websocket, data: str, manager):
         research_scope=hlt_research_scope,
     )
     run_store = get_research_run_store()
+    active_hlt_sources = set(hlt_scope_metadata.get("active_sources") or [])
+    mcp_only = (
+        mcp_enabled
+        and "codebase" in active_hlt_sources
+        and not active_hlt_sources.intersection({"firecrawl", "audience"})
+    )
     run_store.create_run(
         research_id,
         query=display_task,
@@ -363,6 +374,7 @@ async def handle_start_command(websocket, data: str, manager):
             logs_handler=logs_handler,
             return_researcher=True,
             scraper_override=scraper_override,
+            mcp_only=mcp_only,
         )
     except Exception as e:
         logger.error(
@@ -384,6 +396,13 @@ async def handle_start_command(websocket, data: str, manager):
     else:
         report = report_result
     report = str(report)
+    delivery_record = await asyncio.to_thread(
+        prepare_report_delivery,
+        report,
+        hlt_scope_metadata,
+        validate_sources=True,
+    )
+    report = delivery_record["answer"]
     file_paths = await generate_report_files(report, sanitized_filename)
     # Add JSON log path to file_paths
     file_paths["json"] = os.path.relpath(logs_handler.log_file)
@@ -412,6 +431,14 @@ async def handle_start_command(websocket, data: str, manager):
             "type": "report_complete",
             "content": "report_complete",
             "output": report,
+            "metadata": {
+                "verificationStatus": delivery_record["verificationStatus"],
+                "verificationReason": delivery_record["verificationReason"],
+                "sourceRefs": delivery_record["sourceRefs"],
+                "unsupportedClaims": delivery_record["unsupportedClaims"],
+                "deliveryBlocked": delivery_record["deliveryBlocked"],
+                "hlt_research_scope": hlt_scope_metadata,
+            },
         })
 
     # Persist server-side so long runs land in the research library even if
@@ -419,14 +446,14 @@ async def handle_start_command(websocket, data: str, manager):
     # upserts the same research_id with its richer orderedData afterwards.
     if report.strip():
         try:
-            await get_report_store().upsert_report(research_id, prepare_report_record({
+            await get_report_store().upsert_report(research_id, {
+                **delivery_record,
                 "id": research_id,
                 "question": display_task,
-                "answer": report,
                 "orderedData": [],
                 "chatMessages": [],
                 "timestamp": int(time.time() * 1000),
-            }, validate_sources=True))
+            })
         except Exception:
             logger.warning(
                 "Failed to persist report to the research library",

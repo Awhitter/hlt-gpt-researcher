@@ -5,6 +5,7 @@ import {
   type ReportArtifactKind,
   type ReportArtifactLink,
 } from "@/utils/reportArtifacts";
+import type { ReportVerification } from "@/lib/reportTrust";
 
 interface AccessReportProps {
   accessData: {
@@ -22,6 +23,7 @@ interface AccessReportProps {
   researchId?: string;
   hasInlineReport?: boolean;
   onShareClick?: () => void;
+  verification?: ReportVerification;
 }
 
 type ArtifactAction = {
@@ -42,6 +44,7 @@ const AccessReport: React.FC<AccessReportProps> = ({
   researchId,
   hasInlineReport = false,
   onShareClick,
+  verification,
 }) => {
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [failedAction, setFailedAction] = useState<ArtifactAction | null>(null);
@@ -171,15 +174,24 @@ const AccessReport: React.FC<AccessReportProps> = ({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal-200">
-              Research complete
+              {verification?.deliveryBlocked
+                ? "Research stopped safely"
+                : "Research complete"}
             </p>
             <h3 className="mt-1 text-lg font-semibold text-white">
-              Report artifacts are ready
+              {verification?.deliveryBlocked
+                ? "A source-check notice is ready"
+                : verification?.isCodeScoped &&
+                    verification.status === "verified"
+                  ? "Source-checked report files are ready"
+                  : "Report artifacts are ready"}
             </h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
-              {hasInlineReport || report
-                ? "The final report streamed into the page. These files are durable export copies from the same run."
-                : "The run completed with durable file metadata but did not stream an inline report. Open the Markdown report first, then use DocX or PDF if available."}
+              {verification?.deliveryBlocked
+                ? "The assistant withheld the unsupported answer. Every file below contains the same source-check notice, not the discarded claims."
+                : hasInlineReport || report
+                  ? "The final report streamed into the page. These files are durable export copies from the same run."
+                  : "The run completed with durable file metadata but did not stream an inline report. Open the Markdown report first, then use DocX or PDF if available."}
             </p>
           </div>
           {effectiveResearchId ? (

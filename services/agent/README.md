@@ -1,7 +1,13 @@
-# HLT Slack agents
+# HLT agent runtime adapter
+
+Mastery Research is the reusable research core. Katailyst2 is the canonical
+registry/orchestration layer for product and facilitator agents. This directory
+packages those agents for the current Hermes/Slack deployment; it is not the
+authority that turns Mastery Research into a Nursing-Mastery-only tool.
 
 One image, two personas. `AGENT_ID` picks which boots: **`cleo`** (product
-owner for Nursing Mastery — the default) or **`brian`** (Mastery Researcher).
+owner/facilitator for Nursing Mastery — one consumer of the research core and
+the default) or **`brian`** (general Mastery Researcher).
 One Hermes gateway binds to exactly one Slack app, so a second agent means a
 second Render service off this same image.
 

@@ -97,7 +97,7 @@ class WebSocketManager:
             except Exception:
                 pass  # If this fails too, there's nothing more we can do
 
-    async def start_streaming(self, task, report_type, report_source, source_urls, document_urls, tone, websocket, headers=None, query_domains=[], mcp_enabled=False, mcp_strategy="fast", mcp_configs=[], max_search_results=None, logs_handler=None, return_researcher=False, scraper_override=None):
+    async def start_streaming(self, task, report_type, report_source, source_urls, document_urls, tone, websocket, headers=None, query_domains=[], mcp_enabled=False, mcp_strategy="fast", mcp_configs=[], max_search_results=None, logs_handler=None, return_researcher=False, scraper_override=None, mcp_only=False):
         """Start streaming the output."""
         tone = Tone[tone]
         # add customized JSON config file path here
@@ -111,10 +111,11 @@ class WebSocketManager:
             max_search_results=max_search_results, logs_handler=logs_handler,
             return_researcher=return_researcher,
             scraper_override=scraper_override,
+            mcp_only=mcp_only,
         )
         return report
 
-async def run_agent(task, report_type, report_source, source_urls, document_urls, tone: Tone, websocket, stream_output=stream_output, headers=None, query_domains=[], config_path="", return_researcher=False, mcp_enabled=False, mcp_strategy="fast", mcp_configs=[], max_search_results=None, logs_handler=None, scraper_override=None):
+async def run_agent(task, report_type, report_source, source_urls, document_urls, tone: Tone, websocket, stream_output=stream_output, headers=None, query_domains=[], config_path="", return_researcher=False, mcp_enabled=False, mcp_strategy="fast", mcp_configs=[], max_search_results=None, logs_handler=None, scraper_override=None, mcp_only=False):
     """Run the agent."""    
     # Create logs handler for this research task
     logs_handler = logs_handler or CustomLogsHandler(websocket, task)
@@ -159,6 +160,7 @@ async def run_agent(task, report_type, report_source, source_urls, document_urls
             max_search_results=max_search_results,
             scraper_override=scraper_override,
         )
+        researcher.gpt_researcher.mcp_only = bool(mcp_only)
         report = await researcher.run()
         
     else:
@@ -178,6 +180,7 @@ async def run_agent(task, report_type, report_source, source_urls, document_urls
             max_search_results=max_search_results,
             scraper_override=scraper_override,
         )
+        researcher.gpt_researcher.mcp_only = bool(mcp_only)
         report = await researcher.run()
 
     if report_type != "multi_agents" and return_researcher:

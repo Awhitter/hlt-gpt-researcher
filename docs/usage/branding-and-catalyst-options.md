@@ -98,7 +98,7 @@ Surface coverage, so the routing is not a hidden pocket:
 
 | Checkbox | What it does now | Required env for full power |
 | --- | --- | --- |
-| Code files | Adds codebase instructions naming the canonical estate repos (nursing-mastery, ScraperVault, katailyst2, MMM2 — override with `HLT_CODEBASE_REPOS`) and requests Katailyst2 + GitHub MCP presets | `KATAILYST2_MCP_TOKEN`, optional `GITHUB_MCP_URL` / `GITHUB_MCP_TOKEN` |
+| Code files | Adds codebase instructions naming the canonical estate repos (including Mastery Research, HLT Web Service, nursing-mastery, ScraperVault, katailyst2, MMM2, and EBB; override with `HLT_CODEBASE_REPOS`) and requests Katailyst2 + the preferred code/source MCP | `KATAILYST2_MCP_TOKEN`, `CODEGRAPH_MCP_URL`; GitHub MCP remains an optional fallback |
 | CMS + Registry | Adds Katailyst2 registry/CMS instructions and requests the Katailyst2 MCP preset | `KATAILYST2_MCP_TOKEN` |
 | Metrics | Adds metrics instructions and requests Metabase; falls back to Katailyst2 metrics tools when direct Metabase MCP is unset | `KATAILYST2_MCP_TOKEN`; optional `METABASE_MCP_URL` / `METABASE_MCP_TOKEN` |
 | High-quality crawl | Adds extraction-quality instructions | `SCRAPER=firecrawl`, `FIRECRAWL_API_KEY` |
