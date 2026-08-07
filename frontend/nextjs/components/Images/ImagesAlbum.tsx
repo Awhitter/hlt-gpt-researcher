@@ -1,7 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import ImageModal from './ImageModal';
 
-type ImageType = any; // Simple type definition to avoid errors
+type ImageType = string | {
+    url: string;
+    source_url?: string;
+    alt_text?: string;
+};
+
+const imageUrl = (image: ImageType) => typeof image === 'string' ? image : image.url;
+const imageAlt = (image: ImageType) =>
+    typeof image === 'string' ? 'Related research image' : image.alt_text || 'Related research image';
+const imageSource = (image: ImageType) =>
+    typeof image === 'string' ? '' : image.source_url || '';
 
 interface ImagesAlbumProps {
   images: ImageType[];
@@ -9,7 +19,7 @@ interface ImagesAlbumProps {
 
 export default function ImagesAlbum({ images }: ImagesAlbumProps) {
     const [isModalOpen, setIsModalOpen] = useState(false);
-    const [selectedImage, setSelectedImage] = useState(null);
+    const [selectedImage, setSelectedImage] = useState<ImageType | null>(null);
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [validImages, setValidImages] = useState(images);
 
@@ -53,24 +63,36 @@ export default function ImagesAlbum({ images }: ImagesAlbumProps) {
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 gap-4 pb-4">
                 {validImages.map((image: ImageType, index: number) => (
                     <div 
-                        key={index} 
-                        className="relative aspect-square bg-gray-700 rounded-lg overflow-hidden hover:shadow-lg transition-shadow duration-300"
+                        key={`${imageUrl(image)}-${index}`}
+                        className="bg-gray-800 rounded-lg overflow-hidden"
                     >
+                        <div className="relative aspect-square bg-gray-700 overflow-hidden hover:shadow-lg transition-shadow duration-300">
                         <img
-                            src={image}
-                            alt={`Image ${index + 1}`}
+                            src={imageUrl(image)}
+                            alt={imageAlt(image)}
                             className="absolute inset-0 w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity duration-300"
                             onClick={() => openModal(image, index)}
                             onError={() => handleImageError(image)}
                             loading="lazy"
                         />
+                        </div>
+                        {imageSource(image) && (
+                            <a
+                                href={imageSource(image)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block px-2 py-1 text-xs text-gray-400 underline hover:text-white"
+                            >
+                                Source
+                            </a>
+                        )}
                     </div>
                 ))}
             </div>
 
             {selectedImage && (
                 <ImageModal
-                    imageSrc={selectedImage}
+                    imageSrc={imageUrl(selectedImage)}
                     isOpen={isModalOpen}
                     onClose={closeModal}
                     onNext={nextImage}

@@ -604,6 +604,11 @@ class GPTResearcher:
         """
         return self.research_images[:top_k]
 
+    def get_all_research_images(self) -> list[dict[str, Any]]:
+        """Return attributed source images plus generated report illustrations."""
+
+        return [*self.get_research_images(), *self.available_images]
+
     def add_research_images(self, images: list[dict[str, Any]]) -> None:
         """Add images to the research image collection.
 

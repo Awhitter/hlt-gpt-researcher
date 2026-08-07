@@ -83,7 +83,7 @@ class BrowserManager:
 
         return scraped_content
 
-    def select_top_images(self, images: list[dict], k: int = 2) -> list[str]:
+    def select_top_images(self, images: list[dict], k: int = 2) -> list[dict]:
         """
         Select most relevant images and remove duplicates based on image content.
 
@@ -92,11 +92,15 @@ class BrowserManager:
             k (int): Number of top images to select if no high-score images are found.
 
         Returns:
-            list[str]: list of selected image URLs.
+            Attributed image records containing URL, page source, and alt text.
         """
         unique_images = []
         seen_hashes = set()
         current_research_images = self.researcher.get_research_images()
+        current_urls = {
+            image.get("url") if isinstance(image, dict) else image
+            for image in current_research_images
+        }
 
         # Process images in descending order of their scores
         for img in sorted(images, key=lambda im: im["score"], reverse=True):
@@ -104,10 +108,16 @@ class BrowserManager:
             if (
                 img_hash
                 and img_hash not in seen_hashes
-                and img['url'] not in current_research_images
+                and img['url'] not in current_urls
             ):
                 seen_hashes.add(img_hash)
-                unique_images.append(img["url"])
+                unique_images.append(
+                    {
+                        "url": img["url"],
+                        "source_url": img.get("source_url", ""),
+                        "alt_text": img.get("alt_text", ""),
+                    }
+                )
 
                 if len(unique_images) == k:
                     break

@@ -16,14 +16,51 @@ from bs4 import BeautifulSoup
 def get_relevant_images(soup: BeautifulSoup, url: str) -> list:
     """Extract relevant images from the page"""
     image_urls = []
+    seen_urls = set()
+
+    def add_image(image_url: str, score: int, alt_text: str = "") -> None:
+        resolved_url = urljoin(url, image_url)
+        if (
+            not resolved_url.startswith(("http://", "https://"))
+            or resolved_url in seen_urls
+        ):
+            return
+        seen_urls.add(resolved_url)
+        image_urls.append(
+            {
+                "url": resolved_url,
+                "score": score,
+                "source_url": url,
+                "alt_text": alt_text.strip(),
+            }
+        )
     
     try:
+        # Social-card metadata is usually the page's intended hero image and
+        # works when the visible markup lazy-loads every <img>.
+        og_alt = soup.find("meta", attrs={"property": "og:image:alt"})
+        twitter_alt = soup.find("meta", attrs={"name": "twitter:image:alt"})
+        for selector in (
+            {"property": "og:image"},
+            {"property": "og:image:url"},
+            {"name": "twitter:image"},
+            {"name": "twitter:image:src"},
+        ):
+            meta = soup.find("meta", attrs=selector)
+            if meta and meta.get("content"):
+                alt = ""
+                if selector.get("property", "").startswith("og:") and og_alt:
+                    alt = og_alt.get("content", "")
+                elif selector.get("name", "").startswith("twitter:") and twitter_alt:
+                    alt = twitter_alt.get("content", "")
+                add_image(meta["content"], 5, alt)
+
         # Find all img tags with src attribute
         all_images = soup.find_all('img', src=True)
         
         for img in all_images:
-            img_src = urljoin(url, img['src'])
-            if img_src.startswith(('http://', 'https://')):
+            img_src = img['src']
+            if urljoin(url, img_src).startswith(('http://', 'https://')):
                 score = 0
                 # Check for relevant classes
                 if any(cls in img.get('class', []) for cls in ['header', 'featured', 'hero', 'thumbnail', 'main', 'content']):
@@ -44,7 +81,7 @@ def get_relevant_images(soup: BeautifulSoup, url: str) -> list:
                         else:
                             continue  # Skip small images
                 
-                image_urls.append({'url': img_src, 'score': score})
+                add_image(img_src, score, img.get("alt", ""))
         
         # Sort images by score (highest first)
         sorted_images = sorted(image_urls, key=lambda x: x['score'], reverse=True)

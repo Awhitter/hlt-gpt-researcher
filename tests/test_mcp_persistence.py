@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import gpt_researcher.research_run_store as run_store_module
 import mcp_server.tools as mcp_tools
@@ -15,6 +16,17 @@ class FakeGPTResearcher:
         self.research_sources = []
         self.visited_urls = set()
         self.costs = 0.0
+        self.cfg = SimpleNamespace(
+            max_search_results_per_query=5,
+            image_generation_enabled=False,
+        )
+        self.research_images = [
+            {
+                "url": "https://example.com/alec.jpg",
+                "source_url": "https://example.com/profile",
+                "alt_text": "Alec Whitters",
+            }
+        ]
 
     async def conduct_research(self):
         self.context = [{"finding": f"context for {self.query}"}]
@@ -43,6 +55,12 @@ class FakeGPTResearcher:
     def get_costs(self):
         return self.costs
 
+    def get_research_images(self):
+        return self.research_images
+
+    def get_all_research_images(self):
+        return self.research_images
+
 
 def _reset_store(monkeypatch, tmp_path):
     monkeypatch.setenv("RESEARCH_RUN_STORE_PATH", str(tmp_path / "runs.sqlite3"))
@@ -68,6 +86,23 @@ def test_mcp_deep_research_survives_hot_cache_loss(monkeypatch, tmp_path):
     assert context["context"] == [{"finding": "context for restart-safe research"}]
     assert sources["status"] == "success"
     assert sources["sources"][0]["url"] == "https://example.com/research"
+
+    images = asyncio.run(mcp_tools.get_research_images_tool(research_id))
+    assert images["image_count"] == 1
+    assert images["images"][0]["source_url"] == "https://example.com/profile"
+
+
+def test_mcp_depth_sets_source_breadth(monkeypatch, tmp_path):
+    _reset_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(mcp_tools, "GPTResearcher", FakeGPTResearcher)
+
+    result = asyncio.run(mcp_tools.deep_research_tool("broad research", depth="deep"))
+
+    assert result["status"] == "success"
+    item = asyncio.run(mcp_tools._get_research(result["research_id"]))
+    assert item.researcher.cfg.max_search_results_per_query == 12
+    assert result["max_sources_per_query"] == 12
+    assert result["image_count"] == 1
 
 
 def test_mcp_write_report_hydrates_from_sqlite_after_restart(monkeypatch, tmp_path):

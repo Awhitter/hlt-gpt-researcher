@@ -42,6 +42,16 @@ export const SCOPE_SOURCE_KEYS = [
   "recruiting",
 ] as const satisfies readonly (keyof HLTResearchScope)[];
 
+const SOURCE_LIMIT_BY_DEPTH = {
+  fast: 5,
+  balanced: 8,
+  deep: 12,
+} as const;
+
+export function sourceLimitForDepth(depth?: HLTResearchScope["depth"]): number {
+  return SOURCE_LIMIT_BY_DEPTH[depth || "balanced"];
+}
+
 export function selectedScopeCount(scope?: Partial<HLTResearchScope>): number {
   const normalized = normalizeHLTResearchScope(scope);
   return SCOPE_SOURCE_KEYS.filter((key) => normalized[key]).length;

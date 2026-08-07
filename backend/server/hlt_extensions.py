@@ -171,29 +171,13 @@ _DEPTH_INSTRUCTIONS = {
     "deep": "Go deeper. Compare sources, inspect primary context, and surface tradeoffs.",
 }
 
-# Identity ground truth for scoped runs. Without it the planner free-associates
-# on estate names — e.g. "nursing mastery" became an NCLEX-app comparison against
-# ATI/Kaplan/UWorld instead of our recruiting platform.
+# Small disambiguation hint for estate questions. Product-specific agent
+# instructions belong in Katailyst2, not in every Mastery Research prompt.
 _ESTATE_GLOSSARY = (
-    "Company context (ground truth — do not re-derive it from the open web): "
-    "HLT / Higher Learning Technologies (hltcorp.com) is a ~25-person healthcare "
-    "education company whose current focus is nurse recruiting. 'Nursing Mastery' "
-    "means www.nursingmastery.com — HLT's own nurse recruiting platform (job "
-    "board, Nurse Pay Check pay-comparison tool, career content; its experience "
-    "lives in Awhitter/nursing-mastery). Person data is intentionally split: the "
-    "HLT account API owns signed-in identity, career preferences, and consent "
-    "state; ScraperVault owns the capture pipeline, jobs, applications, recruiting "
-    "operations, and receipts. Confirm the current implementation and sync "
-    "freshness before describing a field as available in both systems. "
-    "'Mastery Research' is the reusable research core/provider, not the Nursing "
-    "Mastery product. K2-managed product and facilitator agents may use that core "
-    "for Nursing Mastery or other products. HLT also "
-    "ships Mastery-branded exam-prep apps (NCLEX etc.); only interpret a question "
-    "that way when it is explicitly about test prep. Other estate names: "
-    "Katailyst2 (AI registry/orchestration), MMM2 (media generation), EBB "
-    "(metrics). For questions about these properties, treat our own sites, repos, "
-    "and internal corpus as primary sources; third-party review chatter is "
-    "secondary color, not ground truth."
+    "HLT term map: Mastery Research is the reusable research core; Katailyst2 "
+    "owns agent registry and orchestration; Nursing Mastery means the "
+    "nursingmastery.com nurse-career product and is one use case. Do not confuse "
+    "it with HLT's exam-prep apps. Verify ownership and access from this run's sources."
 )
 
 _ESTATE_NAME_PATTERN = re.compile(
@@ -331,41 +315,16 @@ def _codebase_repos() -> tuple[str, ...]:
 
 
 def _scope_instruction(key: str) -> str:
-    """Scope instruction text; codebase names the canonical estate repos."""
+    """Return a compact source contract; product context belongs in K2."""
 
     if key == "codebase":
-        repos = "; ".join(_codebase_repos())
         return (
-            "Answer as a careful internal code researcher for nontechnical teammates. "
-            "Use available codebase/repository context (prefer codegraph MCP "
-            "tools: search_source to discover real files, read_source to inspect "
-            "exact current lines, then verify_source_ref; use list_repos, "
-            "repo_overview, query, context, impact, and trace for structure). "
-            "The canonical HLT "
-            f"repositories are: {repos}. Prefer these repositories' implementation "
-            "files, repo maps, pull requests, and architecture notes over generic "
-            "web sources, ignore legacy/archived repositories unless explicitly "
-            "asked, and say which repository each finding came from. Do not assume "
-            "that one repository owns every part of a person record: trace each "
-            "field and workflow across the HLT account API, ScraperVault, and its "
-            "consumer experience. Treat Katailyst2 as registry/orchestration and "
-            "product-agent authority, while Mastery Research remains a reusable "
-            "research provider. Treat EBB/PostHog as measurement evidence, not "
-            "person or application authority. Distinguish current implementation, "
-            "dated operational receipt, documented intent, roadmap, and unknown. "
-            "A proposal or historical receipt is not proof of current live state. Every "
-            "implementation claim must cite a retrieved existing file, route, "
-            "symbol, schema, or configuration using an immutable GitHub URL with "
-            "the exact 40-character commit SHA; validate the path before presenting "
-            "it as verified. Never invent a file, endpoint, queue, database field, "
-            "or integration. Marketo is not a built-in live Mastery Research source. "
-            "Treat Marketo or any other external SaaS as unavailable unless an "
-            "active live-system source was mounted and inspected in this run; code, "
-            "environment examples, and old campaign receipts prove neither access "
-            "nor current readiness. Structure the answer as: Direct answer; Current "
-            "implementation and evidence; Authority and permissions; Documented "
-            "direction (clearly labeled); Unknown or unavailable; How to verify or "
-            "change it; Sources and freshness."
+            "For code claims, call search_source, then read_source on returned paths; "
+            "cite only validator-backed immutable file links. Trace a field across "
+            "systems instead of assuming one People owner. Separate implementation, "
+            "documented intent, operational receipt, and live-system access. A source "
+            "not connected to this run is currently unavailable, not permanently "
+            "forbidden."
         )
     return _SCOPE_INSTRUCTIONS[key]
 
@@ -1002,7 +961,24 @@ def prepare_research_request(
     ):
         return task, next_mcp_enabled, mcp_strategy, expanded_configs, hlt_scope_metadata, scraper_override
 
-    instruction_lines = [_ESTATE_GLOSSARY, _DEPTH_INSTRUCTIONS[depth]]
+    instruction_lines = [_DEPTH_INSTRUCTIONS[depth]]
+    if _mentions_estate(task):
+        instruction_lines.insert(0, _ESTATE_GLOSSARY)
+    connected_adapters = sorted(
+        {
+            str(config.get("name"))
+            for config in expanded_configs
+            if isinstance(config, dict) and config.get("name")
+        }
+    )
+    if connected_adapters:
+        instruction_lines.append(
+            f"Connected adapters this run: {', '.join(connected_adapters)}. "
+            "Availability is current, not permanent policy."
+        )
+    configured_repos = os.getenv("HLT_CODEBASE_REPOS")
+    if bool(scope.get("codebase")) and configured_repos:
+        instruction_lines.append(f"Configured repo scope: {configured_repos}.")
     if mode == "top1":
         instruction_lines.append(_TOP1_MODE_INSTRUCTIONS)
     instruction_lines.extend(
@@ -1022,8 +998,7 @@ def prepare_research_request(
     for key in hlt_scope_metadata["degraded_sources"]:
         if key in enabled_keys:
             instruction_lines.append(
-                f"{key} scope was requested but is only partially available or unconfigured; "
-                "do not imply unavailable internal data was inspected."
+                f"{key} is degraded; name what was unavailable or not inspected."
             )
     media = hlt_scope_metadata.get("media", {})
     media_assets = media.get("assets") if isinstance(media, dict) else []

@@ -36,7 +36,7 @@ from gpt_researcher.utils.enum import Tone
 from chat.chat import ChatAgentWithMemory
 
 from server.report_store import get_report_store
-from server.hlt_grounding import prepare_report_record
+from server.hlt_grounding import merge_report_delivery_receipt, prepare_report_record
 from gpt_researcher.research_run_store import get_outputs_dir, get_research_run_store, jsonable
 from gpt_researcher.utils.langfuse_observability import (
     observe_langfuse,
@@ -282,6 +282,7 @@ async def create_or_update_report(request: Request):
 
         now_ms = current_timestamp_ms()
         existing = await report_store.get_report(research_id)
+        data = merge_report_delivery_receipt(existing, data)
         incoming_timestamp = data.get("timestamp")
         timestamp = incoming_timestamp if isinstance(incoming_timestamp, int) else now_ms
         if existing and isinstance(existing.get("timestamp"), int):
@@ -297,6 +298,9 @@ async def create_or_update_report(request: Request):
             "sourceRefs": data.get("sourceRefs") or [],
             "verificationStatus": data.get("verificationStatus"),
             "unsupportedClaims": data.get("unsupportedClaims") or [],
+            "verificationReason": data.get("verificationReason"),
+            "deliveryBlocked": data.get("deliveryBlocked"),
+            "hlt_research_scope": data.get("hlt_research_scope"),
         }, validate_sources=True)
 
         await report_store.upsert_report(research_id, report)
@@ -421,11 +425,15 @@ async def write_report(research_request: ResearchRequest, research_id: str = Non
             report, researcher = report_information
             sources = jsonable(researcher.get_research_sources())
             source_urls = list(researcher.get_source_urls())
+            image_reader = getattr(
+                researcher, "get_all_research_images", None
+            ) or getattr(researcher, "get_research_images", None)
             research_run_store.complete_run(
                 research_id,
                 context=jsonable(researcher.get_research_context()),
                 sources=sources,
                 source_urls=source_urls,
+                research_images=jsonable(image_reader()) if image_reader else [],
                 costs=researcher.get_costs(),
                 report_path=md_path,
                 md_path=md_path,

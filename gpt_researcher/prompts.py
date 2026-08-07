@@ -101,6 +101,21 @@ Select exactly {max_tools} tools, ranked by relevance to the research query.
                 tool_names.append(tool.name)
             else:
                 tool_names.append(str(tool))
+
+        normalized_tool_names = {
+            str(name).split("__")[-1].split(".")[-1].split("/")[-1]
+            for name in tool_names
+        }
+        source_workflow = ""
+        if {"search_source", "read_source"}.issubset(normalized_tool_names):
+            source_workflow = """
+6. For repository claims, work in sequence across tool rounds: call search_source
+   with the behavior or field you need, wait for its real paths, then call
+   read_source on the relevant returned paths. Use verify_source_ref when useful.
+7. Never guess a repository path, symbol, commit, or source URL. Cite only exact
+   immutable links actually returned by the source tools; if evidence is absent,
+   say the implementation fact is unavailable.
+"""
         
         return f"""You are a research assistant with access to specialized tools. Your task is to research the following query and provide comprehensive, accurate information.
 
@@ -112,6 +127,7 @@ INSTRUCTIONS:
 3. If a tool call fails or returns empty results, try alternative approaches
 4. Synthesize information from multiple sources when possible
 5. Focus on factual, relevant information that directly addresses the query
+{source_workflow}
 
 AVAILABLE TOOLS: {tool_names}
 

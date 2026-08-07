@@ -7,6 +7,8 @@ import asyncio
 import logging
 from typing import List, Dict, Any
 
+from langchain_core.messages import HumanMessage, ToolMessage
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,24 +73,44 @@ class MCPResearchSkill:
             # Create research prompt
             research_prompt = PromptFamily.generate_mcp_research_prompt(query, selected_tools)
 
-            # Create messages
-            messages = [{"role": "user", "content": research_prompt}]
-            
-            # Invoke LLM with tools
-            logger.info("LLM researching with bound tools...")
-            response = await llm_with_tools.ainvoke(messages)
-            
-            # Process tool calls and results
+            messages = [HumanMessage(content=research_prompt)]
             research_results = []
-            
-            # Check if the LLM made tool calls
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                logger.info(f"LLM made {len(response.tool_calls)} tool calls")
-                
-                # Process each tool call
-                for i, tool_call in enumerate(response.tool_calls, 1):
+
+            # Tool results have to go back to the model. A single tool-calling
+            # turn cannot discover a path and then inspect that discovered path;
+            # it can only guess the second call's arguments. Keep the loop
+            # deliberately bounded while allowing search -> read -> verify.
+            max_tool_rounds = 4
+            for round_number in range(1, max_tool_rounds + 1):
+                logger.info(
+                    "LLM researching with bound tools (round %s/%s)...",
+                    round_number,
+                    max_tool_rounds,
+                )
+                response = await llm_with_tools.ainvoke(messages)
+                tool_calls = list(getattr(response, "tool_calls", []) or [])
+                if not tool_calls:
+                    content = getattr(response, "content", "")
+                    if content:
+                        analysis_text = content if isinstance(content, str) else str(content)
+                        research_results.append({
+                            "title": f"LLM Analysis: {query}",
+                            "href": "mcp://llm_analysis",
+                            "body": analysis_text,
+                        })
+                        logger.info("Added final LLM analysis to results")
+                    break
+
+                logger.info(
+                    "LLM made %s tool calls in round %s",
+                    len(tool_calls),
+                    round_number,
+                )
+                messages.append(response)
+                for i, tool_call in enumerate(tool_calls, 1):
                     tool_name = tool_call.get("name", "unknown")
                     tool_args = tool_call.get("args", {})
+                    tool_call_id = tool_call.get("id") or f"mcp-{round_number}-{i}"
                     
                     logger.info(f"Executing tool {i}/{len(response.tool_calls)}: {tool_name}")
                     
@@ -97,11 +119,18 @@ class MCPResearchSkill:
                         args_str = ", ".join([f"{k}={v}" for k, v in tool_args.items()])
                         logger.debug(f"Tool arguments: {args_str}")
                     
+                    tool_result: Any = f"Tool {tool_name} was unavailable."
                     try:
                         # Find the tool by name
                         tool = next((t for t in selected_tools if t.name == tool_name), None)
                         if not tool:
                             logger.warning(f"Tool {tool_name} not found in selected tools")
+                            messages.append(
+                                ToolMessage(
+                                    content=str(tool_result),
+                                    tool_call_id=tool_call_id,
+                                )
+                            )
                             continue
                         
                         # Execute the tool
@@ -111,6 +140,7 @@ class MCPResearchSkill:
                             result = tool.invoke(tool_args)
                         else:
                             result = await tool(tool_args) if asyncio.iscoroutinefunction(tool) else tool(tool_args)
+                        tool_result = result
                         
                         # Log the actual tool response for debugging
                         if result:
@@ -129,24 +159,20 @@ class MCPResearchSkill:
                                 logger.debug(f"Result {j+1}: '{title}' - Content: {content_preview}")
                         else:
                             logger.warning(f"Tool {tool_name} returned empty result")
-                            
+                        messages.append(
+                            ToolMessage(
+                                content=str(tool_result),
+                                tool_call_id=tool_call_id,
+                            )
+                        )
                     except Exception as e:
                         logger.error(f"Error executing tool {tool_name}: {e}")
-                        continue
-                        
-            # Also include the LLM's own analysis/response as a result
-            if hasattr(response, 'content') and response.content:
-                llm_analysis = {
-                    "title": f"LLM Analysis: {query}",
-                    "href": "mcp://llm_analysis",
-                    "body": response.content
-                }
-                research_results.append(llm_analysis)
-                
-                # Log LLM analysis content
-                analysis_preview = response.content[:300] + "..." if len(response.content) > 300 else response.content
-                logger.debug(f"LLM Analysis: {analysis_preview}")
-                logger.info("Added LLM analysis to results")
+                        messages.append(
+                            ToolMessage(
+                                content=f"Tool {tool_name} failed: {e}",
+                                tool_call_id=tool_call_id,
+                            )
+                        )
             
             logger.info(f"Research completed with {len(research_results)} total results")
             return research_results
@@ -268,4 +294,4 @@ class MCPResearchSkill:
             }
             search_results.append(search_result)
         
-        return search_results 
+        return search_results

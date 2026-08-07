@@ -145,6 +145,12 @@ class MCPRetriever:
             # Stage 2: Select most relevant tools
             await self.streamer.stream_stage_start("Stage 2", "Selecting most relevant tools")
             selected_tools = await self.tool_selector.select_relevant_tools(self.query, all_tools, max_tools=3)
+            if getattr(self.researcher, "mcp_only", False):
+                selected_tools = self.tool_selector.ensure_code_source_tools(
+                    selected_tools,
+                    all_tools,
+                    max_tools=5,
+                )
             
             if not selected_tools:
                 await self.streamer.stream_warning("No relevant tools selected, skipping MCP research")
@@ -321,4 +327,4 @@ class MCPRetriever:
         except Exception as e:
             logger.error(f"Error getting MCP tools: {e}")
             await self.streamer.stream_error(f"Error getting MCP tools: {str(e)}")
-            return [] 
+            return []

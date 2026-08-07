@@ -211,6 +211,7 @@ TECHNICAL REQUIREMENTS:
 - Resolution and detail appropriate for report embedding
 
 AVOID:
+- Any portrait, headshot, face, or likeness of a named real person
 - Cartoonish or childish styles
 - Cluttered or busy designs  
 - Bright white backgrounds (for dark mode)

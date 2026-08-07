@@ -32,6 +32,41 @@ class MCPToolSelector:
         self.cfg = cfg
         self.researcher = researcher
 
+    @staticmethod
+    def ensure_code_source_tools(selected_tools: List, all_tools: List, max_tools: int = 5) -> List:
+        """Pin the exact-source workflow for internal code questions.
+
+        An LLM may choose a structural graph or registry lookup while omitting
+        the tools that can prove a real file path. Code-scoped research must be
+        able to discover, inspect, and verify source before it writes prose.
+        """
+
+        required_names = ("search_source", "read_source", "verify_source_ref")
+
+        def matches(tool, required_name: str) -> bool:
+            name = str(getattr(tool, "name", ""))
+            return name == required_name or name.endswith(
+                (f"__{required_name}", f".{required_name}", f"/{required_name}")
+            )
+
+        pinned = [
+            tool
+            for required_name in required_names
+            for tool in all_tools
+            if matches(tool, required_name)
+        ]
+        combined = []
+        seen = set()
+        for tool in [*pinned, *selected_tools]:
+            name = str(getattr(tool, "name", ""))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            combined.append(tool)
+            if len(combined) >= max_tools:
+                break
+        return combined
+
     async def select_relevant_tools(self, query: str, all_tools: List, max_tools: int = 3) -> List:
         """
         Use LLM to select the most relevant tools for the research query.
@@ -201,4 +236,4 @@ class MCPToolSelector:
         for i, (tool, score) in enumerate(scored_tools[:max_tools]):
             logger.info(f"Fallback selected tool {i+1}: {tool.name} (score: {score})")
         
-        return selected_tools 
+        return selected_tools
