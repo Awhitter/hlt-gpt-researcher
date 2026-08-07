@@ -84,6 +84,32 @@ def test_code_report_context_uses_opened_files_not_broad_search_results():
     assert "VERIFICATION_METADATA_IS_NOT_CLAIM_EVIDENCE" not in compacted
 
 
+def test_code_report_context_keeps_multiple_opened_files_in_view():
+    sources = [
+        {
+            "tool_name": "read_source",
+            "title": f"workflow stage {index}",
+            "url": (
+                "https://github.com/Awhitter/repo/blob/"
+                + str(index) * 40
+                + f"/stage-{index}.ts#L1-L200"
+            ),
+            "content": f"STAGE_{index}\n" + (chr(64 + index) * 20_000),
+        }
+        for index in range(1, 7)
+    ]
+
+    compacted = compact_report_context(
+        "BROAD_SEARCH_CONTEXT",
+        sources,
+        max_chars=50_000,
+        opened_sources_only=True,
+    )
+
+    assert all(f"STAGE_{index}" in compacted for index in range(1, 7))
+    assert "BROAD_SEARCH_CONTEXT" not in compacted
+
+
 def test_code_report_without_opened_file_states_evidence_is_missing():
     compacted = compact_report_context(
         "A broad result that sounds plausible",
@@ -101,6 +127,10 @@ def test_code_teammate_prompt_prevents_inference_and_authority_flattening():
     assert "Lead with the answer" in prompt
     assert "250-700 words" in prompt
     assert "client interface is not proof of data ownership" in prompt
+    assert "model validation" in prompt
+    assert "not by itself proof" in prompt
+    assert "not verified in the opened sources for this run" in prompt
+    assert "silently audit every use" in prompt
     assert "Never add likely, standard, illustrative, or inferred fields" in prompt
     assert "not verified" in prompt
     assert "What attributes do we capture?" in prompt

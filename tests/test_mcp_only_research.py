@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage
 
 from gpt_researcher.mcp.research import MCPResearchSkill
 from gpt_researcher.mcp.tool_selector import MCPToolSelector
+from gpt_researcher.prompts import PromptFamily
 from gpt_researcher.skills.researcher import ResearchConductor
 
 
@@ -90,6 +91,19 @@ class FakeTool:
     async def ainvoke(self, args):
         self.calls.append(args)
         return self.result
+
+
+def test_code_research_prompt_follows_authority_and_capture_write_paths():
+    prompt = PromptFamily.generate_mcp_research_prompt(
+        "Who owns email and exactly when is it captured?",
+        [FakeTool("search_source"), FakeTool("read_source")],
+    )
+
+    assert "does not prove data ownership" in prompt
+    assert "find the submission handler" in prompt
+    assert "search for that symbol and open its implementation" in prompt
+    assert "A required database field alone is not evidence" in prompt
+    assert "do not infer a permanent or system-wide absence" in prompt
 
 
 def test_code_only_selection_always_includes_source_discovery_and_reading():
