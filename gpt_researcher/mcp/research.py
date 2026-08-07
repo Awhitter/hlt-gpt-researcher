@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_NESTING_DEPTH = 4
+MAX_AUTO_OPENED_SOURCES = 2
 
 
 class MCPResearchSkill:
@@ -78,6 +79,8 @@ class MCPResearchSkill:
             messages = [HumanMessage(content=research_prompt)]
             research_results = []
             search_read_guidance_sent = False
+            discovered_source_matches: list[dict[str, Any]] = []
+            auto_opened_source_keys: set[tuple[str, str]] = set()
 
             # Tool results have to go back to the model. A single tool-calling
             # turn cannot discover a path and then inspect that discovered path;
@@ -155,6 +158,10 @@ class MCPResearchSkill:
                             # Process the result
                             formatted_results = self._process_tool_result(tool_name, result)
                             research_results.extend(formatted_results)
+                            if self._normalized_tool_name(tool_name) == "search_source":
+                                discovered_source_matches.extend(
+                                    self._extract_source_matches(result)
+                                )
                             logger.info(f"Tool {tool_name} returned {len(formatted_results)} formatted results")
                             
                             # Log details of each formatted result
@@ -180,22 +187,46 @@ class MCPResearchSkill:
                         )
 
                 normalized_round_tools = {
-                    name.split("__")[-1].split(".")[-1].split("/")[-1]
+                    self._normalized_tool_name(name)
                     for name in round_tool_names
                 }
                 if (
                     "search_source" in normalized_round_tools
                     and "read_source" not in normalized_round_tools
-                    and not search_read_guidance_sent
                 ):
-                    messages.append(HumanMessage(content=(
-                        "You now have real repository search results. Open the most "
-                        "relevant returned file paths with read_source before doing "
-                        "more broad searching. Use bounded line windows around the "
-                        "matches and cover distinct systems when the question spans "
-                        "more than one repository."
-                    )))
-                    search_read_guidance_sent = True
+                    if search_read_guidance_sent and bool(
+                        getattr(self.researcher, "mcp_only", False)
+                    ):
+                        auto_opened = await self._auto_open_discovered_sources(
+                            discovered_source_matches,
+                            selected_tools,
+                            auto_opened_source_keys,
+                        )
+                        if auto_opened:
+                            research_results.extend(auto_opened)
+                            excerpts = []
+                            for opened in auto_opened:
+                                excerpts.append(
+                                    f"{opened.get('href', '')}\n"
+                                    f"{str(opened.get('body', ''))[:4000]}"
+                                )
+                            messages.append(HumanMessage(content=(
+                                "You repeated repository search without opening a "
+                                "returned path, so the runtime opened the strongest "
+                                "distinct matches for you. Use this exact file "
+                                "evidence now; only search again for a genuinely "
+                                "different missing workflow stage.\n\n"
+                                + "\n\n".join(excerpts)
+                            )))
+                    else:
+                        messages.append(HumanMessage(content=(
+                            "You now have real repository search results. Open the most "
+                            "relevant returned file paths with read_source before doing "
+                            "more broad searching. Use bounded line windows around the "
+                            "matches and cover distinct systems when the question spans "
+                            "more than one repository."
+                        )))
+                        search_read_guidance_sent = True
             
             logger.info(f"Research completed with {len(research_results)} total results")
             return research_results
@@ -203,6 +234,130 @@ class MCPResearchSkill:
         except Exception as e:
             logger.error(f"Error in LLM research with tools: {e}")
             return []
+
+    @staticmethod
+    def _normalized_tool_name(tool_name: Any) -> str:
+        return str(tool_name or "").split("__")[-1].split(".")[-1].split("/")[-1]
+
+    @classmethod
+    def _extract_source_matches(
+        cls,
+        value: Any,
+        *,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Recover concrete repo/path/line matches from search_source payloads."""
+
+        if depth > MAX_TOOL_RESULT_NESTING_DEPTH:
+            return []
+        if isinstance(value, str):
+            candidate = value.strip()
+            if not candidate.startswith(("{", "[")):
+                return []
+            try:
+                return cls._extract_source_matches(
+                    json.loads(candidate),
+                    depth=depth + 1,
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return []
+        if isinstance(value, list):
+            matches = []
+            for item in value:
+                matches.extend(cls._extract_source_matches(item, depth=depth + 1))
+            return matches
+        if not isinstance(value, dict):
+            return []
+
+        matches = []
+        if value.get("repo") and value.get("path"):
+            matches.append(value)
+        for key in (
+            "matches",
+            "results",
+            "structured_content",
+            "content",
+            "text",
+            "body",
+        ):
+            if key in value:
+                matches.extend(
+                    cls._extract_source_matches(value[key], depth=depth + 1)
+                )
+        return matches
+
+    async def _auto_open_discovered_sources(
+        self,
+        matches: list[dict[str, Any]],
+        selected_tools: List,
+        opened_keys: set[tuple[str, str]],
+    ) -> list[dict[str, str]]:
+        """Open high-value search matches when the model stalls at discovery."""
+
+        read_tool = next(
+            (
+                tool
+                for tool in selected_tools
+                if self._normalized_tool_name(getattr(tool, "name", ""))
+                == "read_source"
+            ),
+            None,
+        )
+        if read_tool is None or len(opened_keys) >= MAX_AUTO_OPENED_SOURCES:
+            return []
+
+        ranked = sorted(
+            matches,
+            key=lambda item: (
+                -int(item.get("authority") or 0),
+                -int(item.get("score") or 0),
+                str(item.get("repo") or ""),
+                str(item.get("path") or ""),
+                int(item.get("line") or 1),
+            ),
+        )
+        opened_results: list[dict[str, str]] = []
+        for match in ranked:
+            repo = str(match.get("repo") or "").strip()
+            path = str(match.get("path") or "").strip()
+            if not repo or not path:
+                continue
+            key = (repo.lower(), path)
+            if key in opened_keys:
+                continue
+            line = max(1, int(match.get("line") or 1))
+            args = {
+                "repo": repo,
+                "path": path,
+                "start_line": max(1, line - 30),
+                "end_line": line + 60,
+            }
+            try:
+                if hasattr(read_tool, "ainvoke"):
+                    result = await read_tool.ainvoke(args)
+                elif hasattr(read_tool, "invoke"):
+                    result = read_tool.invoke(args)
+                else:
+                    result = (
+                        await read_tool(args)
+                        if asyncio.iscoroutinefunction(read_tool)
+                        else read_tool(args)
+                    )
+            except Exception as error:
+                logger.error("Automatic read_source failed for %s/%s: %s", repo, path, error)
+                continue
+            opened_keys.add(key)
+            opened_results.extend(
+                self._process_tool_result(getattr(read_tool, "name", "read_source"), result)
+            )
+            if len(opened_keys) >= MAX_AUTO_OPENED_SOURCES:
+                break
+        if opened_results:
+            logger.info(
+                "Automatically opened %s repository source(s) after repeated search",
+                len(opened_results),
+            )
+        return opened_results
 
     def _process_tool_result(
         self,
