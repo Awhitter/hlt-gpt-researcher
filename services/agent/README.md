@@ -100,13 +100,15 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| `OPENROUTER_API_KEY` | Model credentials (required) |
+| SuperGrok / Premium+ OAuth | Primary model credentials, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
+| `OPENROUTER_API_KEY` | Optional paid model fallback |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
 | `SLACK_ADMIN_USERS` | CSV Slack user IDs allowed privileged slash commands |
 | `SLACK_ALLOWED_CHANNELS` | CSV channel allowlist |
-| `HERMES_MODEL` | Model override; default `anthropic/claude-sonnet-5` |
+| `HERMES_INFERENCE_PROVIDER` | Provider override; default `xai-oauth` |
+| `HERMES_MODEL` | Model override; default `grok-4.5` |
 | `HERMES_FALLBACK_PROVIDERS` | CSV provider fallbacks for 429/503 |
 | `GPTR_MCP_URL` / `GPTR_MCP_TOKEN` | Hosted researcher MCP |
 | `CODEGRAPH_MCP_URL` / `CODEGRAPH_MCP_TOKEN` | Estate code graph |
@@ -116,6 +118,12 @@ leave your file alone and say so in `/health`.
 
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
+
+`/health.config.model_provider`, `.model`, and `.max_tokens` expose the live
+inference route. Subscription providers also report a token-free
+`subscription_auth.logged_in` readback. Cleo caps one generated provider reply
+at 32,768 tokens so a small Slack artifact does not pre-authorize a model's
+128k maximum; this does not reduce the model's readable context or tool loop.
 
 `/health.config.hermes_upstream_ref` exposes the immutable Hermes runtime SHA
 baked into the image. The image build also asserts that `codegraph.context`
@@ -145,6 +153,22 @@ Steps 1-3 need Alec's login. **Cleo's app already exists** — for her, skip to
    - `SLACK_ADMIN_USERS` = your Slack user ID
    - `AGENT_ENABLE_GATEWAY` = `1`
 5. Save. Render redeploys automatically.
+
+### Connect the model subscription
+
+Cleo's primary model uses the owner's SuperGrok / Premium+ entitlement through
+Hermes' xAI device-code OAuth provider. From a Render shell run:
+
+```bash
+hermes auth add xai-oauth
+```
+
+Open the displayed xAI URL, approve the code, then verify
+`/health.config.subscription_auth.logged_in` is `true`. The refresh token stays
+in the service's persistent `HERMES_HOME`; it is never a Render environment
+variable or a Slack message. A successful login is not the final proof: run a
+real one-shot or Slack task because xAI can still deny inference to a
+subscription tier after issuing OAuth tokens.
 
 ## Smoke
 
@@ -181,7 +205,8 @@ can't, because the tool isn't loaded.
 | `gateway_slack_scopes_missing` | The token works, but live OAuth grants are missing a core channel/DM/file scope named in `/health`. |
 | Answers but knows nothing about the estate | Check `config.mcp_mounted` and `config.mcp_without_token`. |
 | Anyone can run `/model` | `SLACK_ADMIN_USERS` is unset. |
-| `openrouter_key_present: false` | No model credentials. |
+| `subscription_auth.logged_in: false` with provider `xai-oauth` | The SuperGrok OAuth grant is absent or expired; run `hermes auth add xai-oauth`. |
+| `openrouter_key_present: false` | The optional paid fallback is absent; it does not invalidate a ready subscription primary. |
 
 ## Repairing Cleo's scopes when `/health` names a gap
 

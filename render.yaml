@@ -138,7 +138,11 @@ services:
         sync: false
       - key: ELEVENLABS_API_KEY
         sync: false
-      # Optional model override; defaults to anthropic/claude-sonnet-5.
+      # Optional Hermes provider override. Cleo defaults to subscription-backed
+      # xAI OAuth; set openrouter only for an intentional paid fallback/cutover.
+      - key: HERMES_INFERENCE_PROVIDER
+        sync: false
+      # Optional model override; defaults to grok-4.5 on xAI OAuth.
       - key: HERMES_MODEL
         sync: false
       # Comma-separated provider fallbacks for 429/503/overload.

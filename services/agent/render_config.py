@@ -26,8 +26,18 @@ import yaml
 # human, so we leave it alone rather than overwriting their work on next boot.
 GENERATED_BY = "hlt-render-boot"
 
-# Verified present on OpenRouter; override per-service with HERMES_MODEL.
-DEFAULT_MODEL = "anthropic/claude-sonnet-5"
+# Cleo runs primarily on the owner's existing SuperGrok subscription through
+# Hermes' xAI device-code OAuth provider. OpenRouter remains a recoverable
+# fallback, not the billable default. ``HERMES_INFERENCE_PROVIDER`` is the
+# upstream Hermes provider override, so operators can still switch without a
+# code change.
+DEFAULT_PROVIDER = "xai-oauth"
+DEFAULT_MODEL = "grok-4.5"
+DEFAULT_MAX_TOKENS = 32_768
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "xai-oauth": DEFAULT_MODEL,
+    "openrouter": "anthropic/claude-sonnet-5",
+}
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
@@ -350,15 +360,24 @@ def build_config(
             "load registry_agent_context with that ref and the user's real outcome."
         )
 
+    model_provider = (
+        _clean(env, "HERMES_INFERENCE_PROVIDER") or DEFAULT_PROVIDER
+    ).lower()
+    model_name = _clean(env, "HERMES_MODEL")
+    if not model_name and model_provider == "openrouter":
+        model_name = _clean(env, "OPENROUTER_MODEL")
+    model_name = model_name or PROVIDER_DEFAULT_MODELS.get(model_provider) or DEFAULT_MODEL
+
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
         "model": {
-            "provider": "openrouter",
-            "default": (
-                _clean(env, "HERMES_MODEL")
-                or _clean(env, "OPENROUTER_MODEL")
-                or DEFAULT_MODEL
-            ),
+            "provider": model_provider,
+            "default": model_name,
+            # This is an output ceiling for one provider call, not a context
+            # limit. Upstream otherwise advertised the model's 128k maximum to
+            # OpenRouter, which pre-authorized a worst-case response and failed
+            # a small Slack diagram with HTTP 402 before generation began.
+            "max_tokens": DEFAULT_MAX_TOKENS,
         },
         "agent": {
             # Fixes the "stops after stating intent" failure on some models.
@@ -470,6 +489,8 @@ def render(
     summary: dict[str, Any] = {
         "config_path": str(path),
         "model": config["model"]["default"],
+        "model_provider": config["model"]["provider"],
+        "max_tokens": config["model"]["max_tokens"],
         "agent_ref": agent_ref(env) or "",
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
         "hermes_upstream_ref": _clean(env, "HERMES_UPSTREAM_REF") or "",
