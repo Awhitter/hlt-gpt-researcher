@@ -18,7 +18,7 @@ capability questions across the estate.
 PRD: `docs/prd/mastery-brain.md`. UI tabs: Ask / Audience / Codebase /
 Library / Vision / Changelog / Roadmap. Code scope prefers `CODEGRAPH_MCP_*`
 (GitNexus on Render) with GitHub MCP as fallback. Sidecars:
-`services/codegraph/`, `services/brian/` (`render.yaml`). Tracked corpora
+`services/codegraph/`, `services/agent/` (`render.yaml`). Tracked corpora
 under `my-docs/`: `vision/`, `audience/` (voice-of-nurse quote bank + briefs),
 `recruiting/` (generated nursingmastery.com content inventory —
 `scripts/build_recruiting_inventory.py`), `design/` (Refero notes). All load
@@ -144,25 +144,23 @@ amend with `scripts/katailyst_mcp.py` + `scripts/katailyst_capability.md`.
 
 Render sidecars: `hlt-codegraph` runs on the standard plan (gitnexus analyze
 OOMs on 512MB) with a 10GB disk at `/data`; boot reindex runs in the
-background so the port binds immediately. The second sidecar runs **Brian, the
-Mastery Researcher** (`services/brian/`, 5GB disk) and stays in
-readiness-gateway mode until Slack tokens exist — see
-`services/brian/README.md` for the enable flow.
+background so the port binds immediately. The second sidecar runs the selected
+HLT agent (`services/agent/`, 5GB disk). Production currently selects **Cleo**,
+the Nursing Mastery product-owner facilitator; see `services/agent/README.md`.
 
-**Naming:** the agent is **Brian**. "Hermes" is only the upstream runtime we
+**Naming:** Cleo is the current agent. "Hermes" is only the upstream runtime we
 embed (NousResearch hermes-agent) — never the agent's name. `agent:hermes` in
-Katailyst2 is the fleet orchestrator persona, a different thing entirely, and
-conflating the two is how the estate ends up with two Hermeses. The Render
-service keeps the hostname `hlt-hermes` because Render cannot rename in place;
-that hostname is infrastructure, not identity.
+Katailyst2 is the fleet orchestrator persona, a different thing entirely. The
+Render service keeps the hostname `hlt-hermes` because Render cannot rename in
+place; that hostname is infrastructure, not identity.
 
-Brian's internals: `health_gateway.py` is the main process because the Hermes
+Agent internals: `health_gateway.py` is the main process because the Hermes
 gateway reaches Slack over Socket Mode and never binds a port — it would fail
 Render's health check as PID 1. That module installs grounding
 (`grounding.py`), renders `$HERMES_HOME/config.yaml` from env
 (`render_config.py`), supervises `hermes gateway` as a child, and serves
 `/health`. Do not add config keys by hand: `render_config.py` is the only
-writer and `tests/test_brian_boot.py` pins the schema. `/health` reports
+writer and `tests/test_agent_boot.py` pins the schema. `/health` reports
 observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
@@ -171,10 +169,11 @@ Three rules that exist because each was once a silent no-op:
 
 1. **`platform_toolsets.slack` is a security control, not a preference.**
    Upstream's default Slack toolset is "full access for workspace use" —
-   terminal, execute_code, cronjob, computer_use. Brian is reachable by the
+   terminal, execute_code, cronjob, computer_use. Cleo is reachable by the
    whole workspace and reads untrusted web pages. Never widen that list without
-   reading `tests/test_brian_boot.py::test_slack_toolset_excludes_host_access`.
-2. **Company facts go in `services/brian/grounding/AGENTS.md`**, loaded from
+   reading `tests/test_agent_boot.py::test_slack_toolset_excludes_host_access`.
+2. **Company facts go in `services/agent/grounding/shared/AGENTS.md`** and
+   agent-specific routing in `services/agent/grounding/<agent>/AGENTS.md`, loaded from
    `terminal.cwd`. Not `MEMORY.md` — that is ~2200 chars, frozen per session and
    agent-writable.
 3. **Hermes reads memory from `$HERMES_HOME/memories/MEMORY.md`** (plural dir,

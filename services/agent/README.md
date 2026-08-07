@@ -20,13 +20,11 @@ in Katailyst2 is the fleet orchestrator persona — a different thing — so nev
 call these agents Hermes in docs, Slack, or the registry. The Render service keeps the
 hostname `hlt-hermes` only because Render cannot rename a service in place.
 
-**Status: installed and configured, gateway off.** The container has the CLI and
-writes a real `config.yaml` on every boot; it will not talk to anyone until the
-Slack tokens exist. That step is below.
-
-Cleo's Slack app already exists (`@cleotheaipo`) but ships with only
-`channels:history` and `chat:write` — she cannot see @mentions or DMs until the
-scopes below are added and the app is reinstalled.
+**Production readback (2026-08-07): live.** The Cleo gateway is connected, all
+five configured MCP servers are mounted and granted, image/audio backends are
+ready, and the recurring briefs are seeded. `/health` is the current authority;
+it now verifies the Slack token and reports the OAuth scopes Slack actually
+granted rather than repeating the desired manifest.
 
 ## How the container is put together
 
@@ -75,9 +73,15 @@ Two env vars matter as much as the toolset:
 
 | Slot | Content | Why there |
 |---|---|---|
-| [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) | identity, voice, what he won't do | loaded from `$HERMES_HOME` every session |
+| [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) | compact identity, initiative, coordination, recovery | loaded from `$HERMES_HOME` every session |
 | [`grounding/shared/AGENTS.md`](./grounding/shared/AGENTS.md) + `grounding/<agent>/AGENTS.md` | the durable briefing, composed at boot | read from `terminal.cwd`; the source ships read-only so an agent can't rewrite its own facts |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
+
+Cleo's durable registry identity is `agent:cleo@v1`. Substantial work loads a
+fresh K2 context packet through `registry_agent_context`; the repo prompt keeps
+only the activation cue and runtime safety boundary. The local
+`facilitate-product-work` skill is likewise a small shim to the current K2
+skill, not a fork of the workflow.
 
 Company facts do **not** go in `MEMORY.md`: it is capped, frozen per session,
 agent-mutable, and the background reviewer edits it.
@@ -109,6 +113,14 @@ leave your file alone and say so in `/health`.
 | `KATAILYST2_MCP_URL` / `KATAILYST2_MCP_TOKEN` | Registry |
 | `LINEAR_MCP_URL` / `LINEAR_MCP_TOKEN` | Roadmap (optional) |
 | `HERMES_HOME` | Persistent disk path (default `/data/hermes`) |
+
+Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
+so a live agent can be tied to the exact merged build.
+
+`/health.config.hermes_upstream_ref` exposes the immutable Hermes runtime SHA
+baked into the image. The image build also asserts that `codegraph.context`
+registers as `mcp__codegraph__context`, pinning the exact invalid-tool failure
+that previously escaped as a raw Slack error.
 
 A URL without its token still mounts, unauthenticated — `/health` lists those
 under `config.mcp_without_token` so a half-set pair is visible rather than
@@ -149,9 +161,11 @@ Read the answer, not the status code — the service intentionally stays up (HTT
 | `gateway` | The agent is running. `gateway.uptime_seconds` climbs. |
 | `gateway_down` | Requested but not running. `status: degraded`, and `gateway.stopped_reason` / `last_exit_code` say what happened. |
 
-Check `config.mcp_mounted` lists all four servers and `config.mcp_without_token`
-is empty. Then DM the bot a real question and confirm the reply cites its
-codegraph.
+Check `config.mcp_mounted` lists the configured servers,
+`config.mcp_without_token` is empty, `config.slack_auth.auth_ok` is true, and
+`config.slack_auth.missing_core_scopes` is empty. Then DM the bot a real task
+and confirm it delivers the result or artifact rather than just describing its
+tools.
 
 **Adversarial check, worth doing once:** from a non-admin account, confirm
 `/model` is refused, and ask the agent to run a shell command — it should say it
@@ -163,15 +177,17 @@ can't, because the tool isn't loaded.
 |---------|-------|
 | `mode: gateway_down`, `cli_present: false` | Image built without the CLI. The build fails loudly on this now, so it means an old image is live — redeploy. |
 | `mode: gateway_down`, repeated `last_exit_code` | Crash loop; the supervisor stops after 5 attempts and leaves the reason in `stopped_reason`. Check Render logs. |
+| `gateway_slack_auth_failed` | Slack rejected the installed bot token. Reinstall/update the bot token. |
+| `gateway_slack_scopes_missing` | The token works, but live OAuth grants are missing a core channel/DM/file scope named in `/health`. |
 | Answers but knows nothing about the estate | Check `config.mcp_mounted` and `config.mcp_without_token`. |
 | Anyone can run `/model` | `SLACK_ADMIN_USERS` is unset. |
 | `openrouter_key_present: false` | No model credentials. |
 
-## Fixing Cleo's scopes (one-time, ~2 minutes)
+## Repairing Cleo's scopes when `/health` names a gap
 
-The Cleo app was created from a starter template and carries only
-`channels:history` and `chat:write`. She cannot see @mentions, cannot DM, cannot
-read user names, cannot upload files.
+Do not infer installed scopes from an old template or this README. Read
+`config.slack_auth` first. If `scopes_known` is true and
+`missing_core_scopes` is non-empty, add the named scopes to the Cleo app.
 
 https://api.slack.com/apps → **Cleo** → **OAuth & Permissions** → add bot scopes:
 
