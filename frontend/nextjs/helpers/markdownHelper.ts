@@ -40,7 +40,17 @@ export const markdownToHtml = async (markdown: Compatible | string): Promise<str
   try {
     const result = await remark()
       .use(remarkGfm) // Add GitHub Flavored Markdown support (tables, strikethrough, etc.)
-      .use(html, { sanitize: false })
+      // `sanitize: false` is NOT "use a permissive schema" — remark-html reads a
+      // boolean as `allowDangerousHtml = !clean`, so false skips hast-util-sanitize
+      // entirely and passes raw HTML straight through. Every string rendered here
+      // is LLM-authored, drawn from web pages the researcher just scraped, and
+      // lands in five `dangerouslySetInnerHTML` sinks. A page that asks the model
+      // to echo a <script> tag got one.
+      //
+      // `true` applies the default GitHub schema. Verified against this exact
+      // pipeline: <script> and onerror are stripped, while GFM tables and the
+      // language-* class the code highlighter needs both survive.
+      .use(html, { sanitize: true })
       .process(markdown);
     
     // Get the HTML string
