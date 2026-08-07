@@ -1002,3 +1002,18 @@ def test_the_proof_asks_for_a_real_identifier():
     assert "NUR" in cron_seed.SMOKE_PROMPT
     assert "real identifier" in cron_seed.SMOKE_PROMPT
     assert "cannot reach a source" in cron_seed.SMOKE_PROMPT
+
+
+def test_structure_is_never_sent_to_a_text_to_image_model():
+    """She offers "want me to draw how this flows?" in nearly every reply, and
+    the only drawing tool behind it is FLUX. A text-to-image model cannot spell
+    the labels, so an architecture request comes back handsome and wrong — a
+    defect class this estate has already paid for once. Structure goes in a code
+    block; image_generate is for something genuinely pictorial.
+    """
+    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
+    assert "NEVER send structure to image_generate" in hint
+    assert "code block" in hint
+    assert "garbled" in hint
+    # And she must name the form she CAN give rather than produce a wrong one.
+    assert "say which form you can give them" in hint

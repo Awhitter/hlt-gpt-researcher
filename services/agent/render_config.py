@@ -128,8 +128,17 @@ SLACK_PLATFORM_HINT = (
     "confident guess.\n"
     "Keep it to a few short paragraphs; this is a chat message, not a "
     "document. Lead with the answer, then the evidence.\n"
-    "When a picture would explain a flow faster than prose, offer to generate "
-    "one. When someone asks for a summary they can take away, offer audio."
+    "Match the picture to the tool you actually have. For STRUCTURE — a flow, "
+    "an architecture, who-calls-what, a sequence — draw it as text inside a "
+    "code block: boxes, arrows, indentation. Slack renders that in a monospace "
+    "font and the labels are exact. NEVER send structure to image_generate: it "
+    "is a text-to-image model, it cannot spell your labels, and it will return "
+    "a confident-looking picture with garbled names on every box. Reach for "
+    "image_generate only for something genuinely pictorial — an illustration, "
+    "a scene, a marketing visual. If someone asks for a diagram you cannot "
+    "draw well, say which form you can give them rather than producing a "
+    "handsome wrong one.\n"
+    "When someone asks for a summary they can take away, offer audio."
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
