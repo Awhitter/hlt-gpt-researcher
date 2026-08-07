@@ -25,7 +25,7 @@ import re
 import subprocess
 from pathlib import Path
 
-logger = logging.getLogger("brian")
+logger = logging.getLogger("hlt-agent")
 
 # A Slack conversation id: C/D/G (channel, DM, group) then upper alphanumerics.
 # The command below is an argv list with no shell, so this is not an injection
@@ -59,6 +59,22 @@ BRIEFS: tuple[dict[str, str], ...] = (
             "how many open issues have no project, no priority, and no assignee, "
             "and which of those look important enough that somebody should own "
             "them. Do not file or change anything — this is a read-only report."
+        ),
+    },
+    {
+        "name": "nm-product-owner-work",
+        # A single midweek work block adds initiative without turning the home
+        # channel into a stream of daily status noise.
+        "schedule": "0 14 * * 3",
+        "skill": "facilitate-product-work",
+        "prompt": (
+            "Do one useful Nursing Mastery product-owner work block, not a status "
+            "update. Load your current Cleo context from K2, inspect current product "
+            "truth and open work, choose one bounded high-leverage question you can "
+            "advance safely, and actually advance it. Return the decision, comparison, "
+            "draft, visual, or hosted artifact the team can use, with concise sources. "
+            "Do not publish, send a campaign, file issues, or change production. If "
+            "there is no honest useful move, say that briefly instead of padding."
         ),
     },
 )

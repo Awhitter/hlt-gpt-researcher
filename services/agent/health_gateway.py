@@ -31,8 +31,8 @@ import cron_seed
 import grounding
 import render_config
 
-logging.basicConfig(level=logging.INFO, format="[brian] %(levelname)s %(message)s")
-logger = logging.getLogger("brian")
+logging.basicConfig(level=logging.INFO, format="[hlt-agent] %(levelname)s %(message)s")
+logger = logging.getLogger("hlt-agent")
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", "/data/hermes"))
 GATEWAY_ENABLED = os.getenv("AGENT_ENABLE_GATEWAY", "0") == "1"
@@ -202,6 +202,25 @@ supervisor = GatewaySupervisor()
 BOOT: dict[str, Any] = {}
 
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test"
+
+# These are the scopes that make Cleo useful in the surfaces she promises:
+# channel mentions, private/group threads, user resolution, and visible file
+# delivery. Reactions, commands and assistant chrome are valuable but do not
+# decide whether a normal product task can be completed.
+CORE_SLACK_SCOPES = frozenset(
+    {
+        "app_mentions:read",
+        "channels:history",
+        "chat:write",
+        "files:write",
+        "groups:history",
+        "im:history",
+        "im:write",
+        "mpim:history",
+        "users:read",
+    }
+)
 
 
 def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
@@ -244,6 +263,58 @@ def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
     return "inference"
 
 
+def slack_auth_readiness(token: str, timeout: float = 6.0) -> dict[str, Any]:
+    """Verify the bot token and, when Slack reports them, its live scopes.
+
+    A manifest or README proves only what we wanted to install. Slack returns
+    the granted OAuth scopes on Web API responses, which is the readback that
+    catches an app created from an old two-scope template. Some proxies omit
+    that header; in that case auth can still be proven and scope state remains
+    unknown rather than being mislabeled missing.
+    """
+    result: dict[str, Any] = {
+        "configured": bool(token),
+        "auth_ok": None,
+        "scopes_known": False,
+        "granted_scopes": [],
+        "missing_core_scopes": [],
+        "artifact_delivery_ready": None,
+    }
+    if not token:
+        return result
+
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        SLACK_AUTH_TEST_URL,
+        data=b"",
+        headers={"Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = _json.loads(response.read())
+            raw_scopes = response.headers.get("x-oauth-scopes", "")
+    except urllib.error.HTTPError as exc:
+        result["auth_ok"] = False if exc.code in (401, 403) else None
+        return result
+    except Exception:
+        return result
+
+    result["auth_ok"] = bool(payload.get("ok"))
+    if not result["auth_ok"] or not raw_scopes:
+        return result
+
+    scopes = sorted({scope.strip() for scope in raw_scopes.split(",") if scope.strip()})
+    result["scopes_known"] = True
+    result["granted_scopes"] = scopes
+    result["missing_core_scopes"] = sorted(CORE_SLACK_SCOPES - set(scopes))
+    result["artifact_delivery_ready"] = "files:write" in scopes
+    return result
+
+
 def boot() -> None:
     BOOT.update(grounding.install())
     BOOT.update(render_config.render())
@@ -264,6 +335,16 @@ def boot() -> None:
             )
         elif kind == "rejected":
             logger.error("OPENROUTER_API_KEY was rejected by OpenRouter")
+    slack_auth = slack_auth_readiness(os.getenv("SLACK_BOT_TOKEN", ""))
+    BOOT["slack_auth"] = slack_auth
+    logger.info("config slack_auth: %s", slack_auth)
+    if GATEWAY_ENABLED and slack_auth["auth_ok"] is False:
+        logger.error("SLACK_BOT_TOKEN was rejected by Slack")
+    elif GATEWAY_ENABLED and slack_auth["missing_core_scopes"]:
+        logger.error(
+            "Slack app is missing core scopes: %s",
+            ", ".join(slack_auth["missing_core_scopes"]),
+        )
     if GATEWAY_ENABLED and not BOOT.get("slack_admins_configured"):
         # Hermes disables slash-command gating entirely when no admin list is
         # configured, which means every workspace member can run /model, /yolo
@@ -317,6 +398,9 @@ def health() -> dict[str, Any]:
     # Mounted servers the agent cannot reach are worse than none: she reports
     # having them and then cannot answer from any of them.
     mcp_dead = bool(BOOT.get("mcp_mounted")) and not gateway["mcp_sdk_available"]
+    slack_auth = BOOT.get("slack_auth") or {}
+    slack_auth_bad = slack_auth.get("auth_ok") is False
+    slack_scopes_bad = bool(slack_auth.get("missing_core_scopes"))
 
     if not GATEWAY_ENABLED:
         status, mode = "ok", "readiness_gateway"
@@ -324,6 +408,10 @@ def health() -> dict[str, Any]:
         status, mode = "degraded", "gateway_no_mcp_sdk"
     elif gateway["running"] and gateway["slack_adapter_available"] and model_credentials_bad:
         status, mode = "degraded", "gateway_no_model_credentials"
+    elif gateway["running"] and gateway["slack_adapter_available"] and slack_auth_bad:
+        status, mode = "degraded", "gateway_slack_auth_failed"
+    elif gateway["running"] and gateway["slack_adapter_available"] and slack_scopes_bad:
+        status, mode = "degraded", "gateway_slack_scopes_missing"
     elif gateway["running"] and gateway["slack_adapter_available"]:
         status, mode = "ok", "gateway"
     elif gateway["running"]:
@@ -369,6 +457,17 @@ def health() -> dict[str, Any]:
             "The gateway is running but Hermes could not build a Slack adapter, "
             "so the bot is connected to nothing. slack-bolt is an optional "
             "upstream extra — the image must install hermes-agent[slack]."
+        )
+    elif mode == "gateway_slack_auth_failed":
+        payload["note"] = (
+            "The gateway is running, but Slack rejected SLACK_BOT_TOKEN. Reinstall "
+            "the app or update the bot token before treating Cleo as reachable."
+        )
+    elif mode == "gateway_slack_scopes_missing":
+        payload["note"] = (
+            "Slack authentication works, but Cleo is missing core scopes needed "
+            "for channel/DM work or file delivery: "
+            + ", ".join(slack_auth.get("missing_core_scopes") or [])
         )
     elif mode == "gateway_down":
         payload["note"] = gateway["stopped_reason"] or (

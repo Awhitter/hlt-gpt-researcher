@@ -25,7 +25,11 @@ WORKDIR /app
 # silent capability hole. Render keeps the last
 # live deploy when a build fails, so a broken upstream never takes the
 # service down.
-ARG HERMES_REF=main
+# Pin the upstream runtime. Pulling `main` made rebuilds non-reproducible and
+# left no way to know whether Cleo had the MCP naming repair that registers
+# tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
+# contract assertion below and the service gates green.
+ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10
 RUN git clone --depth=1 --branch "${HERMES_REF}" \
       https://github.com/NousResearch/hermes-agent.git /opt/hermes \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal]" \
@@ -34,6 +38,13 @@ RUN git clone --depth=1 --branch "${HERMES_REF}" \
     && { python -c "import mcp" || { echo "mcp extra missing after install"; exit 1; }; } \
     && { python -c "import elevenlabs" || { echo "tts-premium extra missing after install"; exit 1; }; } \
     && { python -c "import fal_client" || { echo "fal extra missing after install"; exit 1; }; }
+
+# Regression for the exact Slack failure Alec saw:
+# `Model generated invalid tool call: mcp__codegraph__context`.
+# The name must be the registry name, not merely a model-facing alias.
+RUN python -c "from tools.mcp_tool import mcp_prefixed_tool_name; assert mcp_prefixed_tool_name('codegraph', 'context') == 'mcp__codegraph__context'"
+
+ENV HERMES_UPSTREAM_REF=${HERMES_REF}
 
 # The gateway argv must be one upstream actually accepts. `hermes gateway -v`
 # parses as an unknown arg: -v/-q/--external-supervisor are declared on the
@@ -54,7 +65,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
-# /app/grounding holds AGENTS.md — Brian's durable briefing, loaded by Hermes'
+# /app/grounding holds AGENTS.md — the selected agent's durable briefing, loaded by Hermes'
 # project-context discovery from terminal.cwd. It stays root-owned and
 # world-readable so the agent can read it but never rewrite its own facts.
 RUN chmod +x /app/entrypoint.sh \

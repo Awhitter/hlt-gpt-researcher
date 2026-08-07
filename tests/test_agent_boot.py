@@ -267,6 +267,44 @@ def test_unset_agent_id_is_not_flagged(tmp_path):
     assert summary["agent_id_unrecognised"] is False
 
 
+def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
+    """Proclivities should improve ranking without shrinking Cleo into a lane."""
+    config = render_config.build_config({**FULL_ENV, "AGENT_ID": "cleo"})
+    hint = config["agent"]["environment_hint"]
+    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
+
+    assert render_config.agent_ref({"AGENT_ID": "cleo"}) == "agent:cleo@v1"
+    assert "agent:cleo@v1" in hint
+    assert "registry_agent_context" in hint
+    assert "full K2 catalog" in soul
+    assert "not exclusive lanes" in soul
+    assert "complete marketing, operations, planning, design" in soul
+
+    summary = render_config.render(
+        env={
+            **FULL_ENV,
+            "AGENT_ID": "cleo",
+            "RENDER_GIT_COMMIT": "abc123",
+            "HERMES_UPSTREAM_REF": "upstream123",
+        },
+        home=tmp_path,
+    )
+    assert summary["agent_ref"] == "agent:cleo@v1"
+    assert summary["deploy_commit"] == "abc123"
+    assert summary["hermes_upstream_ref"] == "upstream123"
+
+
+def test_product_work_skill_is_a_small_k2_activation_shim(tmp_path):
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
+    assert "facilitate-product-work" in summary["skills_installed"]
+
+    body = (
+        tmp_path / "skills" / "facilitate-product-work" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "skill:nursing-mastery-facilitate-product-work" in body
+    assert "progressive" in body and "tool catalog" in body
+
+
 def test_briefing_is_shared_facts_plus_the_agent_s_own(tmp_path):
     grounding.install(home=tmp_path, env={"AGENT_ID": "cleo"})
     briefing = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
@@ -274,7 +312,11 @@ def test_briefing_is_shared_facts_plus_the_agent_s_own(tmp_path):
     # Shared estate facts, written once.
     assert "Healthcare Learning Technologies" in briefing
     # Cleo's own section.
-    assert "Nursing Mastery has no database" in briefing
+    assert "Authority is field-specific" in briefing
+    assert "HLT Account API" in briefing
+    assert "Do not flatten People into one database" in briefing
+    assert "Marketo | K2's live integration/tool route today" in briefing
+    assert "Mastery Research does not currently expose Marketo" in briefing
 
 
 def test_every_declared_agent_has_a_soul(tmp_path):
@@ -442,6 +484,15 @@ def _load_health_gateway():
 BASE_ARGV = ["hermes", "gateway", "run", "--external-supervisor"]
 
 
+def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
+    dockerfile = (SERVICE_DIR / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10" in dockerfile
+    assert "mcp_prefixed_tool_name('codegraph', 'context')" in dockerfile
+    assert "mcp__codegraph__context" in dockerfile
+    assert "ENV HERMES_UPSTREAM_REF=${HERMES_REF}" in dockerfile
+
+
 def test_the_verbosity_flag_goes_where_upstream_declares_it():
     """`hermes gateway -v` is an argparse error, not a verbose gateway.
 
@@ -588,6 +639,88 @@ def test_an_unreachable_check_never_condemns_a_working_key(monkeypatch):
     assert health_gateway.openrouter_key_kind("") == "unknown"
 
 
+def _fake_slack(monkeypatch, *, payload=None, scopes="", http_status=None, boom=False):
+    """Stand in for Slack auth.test and its OAuth-scope response header."""
+    import io
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    class _Response(io.BytesIO):
+        def __init__(self, body):
+            super().__init__(body)
+            self.headers = {"x-oauth-scopes": scopes}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _urlopen(request, timeout=None):
+        if boom:
+            raise OSError("dns went away")
+        if http_status is not None:
+            raise urllib.error.HTTPError(
+                "https://slack.com/api/auth.test", http_status, "nope", {}, None
+            )
+        return _Response(_json.dumps(payload or {"ok": True}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+
+
+def test_slack_readiness_proves_auth_scopes_and_file_delivery(monkeypatch):
+    health_gateway = _load_health_gateway()
+    scopes = ",".join(sorted(health_gateway.CORE_SLACK_SCOPES | {"reactions:write"}))
+    _fake_slack(monkeypatch, scopes=scopes)
+
+    result = health_gateway.slack_auth_readiness("xoxb-test")
+
+    assert result["auth_ok"] is True
+    assert result["scopes_known"] is True
+    assert result["missing_core_scopes"] == []
+    assert result["artifact_delivery_ready"] is True
+    assert "files:write" in result["granted_scopes"]
+
+
+def test_missing_slack_file_scope_degrades_the_live_gateway(monkeypatch):
+    health_gateway = _load_health_gateway()
+    scopes = ",".join(sorted(health_gateway.CORE_SLACK_SCOPES - {"files:write"}))
+    _fake_slack(monkeypatch, scopes=scopes)
+    slack_auth = health_gateway.slack_auth_readiness("xoxb-test")
+
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+        },
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"slack_auth": slack_auth, "mcp_mounted": ["codegraph"]})
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == "gateway_slack_scopes_missing"
+    assert "files:write" in payload["note"]
+
+
+def test_unreachable_slack_probe_stays_unknown_not_failed(monkeypatch):
+    health_gateway = _load_health_gateway()
+    _fake_slack(monkeypatch, boom=True)
+
+    result = health_gateway.slack_auth_readiness("xoxb-test")
+
+    assert result["configured"] is True
+    assert result["auth_ok"] is None
+    assert result["scopes_known"] is False
+    assert result["missing_core_scopes"] == []
+
+
 def test_mcp_tools_are_actually_granted_to_slack():
     """Mounting an MCP server does not give the agent its tools.
 
@@ -631,10 +764,11 @@ def test_slack_gets_its_own_prompt_guidance():
     config = render_config.build_config(FULL_ENV)
     hint = config["platform_hints"]["slack"]["append"]
 
-    assert "did NOT build this system" in hint
-    # Evidence goes at the END as a Sources list; scattering ids mid-sentence
-    # is what made her answers read like machine-room tours.
-    assert "Sources list" in hint, "grounding an answer in a real source is the point"
+    assert "most people did not build the system" in hint
+    # Evidence goes at the end; scattering ids mid-sentence made her answers
+    # read like machine-room tours.
+    assert "sources you actually opened at the end" in hint
+    assert "return the answer or artifact" in hint
 
 
 # --- talking to the team, not about the plumbing ----------------------------
@@ -687,15 +821,16 @@ def test_the_briefing_carries_the_business_not_just_the_code(tmp_path):
 
     assert summary["briefing_sections"] == ["shared", "cleo"]
     briefing = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
-    assert "NCLEX RN Mastery is the mass surface" in briefing
+    assert "NCLEX RN Mastery is HLT's large existing nurse relationship" in briefing
     assert "Cedar Rapids" in briefing, "a tried-and-failed campaign must not be re-proposed"
 
 
 def test_slack_hint_forbids_leading_with_internals():
     hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
 
-    assert "register of the person asking" in hint
-    assert "Query the source before you describe it" in hint
+    assert "in their register" in hint
+    assert "Use current source authority" in hint
+    assert "tool inventory" in hint
 
 
 def test_mounted_servers_without_the_mcp_sdk_are_reported_dead():
@@ -742,13 +877,12 @@ def test_an_orientation_answer_must_carry_recent_change():
     merges hundreds of PRs a fortnight, minus what just changed, is a stale
     snapshot the reader acts on.
     """
-    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
-    assert "orientation question is never answered from structure alone" in soul
-    assert "recent_changes" in soul
-
-    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
-    assert "orientation question" in hint
-    assert "LEAD with what" in hint
+    skill = (
+        SERVICE_DIR / "grounding" / "cleo" / "skills" / "orient-a-newcomer" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "Answering from structure alone" in skill
+    assert "recent_changes(repo, days=14)" in skill
+    assert "what changed" in skill
 
 
 def test_capabilities_use_the_documented_provider_surface():
@@ -774,12 +908,11 @@ def test_recent_change_is_ranked_by_consequence_not_visibility():
     Visible does not mean consequential. Where truth lives moving outranks any
     feature.
     """
-    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
-    assert "Rank what changed by consequence, not by visibility" in soul
-    assert "Where truth lives moved" in soul
-
-    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
-    assert "CONSEQUENCE, not visibility" in hint
+    skill = (
+        SERVICE_DIR / "grounding" / "cleo" / "skills" / "orient-a-newcomer" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "Rank what changed by consequence, never by visibility" in skill
+    assert "where truth lives moved" in skill
 
 
 def test_skills_are_installed_where_hermes_reads_them(tmp_path):
@@ -812,9 +945,11 @@ def test_a_hand_edited_skill_is_left_alone(tmp_path):
 
 def test_an_orientation_asks_for_a_fortnight():
     """She narrowed to three days and missed a sign-in change eight days back."""
-    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
-    assert "fortnight at least" in soul
-    assert "complete: false" in soul, "she must report the window she truly covered"
+    skill = (
+        SERVICE_DIR / "grounding" / "cleo" / "skills" / "orient-a-newcomer" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "fortnight minimum" in skill
+    assert "say which dates you did read" in skill
 
 
 # --- recurring briefs -------------------------------------------------------
@@ -835,7 +970,11 @@ def test_a_brief_delivers_to_the_home_channel_not_to_origin(tmp_path, monkeypatc
     monkeypatch.setattr(cron_seed.subprocess, "run", fake_run)
     result = cron_seed.seed("slack:C0BN349TRU7")
 
-    assert result["created"] == ["nm-monday-brief", "nm-board-health"]
+    assert result["created"] == [
+        "nm-monday-brief",
+        "nm-board-health",
+        "nm-product-owner-work",
+    ]
     assert result["failed"] == []
     for cmd in calls:
         assert cmd[:3] == ["hermes", "cron", "create"]
@@ -852,7 +991,8 @@ def test_a_second_boot_does_not_duplicate_a_brief(tmp_path, monkeypatch):
     jobs = tmp_path / "cron"
     jobs.mkdir()
     (jobs / "jobs.json").write_text(
-        '{"jobs": [{"name": "nm-monday-brief"}, {"name": "nm-board-health"}]}',
+        '{"jobs": [{"name": "nm-monday-brief"}, {"name": "nm-board-health"}, '
+        '{"name": "nm-product-owner-work"}]}',
         encoding="utf-8",
     )
 
@@ -863,7 +1003,11 @@ def test_a_second_boot_does_not_duplicate_a_brief(tmp_path, monkeypatch):
     result = cron_seed.seed("slack:C0BN349TRU7")
 
     assert result["created"] == []
-    assert sorted(result["existing"]) == ["nm-board-health", "nm-monday-brief"]
+    assert sorted(result["existing"]) == [
+        "nm-board-health",
+        "nm-monday-brief",
+        "nm-product-owner-work",
+    ]
 
 
 def test_an_unreadable_job_record_seeds_nothing(tmp_path, monkeypatch):
@@ -1004,16 +1148,11 @@ def test_the_proof_asks_for_a_real_identifier():
     assert "cannot reach a source" in cron_seed.SMOKE_PROMPT
 
 
-def test_structure_is_never_sent_to_a_text_to_image_model():
-    """She offers "want me to draw how this flows?" in nearly every reply, and
-    the only drawing tool behind it is FLUX. A text-to-image model cannot spell
-    the labels, so an architecture request comes back handsome and wrong — a
-    defect class this estate has already paid for once. Structure goes in a code
-    block; image_generate is for something genuinely pictorial.
+def test_structure_prefers_a_deterministic_artifact_without_banning_media():
+    """Exact labels need a deterministic renderer, while image generation stays
+    available for supporting imagery. Proclivity is a ranking, not an allowlist.
     """
     hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
-    assert "NEVER send structure to image_generate" in hint
-    assert "code block" in hint
-    assert "garbled" in hint
-    # And she must name the form she CAN give rather than produce a wrong one.
-    assert "say which form you can give them" in hint
+    assert "prefer a deterministic prototype or diagram tool" in hint
+    assert "use image generation for imagery" in hint
+    assert "text diagram is a fallback" in hint

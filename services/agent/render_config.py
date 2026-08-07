@@ -29,12 +29,17 @@ GENERATED_BY = "hlt-render-boot"
 # Verified present on OpenRouter; override per-service with HERMES_MODEL.
 DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 
+# Registry identity is deliberately separate from the runtime name. Cleo's
+# durable capabilities and graph links live in K2; this compact pointer lets the
+# hosted persona load them at task time instead of copying them into prompts.
+AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo@v1"}
+
 # THE most important setting in this file.
 #
 # Upstream's default Slack toolset is `hermes-slack`, whose own description is
 # "full access for workspace use" and which resolves to _HERMES_CORE_TOOLS —
 # terminal, execute_code, write_file, patch, cronjob, computer_use, browser_cdp.
-# Left at the default, anyone who can @mention Brian in Slack gets arbitrary
+# Left at the default, anyone who can @mention the agent in Slack gets arbitrary
 # code execution on this container.
 #
 # These agents additionally read untrusted third-party web pages, so shell
@@ -90,8 +95,11 @@ SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
         "message": "I just joined. What are the three things I should understand first about this codebase, and what will confuse me?",
     },
     {
-        "title": "What's on the board?",
-        "message": "What's in progress on the NUR team right now, and is anything stuck?",
+        "title": "Take a product task",
+        "message": (
+            "Pick one high-leverage Nursing Mastery product question we can answer "
+            "today, do the research, and bring back the useful artifact or decision."
+        ),
     },
 )
 
@@ -101,44 +109,21 @@ SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
 # break prompt caching. This is the supported way to shape behaviour per
 # surface — the alternative is editing her SOUL, which applies everywhere.
 SLACK_PLATFORM_HINT = (
-    "You are answering in Slack, for a team that did NOT build this system, "
-    "and most of them are not engineers.\n"
-    "Answer in the register of the person asking. Their job decides what an "
-    "answer is: a marketing question gets audience, voice and funnel; a "
-    "delivery question gets projects, dates and owners. NEVER open a reply to "
-    "a non-engineer with an internal name — a file path, a repo label, a "
-    "D-number, a system codename. Those are citations you add at the end.\n"
-    "Asked what you can do for someone, answer in THEIR work, not as an "
-    "inventory of your tools.\n"
-    "Query the source before you describe it. Saying a system 'holds our voice "
-    "and personas' without opening it looks like an answer and contains none.\n"
-    "Never answer an orientation question — 'help me understand X', 'how does X "
-    "work' — from structure alone. Pull recent changes too and LEAD with what "
-    "moved. This product merges hundreds of PRs a fortnight, so a description "
-    "that omits last week is a stale snapshot the reader will act on.\n"
-    "Rank what changed by CONSEQUENCE, not visibility: where truth lives "
-    "(auth, identity, sessions, which system owns the data) first, then "
-    "anything that nearly broke or stopped being able to break, then changed "
-    "contracts between systems, then visible product changes, then polish. A "
-    "tap-target pass is not the headline when sign-in moved the same fortnight.\n"
-    "Ground every answer, and put the evidence at the END as a short Sources "
-    "list — the identifier, file or registry ref you actually opened — instead "
-    "of scattering them mid-sentence where they break the reading.\n"
-    "When you do not know, say so and say how you would find out. That beats a "
-    "confident guess.\n"
-    "Keep it to a few short paragraphs; this is a chat message, not a "
-    "document. Lead with the answer, then the evidence.\n"
-    "Match the picture to the tool you actually have. For STRUCTURE — a flow, "
-    "an architecture, who-calls-what, a sequence — draw it as text inside a "
-    "code block: boxes, arrows, indentation. Slack renders that in a monospace "
-    "font and the labels are exact. NEVER send structure to image_generate: it "
-    "is a text-to-image model, it cannot spell your labels, and it will return "
-    "a confident-looking picture with garbled names on every box. Reach for "
-    "image_generate only for something genuinely pictorial — an illustration, "
-    "a scene, a marketing visual. If someone asks for a diagram you cannot "
-    "draw well, say which form you can give them rather than producing a "
-    "handsome wrong one.\n"
-    "When someone asks for a summary they can take away, offer audio."
+    "You are answering a team in Slack; most people did not build the system. "
+    "Lead with the useful result in their register, then put the sources you "
+    "actually opened at the end.\n"
+    "Take ownership of a broad request: define a practical done condition, do "
+    "the safe work available now, and return the answer or artifact rather than "
+    "a tool inventory or a menu of questions.\n"
+    "Use current source authority. If a capability is not visible, search K2's "
+    "progressive catalog and try one credible alternate before reporting the "
+    "exact access gap. Do not claim a handoff or delivery without readback.\n"
+    "For a specialist handoff, mention the named agent with a bounded output "
+    "and keep working on your part; reconcile their reply instead of waiting.\n"
+    "For exact interface text or labeled structure, prefer a deterministic "
+    "prototype or diagram tool; use image generation for imagery. A text diagram "
+    "is a fallback, not the requested high-fidelity mockup.\n"
+    "Keep ordinary replies concise. Long work is fine when the outcome needs it."
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
@@ -188,6 +173,11 @@ def _csv(env: Mapping[str, str], key: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def agent_ref(env: Mapping[str, str]) -> str | None:
+    agent_id = (_clean(env, "AGENT_ID") or "cleo").lower()
+    return AGENT_REFS.get(agent_id)
+
+
 def build_mcp_servers(env: Mapping[str, str]) -> dict[str, Any]:
     """Mount only the servers whose URL is actually configured.
 
@@ -221,7 +211,7 @@ def build_slack(env: Mapping[str, str]) -> dict[str, Any]:
     """
     slack: dict[str, Any] = {
         "require_mention": True,
-        # Without this, Brian re-engages in old threads he was once mentioned
+        # Without this, the agent re-engages in old threads it was once mentioned
         # in — surprising, and noisy in a shared workspace.
         "strict_mention": True,
         # Scheduled briefs open their own thread and stay conversational there.
@@ -310,7 +300,7 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
 
     slack: dict[str, Any] = {
         # Upstream's default uses Slack's assistant status API, which
-        # disables the compose box while Brian thinks.
+        # disables the compose box while the agent thinks.
         "typing_indicator": False,
         # Default posts "♻️ Gateway online" into the workspace on every
         # redeploy. Operator noise for end users.
@@ -348,6 +338,18 @@ def build_config(
     env: Mapping[str, str], grounding_dir: str = DEFAULT_GROUNDING_DIR
 ) -> dict[str, Any]:
     servers = build_mcp_servers(env)
+    registry_ref = agent_ref(env)
+    runtime_hint = (
+        "You run as a hosted Slack bot on Render without direct shell, file "
+        "writes, or browser control. Reach the estate and hosted artifact tools "
+        "through MCP and K2. Long work is fine; show one useful progress update."
+    )
+    if registry_ref:
+        runtime_hint += (
+            f" Your registry identity is {registry_ref}. For substantial tasks, "
+            "load registry_agent_context with that ref and the user's real outcome."
+        )
+
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
         "model": {
@@ -366,11 +368,7 @@ def build_config(
             "gateway_notify_interval": 900,
             # Fast failover to the fallback provider rather than slow retries.
             "api_max_retries": 1,
-            "environment_hint": (
-                "You run as a hosted Slack bot on Render with no shell, no file "
-                "writes and no browser. Reach the estate through your MCP tools "
-                "instead. Long work is fine — say what you are doing as you go."
-            ),
+            "environment_hint": runtime_hint,
         },
         # Project-context discovery reads AGENTS.md from here.
         "terminal": {"cwd": grounding_dir},
@@ -419,7 +417,7 @@ def build_config(
         "memory": {
             "memory_enabled": True,
             # USER.md is singular — "what the agent knows about the user". With
-            # a whole workspace talking to Brian that profile just thrashes.
+            # a whole workspace talking to one agent makes that profile thrash.
             "user_profile_enabled": False,
             # Otherwise one person's thread writes durable facts for everyone.
             "write_approval": True,
@@ -472,6 +470,9 @@ def render(
     summary: dict[str, Any] = {
         "config_path": str(path),
         "model": config["model"]["default"],
+        "agent_ref": agent_ref(env) or "",
+        "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
+        "hermes_upstream_ref": _clean(env, "HERMES_UPSTREAM_REF") or "",
         "openrouter_key_present": bool(_clean(env, "OPENROUTER_API_KEY")),
         # What Hermes was ACTUALLY handed, mcp-* grants included — not the
         # static tuple. Reporting the tuple hid the fact that four mounted MCP
