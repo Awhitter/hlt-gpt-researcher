@@ -7,7 +7,7 @@ writing, including introductions, conclusions, and subtopic management.
 import hashlib
 import json
 import os
-from typing import Dict, Optional
+import re
 
 from ..actions import (
     generate_draft_section_titles,
@@ -16,11 +16,67 @@ from ..actions import (
     write_conclusion,
     write_report_introduction,
 )
-
+from ..utils.llm import construct_subtopics
 
 _DEFAULT_REPORT_CONTEXT_CHARS = 50_000
 _MAX_REPORT_CONTEXT_CHARS = 60_000
 _MAX_REPORT_CONTEXT_BLOCK_CHARS = 18_000
+
+
+def _source_evidence_boundaries(url: str, content: str) -> list[str]:
+    """Describe what an opened file can and cannot establish by itself."""
+
+    lower_url = url.lower()
+    lower_content = content.lower()
+    boundaries = [
+        (
+            "A repository location alone does not prove capture, persistence, "
+            "system ownership, or live runtime state."
+        )
+    ]
+    if re.search(r"(^|/)(tests?|specs?|fixtures?|examples?)(/|$)", lower_url) or re.search(
+        r"\.(test|spec)\.[a-z0-9]+(?:#|$)", lower_url
+    ):
+        boundaries.append(
+            "This is test, fixture, or example evidence; it can prove an expected "
+            "contract, not that production currently performs it."
+        )
+    elif "/docs/" in lower_url or lower_url.endswith((".md", ".mdx")):
+        boundaries.append(
+            "This is documentation evidence; distinguish documented intent from "
+            "implemented or live behavior."
+        )
+    elif "/scripts/" in lower_url or "/proof/" in lower_url:
+        boundaries.append(
+            "This script or proof artifact establishes only the workflow it exercises, "
+            "not estate-wide runtime state."
+        )
+
+    if any(
+        marker in lower_url
+        for marker in (
+            "/components/",
+            "/client/",
+            "/app/(dashboard)/",
+            "/app/(home)/",
+            "/app/(site)/",
+            "/page.tsx",
+            "/page.jsx",
+        )
+    ):
+        boundaries.append(
+            "This presentation or caller surface can prove what it renders or invokes; "
+            "it does not by itself prove downstream storage, sending, or authority."
+        )
+
+    if re.search(r"\b(interface|type)\s+[A-Za-z_]", lower_content):
+        boundaries.append(
+            "A declared interface or type proves a data shape in this consumer only; "
+            "it does not prove where values are captured, persisted, or owned."
+        )
+    return boundaries
+
+
 _MAX_CODE_REPORT_CONTEXT_BLOCK_CHARS = 5_000
 
 
@@ -67,7 +123,13 @@ def compact_report_context(
             continue
         title = str(source.get("title") or normalized_tool)
         url = str(source.get("url") or source.get("href") or "")
-        priority_blocks.append(f"Title: {title}\n{content}\nSource: {url}")
+        evidence_boundaries = "\n".join(
+            f"- {boundary}" for boundary in _source_evidence_boundaries(url, content)
+        )
+        priority_blocks.append(
+            f"Title: {title}\nSource: {url}\nEvidence boundaries:\n"
+            f"{evidence_boundaries}\nOpened file content:\n{content}"
+        )
 
     if isinstance(context, list):
         general_blocks = [str(block).strip() for block in context if str(block).strip()]
@@ -142,7 +204,30 @@ Use only the opened repository-file evidence in Context below. Follow these rule
 - Do not claim that all facts, the whole system, or the live runtime were verified. Describe only what the cited opened files prove.
 - Before finalizing, silently audit every use of owns, authoritative, canonical, captures, stores, sends, at account creation, does not, no, never, and all. Downgrade any claim whose cited file does not directly prove that exact strength.
 - Do not add a separate references section; source delivery is handled after the answer."""
-from ..utils.llm import construct_subtopics
+
+
+def code_teammate_audit_prompt(query: str, draft: str) -> str:
+    """Build a second-pass source-authority audit for a code-scoped report."""
+
+    return f"""Audit and rewrite the draft below as a source-authority editor. Return only the corrected report.
+
+Original question:
+{query}
+
+Draft to audit:
+{draft}
+
+Use only the opened repository-file evidence in Context. Enforce every rule:
+- Keep each explicit user question and answer it directly. Honest "not verified in the opened sources" answers are useful.
+- Keep exact immutable source links beside the claims they actually support.
+- A type or interface proves a consumer-visible shape only. Never infer capture, persistence, ownership, orchestration, or system-of-record status from its declaration or repository location.
+- A UI page, dashboard, import, or component proves what that surface renders or calls. Never infer downstream storage, sending, ownership, or live runtime state from it alone.
+- A test, script, proof, document, example, campaign artifact, or inactive pilot proves only its named contract or workflow. Never generalize it into current estate-wide behavior.
+- Absence is local to this evidence set. If the opened files do not show a write path or live-system readback, say it was not verified; do not convert missing evidence into "we do not," "is not used," or a permanent capability ban.
+- In particular, an inactive Marketo pilot or asset-approval page cannot prove whether any other workflow stores leads or sends email in Marketo.
+- Remove comparisons, recommendations, summaries, and implementation details that are not directly supported by an opened file.
+- If sources cover different fields or workflows, preserve those boundaries instead of naming one universal People owner.
+- Do not claim the whole system or runtime was verified merely because cited paths exist at their commits."""
 
 
 class ReportGenerator:
@@ -246,7 +331,25 @@ class ReportGenerator:
         else:
             report_params["cost_callback"] = self.researcher.add_costs
 
+        if getattr(self.researcher, "mcp_only", False):
+            # Keep the unaudited draft out of the user-visible stream. The
+            # authoritative final answer is delivered by report_complete.
+            report_params["websocket"] = None
+
         report = await generate_report(**report_params, **self.researcher.kwargs)
+
+        if getattr(self.researcher, "mcp_only", False) and report.strip():
+            audit_params = report_params.copy()
+            audit_params["custom_prompt"] = code_teammate_audit_prompt(
+                self.researcher.query,
+                report,
+            )
+            audited_report = await generate_report(
+                **audit_params,
+                **self.researcher.kwargs,
+            )
+            if audited_report.strip():
+                report = audited_report
 
         if self.researcher.verbose:
             await stream_output(

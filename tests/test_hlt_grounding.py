@@ -8,7 +8,6 @@ from backend.server.hlt_grounding import (
     source_refs_from_research_sources,
 )
 
-
 SHA = "a" * 40
 URL = f"https://github.com/Awhitter/nursing-mastery/blob/{SHA}/app/api/profile/route.ts#L12-L18"
 
@@ -144,6 +143,82 @@ def test_code_scoped_delivery_preserves_a_validator_backed_answer():
     assert report["answer"].startswith(answer)
     assert "## Sources" in report["answer"]
     assert URL in report["answer"]
+
+
+def test_code_delivery_blocks_interface_to_ownership_inference():
+    answer = (
+        "The LifecycleSignals interface is declared in Katailyst2, indicating that "
+        "Katailyst2 owns and orchestrates these nurse fields."
+    )
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/katailyst2",
+                "commitSha": SHA,
+                "path": "lib/campaigns/lifecycle-factory-service.ts",
+                "url": (
+                    "https://github.com/Awhitter/katailyst2/blob/"
+                    f"{SHA}/lib/campaigns/lifecycle-factory-service.ts#L278-L287"
+                ),
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is True
+    assert "source-authority claim" in report["verificationReason"]
+    assert "declared interface" in report["unsupportedClaims"][0]
+
+
+def test_code_delivery_blocks_global_marketo_negative_from_dashboard_artifact():
+    answer = "Marketo is not used to store or send nurse emails."
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/katailyst2",
+                "commitSha": SHA,
+                "path": "app/(dashboard)/content/campaigns/[id]/page.tsx",
+                "url": (
+                    "https://github.com/Awhitter/katailyst2/blob/"
+                    f"{SHA}/app/(dashboard)/content/campaigns/[id]/page.tsx#L449-L450"
+                ),
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is True
+    assert "Marketo claim" in report["unsupportedClaims"][0]
+
+
+def test_code_delivery_allows_scoped_marketo_uncertainty():
+    answer = (
+        "This dashboard describes one inactive Marketo pilot. Whether any other "
+        "workflow stores leads or sends email in Marketo was not verified in the opened sources."
+    )
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/katailyst2",
+                "commitSha": SHA,
+                "path": "app/(dashboard)/content/campaigns/[id]/page.tsx",
+                "url": (
+                    "https://github.com/Awhitter/katailyst2/blob/"
+                    f"{SHA}/app/(dashboard)/content/campaigns/[id]/page.tsx#L449-L450"
+                ),
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is False
+    assert report["verificationStatus"] == "verified"
 
 
 def test_file_read_mcp_payload_becomes_a_visible_validated_source():
