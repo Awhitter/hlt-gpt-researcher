@@ -21,6 +21,7 @@ from ..actions import (
 _DEFAULT_REPORT_CONTEXT_CHARS = 50_000
 _MAX_REPORT_CONTEXT_CHARS = 60_000
 _MAX_REPORT_CONTEXT_BLOCK_CHARS = 18_000
+_MAX_CODE_REPORT_CONTEXT_BLOCK_CHARS = 8_000
 
 
 def compact_report_context(
@@ -97,7 +98,18 @@ def compact_report_context(
         if digest in seen:
             continue
         seen.add(digest)
-        bounded = block[:_MAX_REPORT_CONTEXT_BLOCK_CHARS]
+        # Direct implementation questions often span several repositories or
+        # workflow stages. A single 200-line file can otherwise consume almost
+        # a third of the writer context and crowd out the write path, upstream
+        # authority, or another numbered question. Code-source reads are
+        # already focused line windows, so prefer broader source coverage over
+        # retaining an unusually large window from one file.
+        block_limit = (
+            _MAX_CODE_REPORT_CONTEXT_BLOCK_CHARS
+            if opened_sources_only
+            else _MAX_REPORT_CONTEXT_BLOCK_CHARS
+        )
+        bounded = block[:block_limit]
         separator_chars = 7 if selected else 0
         remaining = max_chars - used_chars - separator_chars
         if remaining <= 0:
@@ -117,13 +129,18 @@ def code_teammate_report_prompt(query: str) -> str:
 Use only the opened repository-file evidence in Context below. Follow these rules:
 - Lead with the answer. Do not include research methodology, a table of contents, or a generic introduction.
 - For a normal direct question, aim for 250-700 words. Go longer only when the user explicitly asks for a deep or comprehensive report.
+- Answer every numbered question separately. If one answer is unavailable, say so for that question without weakening answers that are supported.
 - Put the exact immutable source link from Context in the same bullet or paragraph as every substantive implementation claim.
-- Distinguish what a system owns or writes from what another repository merely reads, types, projects, or displays. A client interface is not proof of data ownership.
+- Treat ownership, authority, capture timing, storage, sending, and universal negative claims as high-proof claims. Use those words only when an opened file explicitly shows the relevant write, persistence contract, outbound call, or system-of-record declaration.
+- Distinguish what a system owns or writes from what another repository merely reads, validates, types, projects, or displays. A client interface is not proof of data ownership. A question blueprint, schema, model validation, or database field is not by itself proof of data ownership or of when and where a value is captured.
+- A route that delegates to another client proves the route's role, not the downstream system's behavior. Follow the cited call path before describing the downstream write or authority.
 - Distinguish implemented current behavior from documentation, plans, examples, test fixtures, and historical artifacts.
 - Never add likely, standard, illustrative, or inferred fields or behavior. If an opened source does not prove a detail, say that it is not verified.
+- Never turn absence in the opened files into a system-wide negative. Say "not verified in the opened sources for this run" unless the evidence is an exhaustive current inventory or an explicit removal/absence contract.
 - If sources conflict or cover different workflows, explain the boundary plainly instead of flattening them into one model.
 - Use short sections and plain language. Preserve technical names only when they help someone locate or change the behavior.
 - Do not claim that all facts, the whole system, or the live runtime were verified. Describe only what the cited opened files prove.
+- Before finalizing, silently audit every use of owns, authoritative, canonical, captures, stores, sends, at account creation, does not, no, never, and all. Downgrade any claim whose cited file does not directly prove that exact strength.
 - Do not add a separate references section; source delivery is handled after the answer."""
 from ..utils.llm import construct_subtopics
 

@@ -119,6 +119,20 @@ Select exactly {max_tools} tools, ranked by relevance to the research query.
    nouns by themselves. After search_source returns matches, inspect the best
    paths with read_source using a focused line window instead of repeatedly
    searching generic terms.
+9. Match the evidence to the claim strength. A UI, schema, model validation,
+   type, question catalog, or read endpoint does not prove data ownership,
+   persistence authority, or the moment a value is captured. For those claims,
+   find the submission handler, write client, persistence contract, outbound
+   call, or an explicit system-of-record declaration.
+10. Follow delegating code across at least one boundary when needed. If an
+    opened route imports a blueprint, API client, repository, or submit helper,
+    search for that symbol and open its implementation before describing what
+    the downstream system does.
+11. For "when and where" questions, open the user-facing input or trigger and
+    the receiving handler/write path. A required database field alone is not evidence of the capture moment.
+12. For absence questions, search the exact integration/product name and useful
+    variants in every relevant repository you can identify. If that still finds
+    nothing, report only that this run did not verify it; do not infer a permanent or system-wide absence.
 """
         
         return f"""You are a research assistant with access to specialized tools. Your task is to research the following query and provide comprehensive, accurate information.
