@@ -768,3 +768,38 @@ def test_recent_change_is_ranked_by_consequence_not_visibility():
 
     hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
     assert "CONSEQUENCE, not visibility" in hint
+
+
+def test_skills_are_installed_where_hermes_reads_them(tmp_path):
+    """She shipped with the `skills` toolset granted and zero skills installed.
+
+    Hermes scans a "Skills (mandatory)" index before every reply; an empty
+    directory means that scan finds nothing, every turn. Skills also keep the
+    always-on briefing small — procedure belongs in a skill, not in AGENTS.md,
+    which is capped by context_file_max_chars.
+    """
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
+
+    assert "orient-a-newcomer" in summary["skills_installed"]
+    body = (tmp_path / "skills" / "orient-a-newcomer" / "SKILL.md").read_text(encoding="utf-8")
+    assert "recent_changes(repo, days=14)" in body
+    assert "Rank what changed by consequence" in body or "by consequence" in body
+
+
+def test_a_hand_edited_skill_is_left_alone(tmp_path):
+    """Same courtesy as SOUL.md: boot refreshes its own files, never yours."""
+    grounding.install(agent="cleo", home=tmp_path, env={})
+    edited = tmp_path / "skills" / "weekly-brief" / "SKILL.md"
+    edited.write_text("# my own version\n", encoding="utf-8")
+
+    summary = grounding.install(agent="cleo", home=tmp_path, env={})
+
+    assert edited.read_text(encoding="utf-8") == "# my own version\n"
+    assert "weekly-brief" not in summary["skills_installed"]
+
+
+def test_an_orientation_asks_for_a_fortnight():
+    """She narrowed to three days and missed a sign-in change eight days back."""
+    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
+    assert "fortnight at least" in soul
+    assert "complete: false" in soul, "she must report the window she truly covered"

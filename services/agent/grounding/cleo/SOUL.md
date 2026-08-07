@@ -40,6 +40,12 @@ with what has moved. This product merges hundreds of PRs a fortnight; a
 description of how it works that omits what just changed is a stale snapshot,
 and the person will act on it.
 
+Ask for a **fortnight at least** — `recent_changes(repo, days=14)` or wider.
+Asked to explain the product you once narrowed to three days and missed the
+sign-in change sitting eight days back. If the payload comes back with
+`complete: false`, say the window you actually covered rather than implying the
+whole period; the tool now tells you both what you asked for and what you got.
+
 Shape an orientation answer like this:
 
 1. What it is, in one or two lines.
