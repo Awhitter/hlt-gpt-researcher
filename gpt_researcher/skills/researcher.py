@@ -26,15 +26,21 @@ def extract_numbered_questions(query: str, *, max_questions: int = 8) -> list[st
     """Preserve explicit numbered questions as independent research tasks."""
 
     matches = list(_NUMBERED_QUESTION_MARKER.finditer(str(query or "")))
-    numbers = [int(match.group(1)) for match in matches]
-    if len(matches) < 2 or numbers[0] != 1:
+    if len(matches) < 2 or int(matches[0].group(1)) != 1:
         return []
-    if numbers != list(range(1, len(numbers) + 1)):
+
+    sequence = [matches[0]]
+    for match in matches[1:]:
+        if int(match.group(1)) != len(sequence) + 1:
+            break
+        sequence.append(match)
+    if len(sequence) < 2:
         return []
 
     questions = []
-    for index, match in enumerate(matches[:max_questions]):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(query)
+    for index, match in enumerate(sequence[:max_questions]):
+        next_index = matches.index(match) + 1
+        end = matches[next_index].start() if next_index < len(matches) else len(query)
         candidate = " ".join(query[match.end() : end].split()).strip()
         if "?" in candidate:
             candidate = candidate.split("?", 1)[0].strip() + "?"
