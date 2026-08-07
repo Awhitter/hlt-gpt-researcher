@@ -314,15 +314,23 @@ class MCPRetriever:
             return self._all_tools_cache
             
         try:
-            all_tools = await self.client_manager.get_all_tools()
-            
-            if all_tools:
-                await self.streamer.stream_log(f"📋 Loaded {len(all_tools)} total tools from MCP servers")
-                self._all_tools_cache = all_tools
-                return all_tools
-            else:
-                await self.streamer.stream_warning("No tools available from MCP servers")
-                return []
+            for attempt in range(2):
+                all_tools = await self.client_manager.get_all_tools()
+
+                if all_tools:
+                    await self.streamer.stream_log(
+                        f"📋 Loaded {len(all_tools)} total tools from MCP servers"
+                    )
+                    self._all_tools_cache = all_tools
+                    return all_tools
+                if attempt == 0:
+                    await self.streamer.stream_warning(
+                        "MCP returned no tools; reconnecting once before giving up"
+                    )
+                    await self.client_manager.close_client()
+
+            await self.streamer.stream_warning("No tools available from MCP servers")
+            return []
                 
         except Exception as e:
             logger.error(f"Error getting MCP tools: {e}")

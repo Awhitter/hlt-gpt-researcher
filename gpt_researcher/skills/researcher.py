@@ -313,7 +313,7 @@ class ResearchConductor:
         # Generate Sub-Queries including original query
         sub_queries = await self.plan_research(query)
         # If this is not part of a sub researcher, add original query to research for better results
-        if self.researcher.report_type != "subtopic_report":
+        if self._should_append_original_query(query):
             sub_queries.append(query)
 
         if self.researcher.verbose:
@@ -403,7 +403,7 @@ class ResearchConductor:
         self.logger.info(f"Generated sub-queries: {sub_queries}")
         
         # If this is not part of a sub researcher, add original query to research for better results
-        if self.researcher.report_type != "subtopic_report":
+        if self._should_append_original_query(query):
             sub_queries.append(query)
 
         if self.researcher.verbose:
@@ -461,6 +461,16 @@ class ResearchConductor:
         
         # Default to fast mode
         return "fast"
+
+    def _should_append_original_query(self, query: str) -> bool:
+        """Avoid repeating an explicit numbered brief as a sixth umbrella task."""
+
+        if self.researcher.report_type == "subtopic_report":
+            return False
+        return not (
+            getattr(self.researcher, "mcp_only", False)
+            and bool(extract_numbered_questions(query))
+        )
 
     async def _execute_mcp_research_for_queries(self, queries: list, mcp_retrievers: list) -> list:
         """
