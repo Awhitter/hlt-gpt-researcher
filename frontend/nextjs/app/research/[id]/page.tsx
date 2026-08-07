@@ -39,6 +39,11 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
   const [fetchAttempted, setFetchAttempted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const toastShownRef = useRef(false);
+  const completedChatBaselineRef = useRef({
+    researchId: "",
+    question: "",
+    count: 0,
+  });
 
   const { 
     history,
@@ -261,17 +266,36 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
     setAllLogs(newLogs);
   }, [orderedData]);
 
-  // Scroll to bottom when chat updates
-  const scrollToBottom = () => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
   useEffect(() => {
-    // Scroll to bottom when orderedData changes
-    if (isProcessingChat === false && orderedData.length > 0) {
-      setTimeout(scrollToBottom, 100); // Small delay to ensure content is rendered
+    if (orderedData.length === 0) return;
+
+    const chatCount = orderedData.filter((item) => item.type === "chat").length;
+    const baseline = completedChatBaselineRef.current;
+
+    // Loading a saved report is not a chat update. Establish its baseline so
+    // the mobile report can remain anchored at its beginning.
+    if (baseline.researchId !== id || baseline.question !== question) {
+      completedChatBaselineRef.current = {
+        researchId: id,
+        question,
+        count: chatCount,
+      };
+      return;
     }
-  }, [orderedData, isProcessingChat]);
+
+    // A follow-up response may be appended before processing flips to false.
+    // Wait for completion, then move to the newly delivered chat message once.
+    if (isProcessingChat || chatCount <= baseline.count) return;
+
+    completedChatBaselineRef.current = {
+      ...baseline,
+      count: chatCount,
+    };
+    const timeout = setTimeout(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+    return () => clearTimeout(timeout);
+  }, [id, isProcessingChat, orderedData, question]);
 
   // Check if on mobile
   useEffect(() => {
