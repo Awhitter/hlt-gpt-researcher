@@ -1,7 +1,11 @@
 """Unit tests for MCP tool scope/depth helpers."""
 from __future__ import annotations
 
-from mcp_server.tools import _build_research_scope, _scope_summary
+from mcp_server.tools import (
+    _build_research_scope,
+    _scope_summary,
+    _source_limit_for_depth,
+)
 
 
 def test_build_research_scope_defaults_to_auto():
@@ -48,3 +52,13 @@ def test_scope_summary_exposes_auto_fields():
         "mcp_server_count": 2,
         "depth": "fast",
     }
+
+
+def test_source_limit_tracks_depth_and_bounds_explicit_overrides():
+    assert _source_limit_for_depth("fast") == 5
+    assert _source_limit_for_depth("balanced") == 8
+    assert _source_limit_for_depth("deep") == 12
+    assert _source_limit_for_depth("bogus") == 8
+    assert _source_limit_for_depth("deep", 2) == 3
+    assert _source_limit_for_depth("fast", 99) == 20
+    assert _source_limit_for_depth("fast", 9) == 9

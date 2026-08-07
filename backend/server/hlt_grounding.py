@@ -28,6 +28,14 @@ _GITHUB_CODE_LINK = re.compile(
     r"(?P<kind>blob|tree)/(?P<ref>[^/\s)#?]+)/(?P<path>[^\s)#?]+)"
 )
 _SCOPE_INSTRUCTION_MARKER = "HLT research scope instructions:"
+_REPORT_RECEIPT_KEYS = (
+    "sourceRefs",
+    "verificationStatus",
+    "verificationReason",
+    "unsupportedClaims",
+    "deliveryBlocked",
+    "hlt_research_scope",
+)
 
 
 def sanitize_user_visible_research_data(value: Any) -> Any:
@@ -44,6 +52,54 @@ def sanitize_user_visible_research_data(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
+
+
+def _report_complete_receipt(ordered_data: Any) -> dict[str, Any]:
+    if not isinstance(ordered_data, list):
+        return {}
+    for item in reversed(ordered_data):
+        if not isinstance(item, dict) or item.get("type") != "report_complete":
+            continue
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            return {
+                key: metadata[key]
+                for key in _REPORT_RECEIPT_KEYS
+                if key in metadata
+            }
+    return {}
+
+
+def merge_report_delivery_receipt(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep backend validation evidence during the frontend's richer upsert.
+
+    The browser adds ordered progress data after the backend has already saved
+    the validated report. Replacing the record with only browser fields erased
+    the source receipt and made a verified report look unverified in history.
+    """
+
+    merged = dict(incoming)
+    merged.update(_report_complete_receipt(incoming.get("orderedData")))
+    existing_has_backend_receipt = isinstance(existing, dict) and (
+        bool(existing.get("sourceRefs"))
+        or bool(existing.get("unsupportedClaims"))
+        or (
+            isinstance(existing.get("deliveryBlocked"), bool)
+            and isinstance(existing.get("hlt_research_scope"), dict)
+        )
+    )
+    if existing_has_backend_receipt:
+        merged.update(
+            {
+                key: existing[key]
+                for key in _REPORT_RECEIPT_KEYS
+                if key in existing
+            }
+        )
+    return merged
 
 
 def extract_source_refs(answer: str) -> list[dict[str, Any]]:
@@ -259,6 +315,13 @@ def prepare_report_record(
         if ref.get("indexedAt") or ref.get("validatedAt")
     ]
     normalized["sourceFreshness"] = max(indexed_times) if indexed_times else None
+    scope_metadata = normalized.get("hlt_research_scope")
+    if _requires_code_grounding(scope_metadata):
+        normalized["deliveryBlocked"] = (
+            status != "verified" or bool(normalized["unsupportedClaims"])
+        )
+    elif "deliveryBlocked" in normalized:
+        normalized["deliveryBlocked"] = bool(normalized["deliveryBlocked"])
     return normalized
 
 

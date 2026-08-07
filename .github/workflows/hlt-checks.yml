@@ -54,6 +54,7 @@ jobs:
             tests/test_product_tools.py \
             tests/test_hlt_extensions.py \
             tests/test_hlt_grounding.py \
+            tests/test_mcp_only_research.py \
             tests/test_hlt_scope_inference.py \
             tests/test_mcp_scope_params.py \
             tests/test_mcp_server_health.py \
@@ -89,7 +90,7 @@ jobs:
       # it silently reopening. teamAccess.test.mjs needs the typescript dep,
       # which is why it runs after install rather than standalone.
       - name: Run team-access, middleware gate, and progress tests
-        run: node --test middleware.matcher.test.mjs lib/teamAccess.test.mjs lib/researchProgress.test.mjs lib/suggestions.test.mjs helpers/markdownHelper.test.mjs
+        run: node --test middleware.matcher.test.mjs lib/teamAccess.test.mjs lib/reportTrust.test.mjs lib/researchProgress.test.mjs lib/suggestions.test.mjs helpers/markdownHelper.test.mjs utils/reportArtifacts.test.mjs
 
       - name: Typecheck
         run: ./node_modules/.bin/tsc --noEmit

@@ -48,11 +48,11 @@ class ImageGenerator:
     def _init_provider(self):
         """Initialize the image generation provider from config."""
         try:
-            enabled = getattr(self.cfg, 'IMAGE_GENERATION_ENABLED', False)
+            enabled = getattr(self.cfg, 'image_generation_enabled', False)
             if not enabled:
                 return
-            provider_name = getattr(self.cfg, 'IMAGE_GENERATION_PROVIDER', 'google')
-            model = getattr(self.cfg, 'IMAGE_GENERATION_MODEL', None)
+            provider_name = getattr(self.cfg, 'image_generation_provider', 'google')
+            model = getattr(self.cfg, 'image_generation_model', None)
             if provider_name == 'modelslab':
                 provider = ModelsLabImageGeneratorProvider(model_id=model)
             else:
@@ -197,7 +197,7 @@ class ImageGenerator:
         max_context_length = 6000
         truncated_context = context[:max_context_length] if len(context) > max_context_length else context
         
-        planning_prompt = f"""Analyze this research context and identify 2-3 concepts that would significantly benefit from professional diagram/infographic illustrations.
+        planning_prompt = f"""Analyze this research context and identify up to {self.max_images} concepts that would significantly benefit from a professional illustration.
 
 RESEARCH QUERY: {query}
 
@@ -216,6 +216,14 @@ Focus on:
 - Data visualizations
 - Conceptual illustrations
 
+Safety and usefulness:
+- Return [] when an image would be decorative, redundant, or poorly grounded.
+- Never synthesize a portrait, headshot, or likeness of a real person. A real
+  person's photo must come from an attributed source image instead.
+- For biography research, only propose a non-likeness timeline, relationship
+  map, or contextual editorial illustration when it materially clarifies facts.
+- Prefer minimal or no text because generated labels are unreliable.
+
 IMPORTANT: Return ONLY a valid JSON array. No markdown, no explanation.
 
 Example output:
@@ -227,7 +235,7 @@ Example output:
   }}
 ]
 
-Return 2-3 visualization concepts as a JSON array:"""
+Return 0-{self.max_images} visualization concepts as a JSON array:"""
 
         try:
             response = await create_chat_completion(

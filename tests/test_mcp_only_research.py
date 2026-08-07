@@ -1,6 +1,10 @@
 import asyncio
 from types import SimpleNamespace
 
+from langchain_core.messages import AIMessage
+
+from gpt_researcher.mcp.research import MCPResearchSkill
+from gpt_researcher.mcp.tool_selector import MCPToolSelector
 from gpt_researcher.skills.researcher import ResearchConductor
 
 
@@ -38,3 +42,158 @@ def test_mcp_only_research_never_falls_through_to_public_web(monkeypatch):
     result = asyncio.run(conductor._process_sub_query("Where is email captured?"))
 
     assert "Exact source evidence" in result
+
+
+def test_mcp_only_planning_does_not_call_a_public_search_provider(monkeypatch):
+    researcher = SimpleNamespace(
+        retrievers=[MCPRetrieverFixture],
+        mcp_only=True,
+        websocket=None,
+        role="Internal research teammate",
+        cfg=SimpleNamespace(),
+        parent_query="",
+        report_type="research_report",
+        kwargs={},
+        add_costs=lambda *_args, **_kwargs: None,
+    )
+    conductor = ResearchConductor(researcher)
+
+    async def public_web_must_not_run(*_args, **_kwargs):
+        raise AssertionError("public web search ran during internal-only planning")
+
+    async def plan_from_internal_context(**kwargs):
+        assert kwargs["search_results"] == []
+        return [kwargs["query"]]
+
+    monkeypatch.setattr(
+        "gpt_researcher.skills.researcher.get_search_results",
+        public_web_must_not_run,
+    )
+    monkeypatch.setattr(
+        "gpt_researcher.skills.researcher.plan_research_outline",
+        plan_from_internal_context,
+    )
+
+    result = asyncio.run(conductor.plan_research("Where is email captured?"))
+
+    assert result == ["Where is email captured?"]
+
+
+class FakeTool:
+    def __init__(self, name, result=""):
+        self.name = name
+        self.description = f"Description for {name}"
+        self.result = result
+        self.calls = []
+
+    async def ainvoke(self, args):
+        self.calls.append(args)
+        return self.result
+
+
+def test_code_only_selection_always_includes_source_discovery_and_reading():
+    tools = [
+        FakeTool("list_repos"),
+        FakeTool("search_source"),
+        FakeTool("read_source"),
+        FakeTool("verify_source_ref"),
+        FakeTool("search_registry"),
+    ]
+
+    selected = MCPToolSelector.ensure_code_source_tools(
+        [tools[0], tools[4]],
+        tools,
+        max_tools=5,
+    )
+
+    assert [tool.name for tool in selected] == [
+        "search_source",
+        "read_source",
+        "verify_source_ref",
+        "list_repos",
+        "search_registry",
+    ]
+
+
+def test_mcp_research_can_search_then_read_a_discovered_source(monkeypatch):
+    search_tool = FakeTool(
+        "search_source",
+        '{"results":[{"repo":"nursing-mastery","path":"app/api/identity/route.ts"}]}',
+    )
+    read_tool = FakeTool(
+        "read_source",
+        '{"repo":"nursing-mastery","path":"app/api/identity/route.ts",'
+        '"url":"https://github.com/Awhitter/nursing-mastery/blob/'
+        + "a" * 40
+        + '/app/api/identity/route.ts#L148","content":"consentStatus: accepted"}',
+    )
+
+    responses = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_source",
+                        "args": {"query_text": "email consent capture"},
+                        "id": "search-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_source",
+                        "args": {
+                            "repo": "nursing-mastery",
+                            "path": "app/api/identity/route.ts",
+                            "start_line": 140,
+                            "end_line": 170,
+                        },
+                        "id": "read-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="The exact identity route records accepted consent."),
+        ]
+    )
+
+    class FakeBoundLLM:
+        def bind_tools(self, tools):
+            assert [tool.name for tool in tools] == ["search_source", "read_source"]
+            return self
+
+        async def ainvoke(self, _messages):
+            return next(responses)
+
+    monkeypatch.setattr(
+        "gpt_researcher.llm_provider.generic.base.GenericLLMProvider.from_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(llm=FakeBoundLLM()),
+    )
+    cfg = SimpleNamespace(
+        strategic_llm_model="test-model",
+        strategic_llm_provider="test-provider",
+        llm_kwargs={},
+    )
+
+    results = asyncio.run(
+        MCPResearchSkill(cfg).conduct_research_with_tools(
+            "Where is email consent captured?",
+            [search_tool, read_tool],
+        )
+    )
+
+    assert search_tool.calls == [{"query_text": "email consent capture"}]
+    assert read_tool.calls == [
+        {
+            "repo": "nursing-mastery",
+            "path": "app/api/identity/route.ts",
+            "start_line": 140,
+            "end_line": 170,
+        }
+    ]
+    assert any("consentStatus: accepted" in item["body"] for item in results)
+    assert results[-1]["body"] == "The exact identity route records accepted consent."

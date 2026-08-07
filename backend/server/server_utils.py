@@ -410,12 +410,20 @@ async def handle_start_command(websocket, data: str, manager):
     file_paths["run_id"] = research_id
     sources = jsonable(researcher.get_research_sources()) if researcher else []
     source_urls = list(researcher.get_source_urls()) if researcher else []
+    if researcher:
+        image_reader = getattr(researcher, "get_all_research_images", None) or getattr(
+            researcher, "get_research_images", None
+        )
+        research_images = jsonable(image_reader()) if image_reader else []
+    else:
+        research_images = []
     costs = researcher.get_costs() if researcher else 0.0
     run_store.complete_run(
         research_id,
         context=jsonable(researcher.get_research_context()) if researcher else [],
         sources=sources,
         source_urls=source_urls,
+        research_images=research_images,
         costs=costs,
         report_path=file_paths.get("md"),
         md_path=file_paths.get("md"),
@@ -453,6 +461,7 @@ async def handle_start_command(websocket, data: str, manager):
                 "orderedData": [],
                 "chatMessages": [],
                 "timestamp": int(time.time() * 1000),
+                "hlt_research_scope": hlt_scope_metadata,
             })
         except Exception:
             logger.warning(

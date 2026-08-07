@@ -118,6 +118,13 @@ class ResearchRunStore:
                     if "duplicate column name" not in str(exc).lower():
                         raise
                 conn.execute("PRAGMA user_version = 2")
+            if version < 3:
+                try:
+                    conn.execute("ALTER TABLE research_runs ADD COLUMN research_images_json TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+                conn.execute("PRAGMA user_version = 3")
             if recover_interrupted:
                 self._mark_interrupted_locked(conn)
 
@@ -203,6 +210,7 @@ class ResearchRunStore:
             "context",
             "sources",
             "source_urls",
+            "research_images",
             "source_count",
             "costs",
             "report_path",
@@ -226,6 +234,8 @@ class ResearchRunStore:
                 column_values["sources_json"] = _json_dump(value)
             elif key == "source_urls":
                 column_values["source_urls_json"] = _json_dump(value)
+            elif key == "research_images":
+                column_values["research_images_json"] = _json_dump(value)
             elif key == "hlt_research_scope":
                 column_values["hlt_research_scope_json"] = _json_dump(value)
             else:
@@ -249,6 +259,7 @@ class ResearchRunStore:
         context: Any | None = None,
         sources: list[dict[str, Any]] | None = None,
         source_urls: list[str] | None = None,
+        research_images: list[Any] | None = None,
         costs: float | None = None,
         report_path: str | None = None,
         md_path: str | None = None,
@@ -258,12 +269,14 @@ class ResearchRunStore:
     ) -> None:
         sources = sources or []
         source_urls = source_urls or []
+        research_images = research_images or []
         fields: dict[str, Any] = {
             "status": "completed",
             "completed_at": utc_now_iso(),
             "context": context,
             "sources": sources,
             "source_urls": source_urls,
+            "research_images": research_images,
             "source_count": len(sources),
             "costs": costs or 0.0,
             "report_path": report_path,
@@ -324,6 +337,7 @@ class ResearchRunStore:
         data["context"] = _json_load(data.get("context_json"), [])
         data["sources"] = _json_load(data.get("sources_json"), [])
         data["source_urls"] = _json_load(data.get("source_urls_json"), [])
+        data["research_images"] = _json_load(data.get("research_images_json"), [])
         data["hlt_research_scope"] = _json_load(data.get("hlt_research_scope_json"), None)
         return data
 

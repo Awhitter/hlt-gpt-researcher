@@ -7,8 +7,8 @@ HLT hosts this fork as two Railway services:
 - API/frontend: `https://gpt-researcher-api-production.up.railway.app`
 - MCP: `https://gpt-researcher-mcp-production.up.railway.app/mcp`
 
-The browser frontend can load publicly, but v1 production research actions are
-for authenticated REST and MCP clients.
+The browser frontend uses the team-password sign-in. REST and MCP use separate
+machine credentials.
 
 For operational guidance, decision rules, and Sidecar/Katailyst use cases, see
 [`docs/usage/owners-manual.md`](./owners-manual.md).
@@ -46,6 +46,26 @@ Claude Desktop:
   }
 }
 ```
+
+Codex `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mastery_research]
+url = "https://gpt-researcher-mcp-production.up.railway.app/mcp"
+bearer_token_env_var = "GPTR_MCP_TOKEN"
+```
+
+K2/Hermes agents need only these runtime variables; the shared adapter creates
+the mount automatically:
+
+```text
+GPTR_MCP_URL=https://gpt-researcher-mcp-production.up.railway.app/mcp
+GPTR_MCP_TOKEN=<same value as the service MCP_AUTH_TOKEN>
+```
+
+Recommended agent flow: `deep_research` → keep the returned `research_id` →
+`write_report` → `get_research_sources`, `get_research_context`, or
+`get_research_images`.
 
 ## MCP Curl Smoke
 
@@ -177,12 +197,17 @@ deployment should fail the smoke test unless all requested scopes are ready.
 ## Tools
 
 - `deep_research` creates a `research_id` and returns context, sources, source
-  URLs, and source count. Completed run metadata is persisted in SQLite and can
-  be recovered after an MCP/API restart.
+  URLs, attributed images, and counts. `depth` uses 5/8/12 results per query for
+  fast/balanced/deep; `max_sources_per_query` can override that from 3–20.
+  `include_generated_images=true` opts into contextual illustrations; source
+  images remain automatic. Completed run metadata is persisted in SQLite and
+  can be recovered after an MCP/API restart.
 - `quick_search` returns fast search results or a summary.
 - `write_report` accepts a prior `research_id`; if the hot cache was lost, it
   hydrates from persisted context and source metadata.
 - `get_research_sources` accepts a prior `research_id`.
 - `get_research_context` accepts a prior `research_id`.
+- `get_research_images` accepts a prior `research_id` and returns image URLs,
+  source-page URLs, and alt text.
 - `research://{topic}` returns cached, persisted, or newly generated research
   context.

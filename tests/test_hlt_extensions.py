@@ -97,7 +97,7 @@ def test_scope_resolution_degrades_without_env(monkeypatch):
     assert set(metadata["degraded_sources"]) == {"codebase", "metrics", "firecrawl"}
     assert metadata["scope_statuses"]["codebase"]["status"] == "unavailable"
     assert metadata["scraper"]["selected"] == "default"
-    assert "do not imply unavailable internal data" in task
+    assert "name what was unavailable or not inspected" in task
 
 
 def test_scope_resolution_uses_configured_backends(monkeypatch):
@@ -225,7 +225,7 @@ def test_katailyst2_env_preferred_over_legacy(monkeypatch):
     assert configs[0]["connection_headers"] == {"Authorization": "Bearer kata_k2-token"}
 
 
-def test_codebase_instruction_names_estate_repos(monkeypatch):
+def test_codebase_instruction_is_a_compact_runtime_contract(monkeypatch):
     clear_hlt_env(monkeypatch)
     set_firecrawl_import(monkeypatch, False)
     monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
@@ -238,20 +238,12 @@ def test_codebase_instruction_names_estate_repos(monkeypatch):
         research_scope={"codebase": True, "depth": "deep"},
     )
 
-    for repo in (
-        "Awhitter/hlt-gpt-researcher",
-        "Awhitter/nursing-mastery",
-        "Awhitter/ScraperVault",
-        "HLT-Master/hlt-web-service",
-        "Awhitter/katailyst2",
-        "Awhitter/MMM2",
-        "Awhitter/evidence-based-business",
-    ):
-        assert repo in task
-
-    assert "Do not assume that one repository owns every part of a person record" in task
-    assert "active live-system source" in task
-    assert "ScraperVault as recruiting/profile/application authority" not in task
+    assert "search_source, then read_source" in task
+    assert "Connected adapters this run: katailyst" in task
+    assert "Availability is current, not permanent policy" in task
+    assert "Marketo" not in task
+    assert len(hlt_extensions._scope_instruction("codebase")) < 400
+    assert len(task) < 700
 
 
 def test_codebase_prefers_codegraph_over_github(monkeypatch):
@@ -975,7 +967,8 @@ def test_auto_scope_activates_estate_presets_for_repo_questions(monkeypatch):
     assert metadata["auto_scope"]["requested"] is True
     assert metadata["auto_scope"]["applied"] == ["codebase"]
     assert "codebase" in metadata["active_sources"]
-    assert "Awhitter/ScraperVault" in task
+    assert hlt_extensions._ESTATE_GLOSSARY in task
+    assert "Connected adapters this run: github, katailyst" in task
 
 
 def test_auto_scope_leaves_generic_queries_web_only(monkeypatch):
@@ -1019,7 +1012,7 @@ def test_auto_scope_never_activates_unready_integrations(monkeypatch):
     # The estate glossary still lands (the task names an estate repo), but an
     # unready inferred scope must not degrade the task with warnings.
     assert hlt_extensions._ESTATE_GLOSSARY in task
-    assert "do not imply unavailable internal data" not in task
+    assert "is degraded" not in task
     assert metadata["degraded_sources"] == []
 
 

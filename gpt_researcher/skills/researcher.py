@@ -52,15 +52,31 @@ class ResearchConductor:
         Returns:
             List of queries
         """
-        await stream_output(
-            "logs",
-            "planning_research",
-            f"🌐 Browsing the web to learn more about the task: {query}...",
-            self.researcher.websocket,
-        )
-
-        search_results = await get_search_results(query, self.researcher.retrievers[0], query_domains, researcher=self.researcher)
-        self.logger.info(f"Initial search results obtained: {len(search_results)} results")
+        if getattr(self.researcher, "mcp_only", False):
+            await stream_output(
+                "logs",
+                "planning_research",
+                f"🧭 Planning from connected internal sources: {query}...",
+                self.researcher.websocket,
+            )
+            search_results = []
+            self.logger.info("Internal-only planning skipped the public search provider")
+        else:
+            await stream_output(
+                "logs",
+                "planning_research",
+                f"🌐 Browsing the web to learn more about the task: {query}...",
+                self.researcher.websocket,
+            )
+            search_results = await get_search_results(
+                query,
+                self.researcher.retrievers[0],
+                query_domains,
+                researcher=self.researcher,
+            )
+            self.logger.info(
+                f"Initial search results obtained: {len(search_results)} results"
+            )
 
         await stream_output(
             "logs",

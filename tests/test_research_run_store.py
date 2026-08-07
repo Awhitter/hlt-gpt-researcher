@@ -12,7 +12,7 @@ def test_research_run_store_migrates_and_round_trips_json(tmp_path):
 
     with sqlite3.connect(db_path) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert version == 2
+    assert version == 3
 
     store.create_run(
         "run-1",
@@ -28,6 +28,13 @@ def test_research_run_store_migrates_and_round_trips_json(tmp_path):
         context=[{"finding": "sqlite survives restart"}],
         sources=[{"title": "Source", "url": "https://example.com", "content": "abc"}],
         source_urls=["https://example.com"],
+        research_images=[
+            {
+                "url": "https://example.com/alec.jpg",
+                "source_url": "https://example.com/profile",
+                "alt_text": "Alec Whitters",
+            }
+        ],
         costs=0.12,
         report_path="outputs/run-1.md",
         md_path="outputs/run-1.md",
@@ -42,6 +49,7 @@ def test_research_run_store_migrates_and_round_trips_json(tmp_path):
     assert run["sources"][0]["title"] == "Source"
     assert run["source_urls"] == ["https://example.com"]
     assert run["source_count"] == 1
+    assert run["research_images"][0]["source_url"] == "https://example.com/profile"
     assert run["costs"] == 0.12
     assert run["hlt_research_scope"]["active_sources"] == ["codebase"]
     assert reopened.get_run_by_resource_topic("durable research")["research_id"] == "run-1"

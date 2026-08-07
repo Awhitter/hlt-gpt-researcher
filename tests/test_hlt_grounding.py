@@ -1,4 +1,5 @@
 from backend.server.hlt_grounding import (
+    merge_report_delivery_receipt,
     extract_source_refs,
     prepare_report_delivery,
     prepare_report_record,
@@ -209,3 +210,105 @@ def test_private_repo_validation_prefers_the_authenticated_codegraph(monkeypatch
     assert captured["authorization"] == "Bearer codegraph-token"
     assert b'"path": "app/api/profile/route.ts"' in captured["body"]
     assert captured["timeout"] == 6
+
+
+def test_frontend_upsert_preserves_the_server_source_receipt():
+    existing = {
+        "id": "run-1",
+        "sourceRefs": [
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": SHA,
+                "path": "app/api/profile/route.ts",
+                "exists": True,
+            }
+        ],
+        "verificationStatus": "verified",
+        "verificationReason": "Every attached repository source was validated at its exact commit.",
+        "unsupportedClaims": [],
+        "deliveryBlocked": False,
+        "hlt_research_scope": {"active_sources": ["codebase"]},
+    }
+    frontend_upsert = {
+        "id": "run-1",
+        "answer": "A richer browser copy.",
+        "orderedData": [{"type": "logs", "output": "Research completed"}],
+    }
+
+    merged = merge_report_delivery_receipt(existing, frontend_upsert)
+
+    assert merged["sourceRefs"] == existing["sourceRefs"]
+    assert merged["verificationStatus"] == "verified"
+    assert merged["deliveryBlocked"] is False
+    assert merged["hlt_research_scope"] == {"active_sources": ["codebase"]}
+
+
+def test_report_complete_event_restores_receipt_when_server_record_is_missing():
+    frontend_upsert = {
+        "id": "run-2",
+        "orderedData": [
+            {
+                "type": "report_complete",
+                "metadata": {
+                    "sourceRefs": [
+                        {
+                            "repo": "Awhitter/nursing-mastery",
+                            "commitSha": SHA,
+                            "path": "app/api/profile/route.ts",
+                            "exists": True,
+                        }
+                    ],
+                    "verificationStatus": "verified",
+                    "verificationReason": "Validated.",
+                    "unsupportedClaims": [],
+                    "deliveryBlocked": False,
+                    "hlt_research_scope": {"active_sources": ["codebase"]},
+                },
+            }
+        ],
+    }
+
+    merged = merge_report_delivery_receipt(None, frontend_upsert)
+    report = prepare_report_record(merged)
+
+    assert report["verificationStatus"] == "verified"
+    assert report["deliveryBlocked"] is False
+    assert report["sourceRefs"][0]["path"] == "app/api/profile/route.ts"
+
+
+def test_report_complete_event_repairs_a_legacy_overwritten_receipt():
+    broken_existing = {
+        "id": "run-3",
+        "sourceRefs": [],
+        "verificationStatus": "unverified",
+        "verificationReason": "No validated exact repository source is attached.",
+        "unsupportedClaims": [],
+    }
+    frontend_upsert = {
+        "id": "run-3",
+        "orderedData": [
+            {
+                "type": "report_complete",
+                "metadata": {
+                    "sourceRefs": [
+                        {
+                            "repo": "Awhitter/nursing-mastery",
+                            "commitSha": SHA,
+                            "path": "app/api/profile/route.ts",
+                            "exists": True,
+                        }
+                    ],
+                    "verificationStatus": "verified",
+                    "unsupportedClaims": [],
+                    "deliveryBlocked": False,
+                    "hlt_research_scope": {"active_sources": ["codebase"]},
+                },
+            }
+        ],
+    }
+
+    merged = merge_report_delivery_receipt(broken_existing, frontend_upsert)
+
+    assert merged["sourceRefs"][0]["path"] == "app/api/profile/route.ts"
+    assert merged["verificationStatus"] == "verified"
+    assert merged["hlt_research_scope"] == {"active_sources": ["codebase"]}

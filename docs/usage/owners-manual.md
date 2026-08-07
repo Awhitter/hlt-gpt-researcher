@@ -1,6 +1,6 @@
 # GPT Researcher Owner's Manual
 
-Last updated: 2026-07-31
+Last updated: 2026-08-07
 
 > New here? Read [`START-HERE.md`](./START-HERE.md) first (one screen), then
 > come back for agent recipes, Sidecar wiring, and smoke details.
@@ -20,7 +20,7 @@ outside the fork.
 
 | Surface | URL | Best for | Auth |
 | --- | --- | --- | --- |
-| Browser UI | `https://gpt-researcher-ui.vercel.app` | Human research sessions and visual report flow | Public page load; research calls use server token flow |
+| Browser UI | `https://gpt-researcher-ui.vercel.app` | Human research sessions and visual report flow | Team login; research calls use server token flow |
 | API | `https://gpt-researcher-api-production.up.railway.app` | Scripts, Sidecar server routes, one-off REST clients | `X-API-Key: $API_AUTH_KEY` |
 | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` | Agents, Claude Code, Claude Desktop, Cursor, Katailyst-discovered tool use | `Authorization: Bearer $GPTR_MCP_TOKEN` |
 | Katailyst2 Registry | `https://katailyst2.vercel.app/mcp` | Discovery, routing, tool metadata, capability graph | Katailyst2 `kata_…` bearer token |
@@ -70,6 +70,7 @@ That gives agents these tools:
 | `write_report` | You already ran `deep_research` and want a polished report from that research state | Report text |
 | `get_research_sources` | You want the source list for an existing `research_id` | Sources and URLs |
 | `get_research_context` | You want the raw research context for an existing `research_id` | Context packet |
+| `get_research_images` | You want source-attributed images or opted-in generated illustrations from an existing run | Image URLs, source pages, alt text |
 | `research://{topic}` | You want MCP resource-style access to cached or newly generated context | Research context |
 
 Both `quick_search` and `deep_research` default to `scope="auto"`: the server
@@ -82,6 +83,13 @@ scope activates an MCP preset it escalates to a short scoped research pass
 wrong, so it pays for the tool calls. Expect seconds, not milliseconds, on
 estate questions; call it with `scope="none"` when you need a guaranteed cheap
 web lookup.
+
+Depth controls breadth as well as effort: Fast, Balanced, and Deep use up to 5,
+8, and 12 results per query. MCP callers may set `max_sources_per_query` from
+3–20. Source-page images are collected automatically and retain their source
+page; generated illustrations are opt-in with
+`include_generated_images=true` and never synthesize a named real person's
+likeness.
 
 The MCP service keeps a bounded hot cache for live `GPTResearcher` objects and a
 SQLite metadata store for completed research context, source metadata, status,
@@ -226,8 +234,8 @@ be used for:
 - Competitor newsletter scan.
 - Segment-specific objection and motivation research.
 
-Marketo and internal performance data stay authoritative. GPT Researcher adds
-outside context.
+Marketo is not a built-in live source today. That is current runtime status,
+not a permanent policy: when a healthy connector is mounted, runs may use it.
 
 ### Education
 
@@ -347,6 +355,12 @@ rubrics, or a human review queue.
   restart are marked `failed` with `interrupted_by_restart`; they are not
   resumed automatically.
 - Use REST for deterministic server calls, MCP for agents, and UI for humans.
+- Code-only runs do not fall back to public web search. They discover real
+  paths, read the returned source, and validate immutable file links; if that
+  evidence is insufficient, report delivery stops with a plain-language notice.
+- The research library preserves that source-validation receipt when the
+  browser adds its richer progress history, so reopening a report does not
+  silently downgrade or lose its verification state.
 - Keep HLT/Katailyst composition in the caller or registry, not in the public
   GPT Researcher browser UI.
 - Do not expose `API_AUTH_KEY`, `MCP_AUTH_TOKEN`, `GPTR_MCP_TOKEN`, or

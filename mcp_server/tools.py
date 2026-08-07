@@ -40,6 +40,15 @@ _VALID_SCOPE_KEYS = (
     "recruiting",
 )
 _VALID_DEPTHS = ("fast", "balanced", "deep")
+_SOURCE_LIMITS_BY_DEPTH = {"fast": 5, "balanced": 8, "deep": 12}
+
+
+def _source_limit_for_depth(depth: str, requested: int | None = None) -> int:
+    """Return a useful, bounded per-query source budget."""
+
+    if requested is not None:
+        return max(3, min(int(requested), 20))
+    return _SOURCE_LIMITS_BY_DEPTH.get(depth, _SOURCE_LIMITS_BY_DEPTH["balanced"])
 
 
 def _build_research_scope(scope: str | list[str] | None, depth: str) -> dict[str, Any]:
@@ -119,6 +128,7 @@ class StoredResearch:
     context: Any
     sources: list[dict[str, Any]]
     source_urls: list[str]
+    research_images: list[Any] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_accessed_at: float = field(default_factory=time.time)
 
@@ -176,6 +186,32 @@ def _format_sources_for_response(sources: list[dict[str, Any]]) -> list[dict[str
                 "title": source.get("title", "Unknown"),
                 "url": source.get("url", ""),
                 "content_length": len(source.get("content", "") or ""),
+            }
+        )
+    return formatted
+
+
+def _format_images_for_response(images: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for image in images:
+        if isinstance(image, str):
+            formatted.append(
+                {
+                    "url": image,
+                    "source_url": "",
+                    "alt_text": "",
+                    "kind": "source",
+                }
+            )
+            continue
+        if not isinstance(image, dict) or not image.get("url"):
+            continue
+        formatted.append(
+            {
+                "url": str(image["url"]),
+                "source_url": str(image.get("source_url", "")),
+                "alt_text": str(image.get("alt_text", image.get("title", ""))),
+                "kind": "source" if image.get("source_url") else "generated",
             }
         )
     return formatted
@@ -286,6 +322,7 @@ def _stored_research_from_run(run: dict[str, Any]) -> StoredResearch:
     )
     researcher.context = run.get("context") or []
     researcher.research_sources = run.get("sources") or []
+    researcher.research_images = run.get("research_images") or []
     researcher.visited_urls = set(run.get("source_urls") or [])
     return StoredResearch(
         researcher=researcher,
@@ -296,6 +333,7 @@ def _stored_research_from_run(run: dict[str, Any]) -> StoredResearch:
         context=run.get("context") or [],
         sources=run.get("sources") or [],
         source_urls=run.get("source_urls") or [],
+        research_images=run.get("research_images") or [],
     )
 
 
@@ -335,6 +373,8 @@ async def _conduct_research(
     tone: str = "Objective",
     scope: str | list[str] | None = "auto",
     depth: str = "balanced",
+    max_sources_per_query: int | None = None,
+    include_generated_images: bool = False,
 ) -> tuple[StoredResearch, dict[str, Any] | None]:
     research_scope = _build_research_scope(scope, depth)
     task, mcp_configs, mcp_strategy, scraper_override, scope_metadata = await asyncio.to_thread(
@@ -348,6 +388,14 @@ async def _conduct_research(
         mcp_configs=mcp_configs or None,
         mcp_strategy=mcp_strategy,
     )
+    researcher.cfg.max_search_results_per_query = _source_limit_for_depth(
+        depth, max_sources_per_query
+    )
+    if include_generated_images:
+        from gpt_researcher.skills.image_generator import ImageGenerator
+
+        researcher.cfg.image_generation_enabled = True
+        researcher.image_generator = ImageGenerator(researcher)
     if scraper_override:
         researcher.cfg.scraper = scraper_override
     await researcher.conduct_research()
@@ -361,6 +409,7 @@ async def _conduct_research(
             context=_jsonable(researcher.get_research_context()),
             sources=_jsonable(researcher.get_research_sources()),
             source_urls=list(researcher.get_source_urls()),
+            research_images=_jsonable(researcher.get_all_research_images()),
         ),
         scope_metadata,
     )
@@ -397,6 +446,7 @@ async def research_resource_tool(topic: str) -> str:
             context=item.context,
             sources=item.sources,
             source_urls=item.source_urls,
+            research_images=item.research_images,
             costs=item.researcher.get_costs(),
         )
         return _format_context_with_sources(topic, item.context, item.sources)
@@ -412,6 +462,8 @@ async def deep_research_tool(
     tone: str = "Objective",
     scope: str | list[str] | None = "auto",
     depth: str = "balanced",
+    max_sources_per_query: int | None = None,
+    include_generated_images: bool = False,
 ) -> dict[str, Any]:
     research_id = str(uuid.uuid4())
     store = get_research_run_store()
@@ -433,6 +485,8 @@ async def deep_research_tool(
             tone=tone,
             scope=scope,
             depth=depth,
+            max_sources_per_query=max_sources_per_query,
+            include_generated_images=include_generated_images,
         )
         await _store_research(research_id, item, resource_topic=query)
         store.complete_run(
@@ -440,6 +494,7 @@ async def deep_research_tool(
             context=item.context,
             sources=item.sources,
             source_urls=item.source_urls,
+            research_images=item.research_images,
             costs=item.researcher.get_costs(),
             hlt_research_scope=scope_metadata,
         )
@@ -451,6 +506,9 @@ async def deep_research_tool(
                 "context": item.context,
                 "sources": _format_sources_for_response(item.sources),
                 "source_urls": item.source_urls,
+                "max_sources_per_query": item.researcher.cfg.max_search_results_per_query,
+                "image_count": len(item.research_images),
+                "images": _format_images_for_response(item.research_images),
                 "hlt_scope": _scope_summary(scope_metadata),
             }
         )
@@ -474,11 +532,15 @@ async def write_report_tool(research_id: str, custom_prompt: str | None = None) 
         item.context = _jsonable(item.researcher.get_research_context())
         item.sources = _jsonable(item.researcher.get_research_sources()) or item.sources
         item.source_urls = list(item.researcher.get_source_urls()) or item.source_urls
+        item.research_images = (
+            _jsonable(item.researcher.get_all_research_images()) or item.research_images
+        )
         get_research_run_store().complete_run(
             research_id,
             context=item.context,
             sources=item.sources,
             source_urls=item.source_urls,
+            research_images=item.research_images,
             costs=item.researcher.get_costs(),
             report_path=md_path,
             md_path=md_path,
@@ -488,6 +550,8 @@ async def write_report_tool(research_id: str, custom_prompt: str | None = None) 
                 "research_id": research_id,
                 "report": report,
                 "source_count": len(item.sources),
+                "image_count": len(item.research_images),
+                "images": _format_images_for_response(item.research_images),
                 "costs": item.researcher.get_costs(),
                 "report_path": md_path,
                 "md_path": md_path,
@@ -523,6 +587,18 @@ async def get_research_context_tool(research_id: str) -> dict[str, Any]:
     return _success({"research_id": research_id, "context": item.context})
 
 
+async def get_research_images_tool(research_id: str) -> dict[str, Any]:
+    item, persisted = await _get_research_or_persisted(research_id)
+    if item is None:
+        if persisted:
+            return _error(f"Research ID is not completed; current status is {persisted.get('status')}.")
+        return _error("Research ID not found. Please conduct research first.")
+    images = _format_images_for_response(item.research_images)
+    return _success(
+        {"research_id": research_id, "image_count": len(images), "images": images}
+    )
+
+
 def register_tools(mcp: FastMCP) -> None:
     """Register GPT Researcher MCP tools, resource, and prompt."""
 
@@ -543,28 +619,32 @@ def register_tools(mcp: FastMCP) -> None:
         tone: str = "Objective",
         scope: str | list[str] | None = "auto",
         depth: str = "balanced",
+        max_sources_per_query: int | None = None,
+        include_generated_images: bool = False,
     ) -> dict[str, Any]:
         """Conduct deep, cited research and return a research_id for follow-up calls.
 
-        With scope="auto" (the default) this routes to internal HLT context when
-        the query is about it, and stays pure public-web research otherwise. It
-        can reach: the estate code repos — nursing-mastery (nurse-facing
-        frontend), ScraperVault (nurse-recruiting backend), katailyst2 (AI
-        primitives + registry), MMM2 (multimedia), EBB (metrics) — plus the
-        Katailyst2 registry (playbooks, skills, knowledge bases), internal
-        business metrics, the Cloudinary media library, and the nurse
-        audience/recruiting corpora. Prefer this tool over quick_search for any
-        question about those systems, our code, our content, or our numbers.
+        scope="auto" routes to connected internal sources when needed and stays
+        public-web-only otherwise. Pin a scope list or pass "none" to override.
 
         scope: "auto" infers relevant internal scopes from the query; pass a
         list such as ["codebase", "cms"] to pin scopes (valid keys: codebase,
         cms, qbank, metrics, firecrawl, media, audience, recruiting); pass
         "none" to force pure web research.
         depth: "fast" | "balanced" | "deep".
+        max_sources_per_query: optional 3-20 override; defaults to 5/8/12 by depth.
+        include_generated_images: opt in to contextual report illustrations.
         """
 
         return await deep_research_tool(
-            query, report_type, report_source, tone, scope=scope, depth=depth
+            query,
+            report_type,
+            report_source,
+            tone,
+            scope=scope,
+            depth=depth,
+            max_sources_per_query=max_sources_per_query,
+            include_generated_images=include_generated_images,
         )
 
     @mcp.tool()
@@ -574,18 +654,17 @@ def register_tools(mcp: FastMCP) -> None:
         domains: list[str] | None = None,
         scope: str | list[str] | None = "auto",
         depth: str = "fast",
+        max_sources_per_query: int | None = None,
     ) -> dict[str, Any]:
         """Fast lookup with the same auto-scope router as deep_research.
 
-        scope="auto" (default) infers HLT estate context when the query needs
-        it — nursing-mastery, ScraperVault, katailyst2, MMM2, EBB, the
-        Katailyst2 registry, metrics, media, audience/recruiting — and stays
-        pure public-web search otherwise. Prefer deep_research for a full
-        cited report; use this for a quick answer.
+        scope="auto" uses connected internal sources when needed and stays
+        public-web-only otherwise. Prefer deep_research for a full cited report.
 
         scope: "auto" | list of keys (codebase, cms, qbank, metrics,
         firecrawl, media, audience, recruiting) | "none" for forced web-only.
         depth: "fast" | "balanced" | "deep" (default "fast").
+        max_sources_per_query: optional 3-20 override; defaults to 5/8/12 by depth.
         """
 
         search_id = str(uuid.uuid4())
@@ -608,6 +687,7 @@ def register_tools(mcp: FastMCP) -> None:
                     query,
                     scope=scope,
                     depth=depth if depth in _VALID_DEPTHS else "fast",
+                    max_sources_per_query=max_sources_per_query,
                 )
                 return _success(
                     {
@@ -616,6 +696,9 @@ def register_tools(mcp: FastMCP) -> None:
                         "result_count": len(item.sources),
                         "search_results": _format_sources_for_response(item.sources),
                         "context": item.context,
+                        "max_sources_per_query": item.researcher.cfg.max_search_results_per_query,
+                        "image_count": len(item.research_images),
+                        "images": _format_images_for_response(item.research_images),
                         "hlt_scope": _scope_summary(scope_metadata),
                         "mode": "scoped_research",
                     }
@@ -627,6 +710,9 @@ def register_tools(mcp: FastMCP) -> None:
                 report_type="research_report",
                 mcp_configs=None,
                 mcp_strategy=mcp_strategy,
+            )
+            researcher.cfg.max_search_results_per_query = _source_limit_for_depth(
+                depth, max_sources_per_query
             )
             if scraper_override:
                 researcher.cfg.scraper = scraper_override
@@ -641,6 +727,7 @@ def register_tools(mcp: FastMCP) -> None:
                     "query": query,
                     "result_count": _result_count(results),
                     "search_results": _jsonable(results),
+                    "max_sources_per_query": researcher.cfg.max_search_results_per_query,
                     "hlt_scope": _scope_summary(scope_metadata),
                     "mode": "web",
                 }
@@ -667,6 +754,12 @@ def register_tools(mcp: FastMCP) -> None:
 
         return await get_research_context_tool(research_id)
 
+    @mcp.tool()
+    async def get_research_images(research_id: str) -> dict[str, Any]:
+        """Return attributed source images and generated visuals for a research run."""
+
+        return await get_research_images_tool(research_id)
+
     @mcp.prompt()
     def research_query(topic: str, goal: str, report_format: str = "research_report") -> str:
         """Create an MCP prompt explaining how to use GPT Researcher tools."""
@@ -681,5 +774,5 @@ def register_tools(mcp: FastMCP) -> None:
 
     logger.info(
         "Registered GPT Researcher MCP tools: deep_research, quick_search, "
-        "write_report, get_research_sources, get_research_context"
+        "write_report, get_research_sources, get_research_context, get_research_images"
     )

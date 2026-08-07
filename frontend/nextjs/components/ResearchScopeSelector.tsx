@@ -56,7 +56,7 @@ const scopeOptions: Array<{
     key: "codebase",
     label: "Code",
     title:
-      "Search the HLT estate repos: nursing-mastery (frontend), ScraperVault (recruiting backend), katailyst2 (AI primitives), MMM2 (multimedia).",
+      "Search current source across Mastery Research, HLT Account API, Nursing Mastery, ScraperVault, Katailyst2, MMM2, and EBB. Authority depends on the field or workflow.",
   },
   {
     key: "cms",

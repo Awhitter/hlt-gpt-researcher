@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { Data, ChatBoxSettings, QuestionData } from '../types/data';
 import { getHost } from '../helpers/getHost';
+import { sourceLimitForDepth } from '../lib/hltResearchScope';
 
 export const useWebSocket = (
   setOrderedData: React.Dispatch<React.SetStateAction<Data[]>>,
@@ -106,7 +107,8 @@ export const useWebSocket = (
             mcp_enabled: mcp_enabled || false,
             mcp_strategy: mcp_strategy || "fast",
             mcp_configs: mcp_configs || [],
-            hlt_research_scope: hlt_research_scope || null
+            hlt_research_scope: hlt_research_scope || null,
+            max_search_results: sourceLimitForDepth(hlt_research_scope?.depth)
           };
           
           // Make sure we have a properly formatted command with a space after start
