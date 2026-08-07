@@ -155,6 +155,20 @@ def compact_report_context(
     selected = []
     seen = set()
     used_chars = 0
+    opened_source_block_limit = _MAX_CODE_REPORT_CONTEXT_BLOCK_CHARS
+    if opened_sources_only and candidate_blocks:
+        # Give every opened file a fair share of the writer context. Multi-part
+        # teammate questions can open more than ten files; a fixed 5k slice
+        # silently dropped later workflow stages (for example Marketo evidence)
+        # even though retrieval and source verification had succeeded.
+        opened_source_block_limit = min(
+            _MAX_CODE_REPORT_CONTEXT_BLOCK_CHARS,
+            max(
+                1,
+                (max_chars - (7 * (len(candidate_blocks) - 1)))
+                // len(candidate_blocks),
+            ),
+        )
     for block in candidate_blocks:
         digest = hashlib.sha256(block.encode("utf-8", errors="ignore")).hexdigest()
         if digest in seen:
@@ -167,7 +181,7 @@ def compact_report_context(
         # already focused line windows, so prefer broader source coverage over
         # retaining an unusually large window from one file.
         block_limit = (
-            _MAX_CODE_REPORT_CONTEXT_BLOCK_CHARS
+            opened_source_block_limit
             if opened_sources_only
             else _MAX_REPORT_CONTEXT_BLOCK_CHARS
         )
@@ -192,6 +206,7 @@ Use only the opened repository-file evidence in Context below. Follow these rule
 - Lead with the answer. Do not include research methodology, a table of contents, or a generic introduction.
 - For a normal direct question, aim for 250-700 words. Go longer only when the user explicitly asks for a deep or comprehensive report.
 - Answer every numbered question separately. If one answer is unavailable, say so for that question without weakening answers that are supported.
+- Before saying evidence was not opened or a detail was not verified, scan every opened-file block for that workflow. If code proves an implemented path but not live runtime use, explain that narrower boundary instead of discarding the implementation evidence.
 - Put the exact immutable source link from Context in the same bullet or paragraph as every substantive implementation claim.
 - Treat ownership, authority, capture timing, storage, sending, and universal negative claims as high-proof claims. Use those words only when an opened file explicitly shows the relevant write, persistence contract, outbound call, or system-of-record declaration.
 - Distinguish what a system owns or writes from what another repository merely reads, validates, types, projects, or displays. A client interface is not proof of data ownership. A question blueprint, schema, model validation, or database field is not by itself proof of data ownership or of when and where a value is captured.
@@ -219,6 +234,7 @@ Draft to audit:
 
 Use only the opened repository-file evidence in Context. Enforce every rule:
 - Keep each explicit user question and answer it directly. Honest "not verified in the opened sources" answers are useful.
+- Preserve relevant opened evidence from later Context blocks. Never say evidence was not opened when a matching implementation file is present; distinguish implemented code from live-runtime readback instead.
 - Keep exact immutable source links beside the claims they actually support.
 - A type or interface proves a consumer-visible shape only. Never infer capture, persistence, ownership, orchestration, or system-of-record status from its declaration or repository location.
 - A UI page, dashboard, import, or component proves what that surface renders or calls. Never infer downstream storage, sending, ownership, or live runtime state from it alone.
