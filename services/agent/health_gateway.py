@@ -27,6 +27,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 
+import cron_seed
 import grounding
 import render_config
 
@@ -273,6 +274,30 @@ def boot() -> None:
         )
     if GATEWAY_ENABLED and not BOOT.get("slack_channel_allowlist"):
         logger.warning("SLACK_ALLOWED_CHANNELS is unset — the agent will answer in any channel")
+
+    # Seed the recurring briefs before the gateway starts, so the scheduler
+    # reads a complete record on its first pass rather than one boot later.
+    if GATEWAY_ENABLED:
+        channel = BOOT.get("home_channel_id") or ""
+        if channel:
+            # `SLACK_HOME_CHANNEL` is written operator-friendly as
+            # "C0BN349TRU7|#cleo", and this service parses that. Hermes' cron
+            # scheduler does NOT: `_get_home_target_chat_id` returns the raw env
+            # value, so any job delivering to bare `slack` (or `all`) would post
+            # to a chat id of "C0BN349TRU7|#cleo" and fail every week. Normalise
+            # it here — the gateway child inherits this environment.
+            os.environ["SLACK_HOME_CHANNEL"] = channel
+            BOOT["cron_briefs"] = cron_seed.seed(f"slack:{channel}")
+            logger.info("config cron_briefs: %s", BOOT["cron_briefs"])
+        else:
+            # Without a home channel a brief has nowhere to land, and a job
+            # created with a bad deliver target fails silently every week.
+            BOOT["cron_briefs"] = {"created": [], "existing": [], "failed": []}
+            logger.warning(
+                "SLACK_HOME_CHANNEL is unset — the recurring briefs were NOT "
+                "created, because there is no channel to deliver them to"
+            )
+
     supervisor.start()
 
 

@@ -365,6 +365,11 @@ def build_config(
         },
         # Project-context discovery reads AGENTS.md from here.
         "terminal": {"cwd": grounding_dir},
+        # A scheduled run has nobody at the keyboard to approve anything, so it
+        # must not be able to ask. Upstream already defaults to deny; pinning it
+        # means a future default flip cannot quietly hand an unattended job the
+        # ability to approve its own dangerous call.
+        "approvals": {"cron_mode": "deny"},
         # Upstream default is `edge`, and having ELEVENLABS_API_KEY set is
         # deliberately NOT enough — "Inference credentials do not imply consent
         # to paid speech generation" (tools/tts_tool.py). So the tool gate
@@ -479,6 +484,9 @@ def render(
             "image_generate": bool(_clean(env, "FAL_KEY")),
             "text_to_speech": bool(_clean(env, "ELEVENLABS_API_KEY")),
         },
+        # The cron briefs deliver here; reported so /health shows an unset
+        # home channel rather than leaving the briefs quietly unseeded.
+        "home_channel_id": (build_home_channel(env) or {}).get("chat_id", ""),
         "mcp_mounted": sorted(servers),
         "mcp_unconfigured": [n for n, _, _ in MCP_TARGETS if n not in servers],
         "mcp_without_token": sorted(

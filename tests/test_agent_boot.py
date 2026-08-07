@@ -405,6 +405,10 @@ def test_company_facts_ship_in_the_image_not_in_memory(tmp_path):
 # --- the gateway child's own logging ----------------------------------------
 
 
+def _cron_seed():
+    return _load("cron_seed", SERVICE_DIR / "cron_seed.py")
+
+
 def _load_health_gateway():
     """Load health_gateway.py without putting the service dir on sys.path.
 
@@ -415,9 +419,13 @@ def _load_health_gateway():
     """
     import sys
 
-    saved = {name: sys.modules.get(name) for name in ("grounding", "render_config")}
+    saved = {
+        name: sys.modules.get(name)
+        for name in ("grounding", "render_config", "cron_seed")
+    }
     sys.modules["grounding"] = grounding
     sys.modules["render_config"] = render_config
+    sys.modules["cron_seed"] = _cron_seed()
     try:
         return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
     finally:
@@ -491,9 +499,13 @@ def _load_health_gateway():
     """
     import sys
 
-    saved = {name: sys.modules.get(name) for name in ("grounding", "render_config")}
+    saved = {
+        name: sys.modules.get(name)
+        for name in ("grounding", "render_config", "cron_seed")
+    }
     sys.modules["grounding"] = grounding
     sys.modules["render_config"] = render_config
+    sys.modules["cron_seed"] = _cron_seed()
     try:
         return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
     finally:
@@ -803,3 +815,121 @@ def test_an_orientation_asks_for_a_fortnight():
     soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
     assert "fortnight at least" in soul
     assert "complete: false" in soul, "she must report the window she truly covered"
+
+
+# --- recurring briefs -------------------------------------------------------
+
+
+def test_a_brief_delivers_to_the_home_channel_not_to_origin(tmp_path, monkeypatch):
+    """`--deliver origin` would post a scheduled brief into whatever session ran
+    last. The home channel is the only target that means the same thing every
+    week."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", fake_run)
+    result = cron_seed.seed("slack:C0BN349TRU7")
+
+    assert result["created"] == ["nm-monday-brief", "nm-board-health"]
+    assert result["failed"] == []
+    for cmd in calls:
+        assert cmd[:3] == ["hermes", "cron", "create"]
+        assert "--deliver" in cmd and cmd[cmd.index("--deliver") + 1] == "slack:C0BN349TRU7"
+        # Every brief loads its skill, so the procedure has one home.
+        assert "--skill" in cmd
+
+
+def test_a_second_boot_does_not_duplicate_a_brief(tmp_path, monkeypatch):
+    """Render redeploys on every merge. A brief seeded per boot would reach the
+    team a dozen times a week."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    jobs = tmp_path / "cron"
+    jobs.mkdir()
+    (jobs / "jobs.json").write_text(
+        '{"jobs": [{"name": "nm-monday-brief"}, {"name": "nm-board-health"}]}',
+        encoding="utf-8",
+    )
+
+    def explode(cmd, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError(f"seeded a duplicate: {cmd}")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", explode)
+    result = cron_seed.seed("slack:C0BN349TRU7")
+
+    assert result["created"] == []
+    assert sorted(result["existing"]) == ["nm-board-health", "nm-monday-brief"]
+
+
+def test_an_unreadable_job_record_seeds_nothing(tmp_path, monkeypatch):
+    """A corrupt record is not proof the jobs are absent. Seeding on a failed
+    read is how you get the same brief delivered twice."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "cron").mkdir()
+    (tmp_path / "cron" / "jobs.json").write_text("{not json", encoding="utf-8")
+
+    def explode(cmd, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("seeded despite an unreadable record")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", explode)
+    result = cron_seed.seed("slack:C0BN349TRU7")
+
+    assert result["created"] == []
+    assert result["failed"] == ["read-jobs-file"]
+
+
+def test_no_home_channel_means_no_brief(tmp_path, monkeypatch):
+    """A job created with an empty deliver target fails silently every week."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def explode(cmd, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("created a brief with nowhere to deliver it")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", explode)
+    assert cron_seed.seed("")["created"] == []
+
+
+def test_a_scheduled_run_cannot_approve_its_own_dangerous_call():
+    """Nobody is at the keyboard at 13:00 on a Monday. Upstream defaults
+    approvals.cron_mode to deny; pinning it means a future default flip cannot
+    quietly hand an unattended job that power."""
+    config = render_config.build_config(FULL_ENV)
+    assert config["approvals"]["cron_mode"] == "deny"
+
+
+def test_the_home_channel_id_is_reported_for_the_briefs(tmp_path):
+    """/health has to show an unset home channel, or the briefs are simply
+    absent and nothing says so."""
+    env = {**FULL_ENV, "SLACK_HOME_CHANNEL": "C0BN349TRU7|#cleo"}
+    assert render_config.render(env, home=tmp_path)["home_channel_id"] == "C0BN349TRU7"
+    # Unset must read as empty, not crash and not look configured.
+    assert render_config.render(FULL_ENV, home=tmp_path)["home_channel_id"] == ""
+
+
+def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_path):
+    """We write SLACK_HOME_CHANNEL as "C0BN349TRU7|#cleo" and parse it here.
+    Hermes' scheduler does not parse it — `_get_home_target_chat_id` returns the
+    raw env value — so a job delivering to bare `slack` would post to a chat id
+    of "C0BN349TRU7|#cleo". Boot must hand the child a bare id.
+    """
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C0BN349TRU7|#cleo")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(health_gateway.supervisor, "start", lambda: None)
+    monkeypatch.setattr(health_gateway, "openrouter_key_kind", lambda key: "inference")
+    monkeypatch.setattr(health_gateway.cron_seed, "seed", lambda deliver: {"deliver": deliver})
+
+    health_gateway.boot()
+
+    import os as _os
+
+    assert _os.environ["SLACK_HOME_CHANNEL"] == "C0BN349TRU7"
+    assert health_gateway.BOOT["cron_briefs"]["deliver"] == "slack:C0BN349TRU7"
