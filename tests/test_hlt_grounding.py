@@ -221,6 +221,55 @@ def test_code_delivery_allows_scoped_marketo_uncertainty():
     assert report["verificationStatus"] == "verified"
 
 
+def test_code_delivery_blocks_unqualified_live_marketo_positive_from_code():
+    answer = "Emails are sent to Marketo for lead upsert."
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/katailyst2",
+                "commitSha": SHA,
+                "path": "lib/integrations/growth-signal-sync.ts",
+                "url": (
+                    "https://github.com/Awhitter/katailyst2/blob/"
+                    f"{SHA}/lib/integrations/growth-signal-sync.ts#L32-L44"
+                ),
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is True
+    assert "live Marketo" in report["unsupportedClaims"][0]
+
+
+def test_code_delivery_allows_implemented_marketo_path_with_runtime_boundary():
+    answer = (
+        "The implemented K2 sync can upsert a Marketo lead by email. "
+        "Whether that path is configured or executing in the live runtime was not verified."
+    )
+    report = prepare_report_delivery(
+        answer,
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/katailyst2",
+                "commitSha": SHA,
+                "path": "lib/integrations/growth-signal-sync.ts",
+                "url": (
+                    "https://github.com/Awhitter/katailyst2/blob/"
+                    f"{SHA}/lib/integrations/growth-signal-sync.ts#L32-L44"
+                ),
+                "exists": True,
+            }
+        ],
+    )
+
+    assert report["deliveryBlocked"] is False
+    assert report["verificationStatus"] == "verified"
+
+
 def test_code_delivery_blocks_speculative_change_location():
     answer = (
         "The dashboard imports the onboarding bridge, with question definitions "

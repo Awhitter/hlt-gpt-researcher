@@ -439,6 +439,13 @@ def test_hlt_nurse_questions_get_precise_source_discovery_seeds():
         "Do we store or send these emails in Marketo?" + marker
     ) == ["growth-signal-sync upsertMarketoLeadByEmail personKey marketoLeadId"]
     assert MCPResearchSkill._hlt_source_search_seeds(
+        "What attributes do we capture for a nurse, and which system owns each kind?"
+        + marker
+    ) == [
+        "Identity UserProfile UserConsent SvAccountDataSync user_preferences career preferences",
+        "DashboardResponse profile preferences consent getProfileBlueprint nurse",
+    ]
+    assert MCPResearchSkill._hlt_source_search_seeds(
         "How does job search work?"
     ) == []
 

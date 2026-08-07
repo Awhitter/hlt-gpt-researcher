@@ -214,6 +214,9 @@ def test_code_teammate_prompt_prevents_inference_and_authority_flattening():
     assert "Never add likely, standard, illustrative, or inferred fields" in prompt
     assert "scan every opened-file block" in prompt
     assert "implemented path but not live runtime use" in prompt
+    assert "Do not substitute a consumer data shape for an ownership answer" in prompt
+    assert "Capture timing and placement must come from opened mount or call sites" in prompt
+    assert "A present-tense code path is not live-runtime proof" in prompt
     assert "not verified" in prompt
     assert "What attributes do we capture?" in prompt
 
@@ -254,6 +257,8 @@ def test_code_teammate_audit_forbids_global_marketo_and_interface_leaps():
     assert "Delete speculative implementation-location phrases" in prompt
     assert "Never say evidence was not opened" in prompt
     assert "implemented code from live-runtime readback" in prompt
+    assert "Rewrite unqualified operational claims" in prompt
+    assert "Do not preserve illustrative capture occasions" in prompt
 
 
 @pytest.mark.asyncio
