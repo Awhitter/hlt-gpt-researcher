@@ -748,3 +748,23 @@ def test_capabilities_use_the_documented_provider_surface():
 
     # keyless deploys must still resolve a backend, or web search silently dies
     assert render_config.build_config(FULL_ENV)["tools"]["web_search"]["provider"] == "ddgs"
+
+
+def test_recent_change_is_ranked_by_consequence_not_visibility():
+    """She pulled recent_changes correctly and still buried the important part.
+
+    Asked to explain Nursing Mastery she led with a ranked job board, an
+    onboarding location change and a mobile pass — while `#556 feat(auth): sign
+    in gets its front door` (2026-07-30, inside her window) and "a backend step
+    can no longer sink her save" (which would have failed EVERY save on
+    /onboarding, /start/quick and /start/nclex) went unmentioned.
+
+    Visible does not mean consequential. Where truth lives moving outranks any
+    feature.
+    """
+    soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
+    assert "Rank what changed by consequence, not by visibility" in soul
+    assert "Where truth lives moved" in soul
+
+    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
+    assert "CONSEQUENCE, not visibility" in hint
