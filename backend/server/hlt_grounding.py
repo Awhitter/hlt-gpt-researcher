@@ -18,10 +18,9 @@ from typing import Any
 
 VERIFICATION_STATUSES = {"verified", "partial", "unverified"}
 
-_GITHUB_PERMALINK = re.compile(
+_GITHUB_PERMALINK_CANDIDATE = re.compile(
     r"https://github\.com/(?P<org>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/"
-    r"blob/(?P<sha>[0-9a-fA-F]{40})/(?P<path>[^\s)#?]+)"
-    r"(?:#L(?P<line>\d+)(?:-L(?P<end_line>\d+))?)?"
+    r"blob/(?P<sha>[0-9a-fA-F]{40})/[^\s<>]+"
 )
 _GITHUB_PERMALINK_EXACT = re.compile(
     r"^https://github\.com/(?P<org>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)/"
@@ -111,7 +110,17 @@ def extract_source_refs(answer: str) -> list[dict[str, Any]]:
     """Extract immutable GitHub evidence links from a report body."""
     refs: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, int | None]] = set()
-    for match in _GITHUB_PERMALINK.finditer(answer or ""):
+    for candidate_match in _GITHUB_PERMALINK_CANDIDATE.finditer(answer or ""):
+        candidate = candidate_match.group(0).rstrip(".,;:!?\"'")
+        # Markdown closes a link with `)`, but Next.js route-group paths also
+        # contain balanced parentheses (`app/(site)/jobs/(board)/page.tsx`).
+        # Remove only unmatched trailing closers so those real path segments
+        # survive extraction and repository validation.
+        while candidate.endswith(")") and candidate.count(")") > candidate.count("("):
+            candidate = candidate[:-1]
+        match = _GITHUB_PERMALINK_EXACT.fullmatch(candidate)
+        if not match:
+            continue
         line = int(match.group("line")) if match.group("line") else None
         key = (
             match.group("org"),
@@ -130,7 +139,7 @@ def extract_source_refs(answer: str) -> list[dict[str, Any]]:
                 "path": key[3],
                 "line": line,
                 "endLine": int(match.group("end_line")) if match.group("end_line") else None,
-                "url": match.group(0),
+                "url": candidate,
                 # A model-authored link is evidence-shaped, not proof. Only a
                 # repository/codegraph validator may set this to true.
                 "exists": None,
