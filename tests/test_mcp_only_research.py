@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage
@@ -201,3 +202,33 @@ def test_mcp_research_can_search_then_read_a_discovered_source(monkeypatch):
     assert read_result["href"].startswith(
         "https://github.com/Awhitter/nursing-mastery/blob/"
     )
+
+
+def test_nested_mcp_text_payload_preserves_exact_read_source_url():
+    url = (
+        "https://github.com/Awhitter/nursing-mastery/blob/"
+        + "a" * 40
+        + "/app/api/identity/route.ts#L148-L170"
+    )
+    nested = {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps({
+                    "repo": "Awhitter/nursing-mastery",
+                    "commitSha": "a" * 40,
+                    "path": "app/api/identity/route.ts",
+                    "url": url,
+                    "content": "consentStatus: accepted",
+                }),
+            }
+        ]
+    }
+
+    result = MCPResearchSkill(SimpleNamespace())._process_tool_result(
+        "read_source",
+        nested,
+    )
+
+    assert result[0]["href"] == url
+    assert result[0]["tool_name"] == "read_source"

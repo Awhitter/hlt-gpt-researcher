@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 from langchain_core.messages import HumanMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
+MAX_TOOL_RESULT_NESTING_DEPTH = 4
 
 
 class MCPResearchSkill:
@@ -76,6 +77,7 @@ class MCPResearchSkill:
 
             messages = [HumanMessage(content=research_prompt)]
             research_results = []
+            search_read_guidance_sent = False
 
             # Tool results have to go back to the model. A single tool-calling
             # turn cannot discover a path and then inspect that discovered path;
@@ -108,8 +110,10 @@ class MCPResearchSkill:
                     round_number,
                 )
                 messages.append(response)
+                round_tool_names = []
                 for i, tool_call in enumerate(tool_calls, 1):
                     tool_name = tool_call.get("name", "unknown")
+                    round_tool_names.append(tool_name)
                     tool_args = tool_call.get("args", {})
                     tool_call_id = tool_call.get("id") or f"mcp-{round_number}-{i}"
                     
@@ -174,6 +178,24 @@ class MCPResearchSkill:
                                 tool_call_id=tool_call_id,
                             )
                         )
+
+                normalized_round_tools = {
+                    name.split("__")[-1].split(".")[-1].split("/")[-1]
+                    for name in round_tool_names
+                }
+                if (
+                    "search_source" in normalized_round_tools
+                    and "read_source" not in normalized_round_tools
+                    and not search_read_guidance_sent
+                ):
+                    messages.append(HumanMessage(content=(
+                        "You now have real repository search results. Open the most "
+                        "relevant returned file paths with read_source before doing "
+                        "more broad searching. Use bounded line windows around the "
+                        "matches and cover distinct systems when the question spans "
+                        "more than one repository."
+                    )))
+                    search_read_guidance_sent = True
             
             logger.info(f"Research completed with {len(research_results)} total results")
             return research_results
@@ -182,7 +204,13 @@ class MCPResearchSkill:
             logger.error(f"Error in LLM research with tools: {e}")
             return []
 
-    def _process_tool_result(self, tool_name: str, result: Any) -> List[Dict[str, str]]:
+    def _process_tool_result(
+        self,
+        tool_name: str,
+        result: Any,
+        *,
+        depth: int = 0,
+    ) -> List[Dict[str, str]]:
         """
         Process tool result into search result format.
         
@@ -220,7 +248,13 @@ class MCPResearchSkill:
                 candidate = result.strip()
                 if candidate.startswith(("{", "[")):
                     try:
-                        return self._process_tool_result(tool_name, json.loads(candidate))
+                        parsed = json.loads(candidate)
+                        if depth < MAX_TOOL_RESULT_NESTING_DEPTH:
+                            return self._process_tool_result(
+                                tool_name,
+                                parsed,
+                                depth=depth + 1,
+                            )
                     except (json.JSONDecodeError, TypeError):
                         pass
 
@@ -270,6 +304,24 @@ class MCPResearchSkill:
                         body_text = content_field
                     else:
                         body_text = str(result)
+                    nested_candidate = body_text.strip()
+                    if nested_candidate.startswith(("{", "[")):
+                        try:
+                            nested = json.loads(nested_candidate)
+                            if (
+                                isinstance(nested, dict)
+                                and nested.get("type") == "text"
+                                and isinstance(nested.get("text"), str)
+                            ):
+                                nested = json.loads(nested["text"])
+                            if depth < MAX_TOOL_RESULT_NESTING_DEPTH:
+                                return self._process_tool_result(
+                                    tool_name,
+                                    nested,
+                                    depth=depth + 1,
+                                )
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
                     search_results.append(formatted_result(
                         title=f"Result from {tool_name}",
                         href=f"mcp://{tool_name}",

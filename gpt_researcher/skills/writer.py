@@ -4,7 +4,9 @@ This module provides the ReportGenerator class that handles report
 writing, including introductions, conclusions, and subtopic management.
 """
 
+import hashlib
 import json
+import os
 from typing import Dict, Optional
 
 from ..actions import (
@@ -14,6 +16,75 @@ from ..actions import (
     write_conclusion,
     write_report_introduction,
 )
+
+
+_DEFAULT_REPORT_CONTEXT_CHARS = 50_000
+_MAX_REPORT_CONTEXT_CHARS = 60_000
+_MAX_REPORT_CONTEXT_BLOCK_CHARS = 18_000
+
+
+def compact_report_context(
+    context,
+    research_sources=None,
+    *,
+    max_chars: int | None = None,
+) -> str:
+    """Bound final-writing context while preserving opened source evidence."""
+
+    configured_limit = os.getenv("REPORT_CONTEXT_MAX_CHARS")
+    if max_chars is None:
+        try:
+            max_chars = int(configured_limit) if configured_limit else _DEFAULT_REPORT_CONTEXT_CHARS
+        except ValueError:
+            max_chars = _DEFAULT_REPORT_CONTEXT_CHARS
+    max_chars = min(_MAX_REPORT_CONTEXT_CHARS, max(8_000, max_chars))
+    context_text = (
+        "\n\n".join(str(item) for item in context)
+        if isinstance(context, list)
+        else str(context or "")
+    )
+    if len(context_text) <= max_chars:
+        return context_text
+
+    priority_blocks = []
+    for source in research_sources or []:
+        if not isinstance(source, dict):
+            continue
+        tool_name = str(source.get("tool_name") or "")
+        normalized_tool = tool_name.split("__")[-1].split(".")[-1].split("/")[-1]
+        if normalized_tool not in {"read_source", "verify_source_ref"}:
+            continue
+        content = str(source.get("content") or source.get("body") or "").strip()
+        if not content:
+            continue
+        title = str(source.get("title") or normalized_tool)
+        url = str(source.get("url") or source.get("href") or "")
+        priority_blocks.append(f"Title: {title}\n{content}\nSource: {url}")
+
+    if isinstance(context, list):
+        general_blocks = [str(block).strip() for block in context if str(block).strip()]
+    else:
+        general_blocks = [
+            block.strip()
+            for block in context_text.split("\n\n---\n\n")
+            if block.strip()
+        ]
+    selected = []
+    seen = set()
+    used_chars = 0
+    for block in [*priority_blocks, *general_blocks]:
+        digest = hashlib.sha256(block.encode("utf-8", errors="ignore")).hexdigest()
+        if digest in seen:
+            continue
+        seen.add(digest)
+        bounded = block[:_MAX_REPORT_CONTEXT_BLOCK_CHARS]
+        separator_chars = 7 if selected else 0
+        remaining = max_chars - used_chars - separator_chars
+        if remaining <= 0:
+            break
+        selected.append(bounded[:remaining])
+        used_chars += len(selected[-1]) + separator_chars
+    return "\n\n---\n\n".join(selected)
 from ..utils.llm import construct_subtopics
 
 
@@ -75,6 +146,10 @@ class ReportGenerator:
             )
 
         context = ext_context or self.researcher.context
+        context = compact_report_context(
+            context,
+            self.researcher.get_research_sources(),
+        )
         
         # Log image availability
         if available_images and self.researcher.verbose:

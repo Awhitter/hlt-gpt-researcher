@@ -160,6 +160,41 @@ def test_search_source_results_do_not_count_as_opened_file_evidence():
     assert source_refs_from_research_sources(sources) == []
 
 
+def test_verify_only_result_does_not_duplicate_or_replace_opened_file_evidence():
+    verify_only = {
+        "source_type": "mcp",
+        "tool_name": "verify_source_ref",
+        "content": (
+            '{"repo":"Awhitter/nursing-mastery","commitSha":"'
+            + SHA
+            + '","path":"app/api/profile/route.ts","exists":true}'
+        ),
+    }
+
+    assert source_refs_from_research_sources([verify_only]) == []
+
+
+def test_empty_code_report_does_not_masquerade_as_verified_sources_only():
+    delivered = prepare_report_delivery(
+        "",
+        {"active_sources": ["codebase"]},
+        source_refs=[
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": SHA,
+                "path": "app/api/profile/route.ts",
+                "url": URL,
+                "exists": True,
+            }
+        ],
+    )
+
+    assert delivered["deliveryBlocked"] is True
+    assert delivered["verificationStatus"] == "unverified"
+    assert "report writing returned no answer" in delivered["verificationReason"]
+    assert "couldn't verify" in delivered["answer"].lower()
+
+
 def test_mutable_or_short_github_code_link_blocks_code_scoped_delivery():
     mutable = "https://github.com/Awhitter/ScraperVault/blob/7f71718/models/user.py"
     report = prepare_report_delivery(
