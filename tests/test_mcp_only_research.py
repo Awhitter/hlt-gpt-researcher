@@ -1,12 +1,14 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage
 
 from gpt_researcher.mcp.research import MCPResearchSkill
 from gpt_researcher.mcp.tool_selector import MCPToolSelector
 from gpt_researcher.prompts import PromptFamily
+from gpt_researcher.retrievers.mcp.retriever import MCPRetriever
 from gpt_researcher.skills.researcher import (
     ResearchConductor,
     extract_numbered_questions,
@@ -148,6 +150,59 @@ def test_mcp_only_planning_does_not_rewrite_numbered_questions(monkeypatch):
         "How does Nursing Mastery job search work?",
         "Do we send email to Marketo?",
     ]
+
+
+def test_mcp_numbered_context_does_not_repeat_the_umbrella_query(monkeypatch):
+    query = "1) Where is email captured? 2) Do we use Marketo?"
+    researcher = SimpleNamespace(
+        retrievers=[],
+        report_type="research_report",
+        mcp_only=True,
+        mcp_strategy="disabled",
+        verbose=False,
+        websocket=None,
+    )
+    conductor = ResearchConductor(researcher)
+    processed = []
+
+    async def fake_plan_research(_query, _query_domains=None):
+        return ["Where is email captured?", "Do we use Marketo?"]
+
+    async def fake_process(sub_query, _scraped_data, _query_domains):
+        processed.append(sub_query)
+        return sub_query
+
+    monkeypatch.setattr(conductor, "plan_research", fake_plan_research)
+    monkeypatch.setattr(conductor, "_process_sub_query", fake_process)
+
+    result = asyncio.run(conductor._get_context_by_web_search(query))
+
+    assert processed == ["Where is email captured?", "Do we use Marketo?"]
+    assert query not in result
+
+
+def test_mcp_tool_discovery_retries_one_empty_listing():
+    retriever = object.__new__(MCPRetriever)
+    retriever._all_tools_cache = None
+    retriever.streamer = SimpleNamespace(
+        stream_log=AsyncMock(),
+        stream_warning=AsyncMock(),
+    )
+    listings = [[], ["search_source", "read_source"]]
+
+    async def get_all_tools():
+        return listings.pop(0)
+
+    retriever.client_manager = SimpleNamespace(
+        get_all_tools=get_all_tools,
+        close_client=AsyncMock(),
+    )
+
+    result = asyncio.run(retriever._get_all_tools())
+
+    assert result == ["search_source", "read_source"]
+    assert retriever.client_manager.close_client.await_count == 1
+    assert retriever._all_tools_cache == result
 
 
 class FakeTool:

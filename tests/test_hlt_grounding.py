@@ -1,4 +1,5 @@
 from backend.server.hlt_grounding import (
+    _code_report_authority_hazards,
     extract_source_refs,
     merge_report_delivery_receipt,
     prepare_report_delivery,
@@ -221,7 +222,7 @@ def test_code_delivery_allows_scoped_marketo_uncertainty():
     assert report["verificationStatus"] == "verified"
 
 
-def test_code_delivery_blocks_unqualified_live_marketo_positive_from_code():
+def test_code_delivery_calibrates_unqualified_live_marketo_positive_from_code():
     answer = "Emails are sent to Marketo for lead upsert."
     report = prepare_report_delivery(
         answer,
@@ -240,8 +241,21 @@ def test_code_delivery_blocks_unqualified_live_marketo_positive_from_code():
         ],
     )
 
-    assert report["deliveryBlocked"] is True
-    assert "live Marketo" in report["unsupportedClaims"][0]
+    assert _code_report_authority_hazards(answer, report["sourceRefs"]) == [
+        "An unqualified live Marketo operation was inferred from implementation "
+        "code without runtime readback."
+    ]
+    assert report["deliveryBlocked"] is False
+    assert report["verificationStatus"] == "verified"
+    assert "implements a Marketo lead-upsert path that uses email" in report["answer"]
+    assert "live Marketo readback" in report["answer"]
+    assert "Emails are sent to Marketo" not in report["answer"]
+
+
+def test_marketo_question_heading_is_not_treated_as_a_live_claim():
+    question = "### 5. Do we currently store or send these emails in Marketo?"
+
+    assert _code_report_authority_hazards(question, []) == []
 
 
 def test_code_delivery_allows_implemented_marketo_path_with_runtime_boundary():

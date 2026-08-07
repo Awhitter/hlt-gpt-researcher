@@ -525,7 +525,27 @@ def _code_report_authority_hazards(
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
         if "marketo" not in sentence.lower():
             continue
-        positive_operation = re.search(
+        positive_operation = _marketo_positive_operation(sentence)
+        implementation_boundary = _has_implementation_boundary(sentence)
+        if positive_operation and not implementation_boundary:
+            hazards.append(
+                "An unqualified live Marketo operation was inferred from implementation "
+                "code without runtime readback."
+            )
+            break
+    return hazards
+
+
+def _marketo_positive_operation(sentence: str) -> bool:
+    normalized = sentence.strip()
+    if normalized.endswith("?") or re.search(
+        r"\b(?:do|does|did|are|is|can|could|should|would)\s+we\b",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        re.search(
             r"\b(?:"
             r"emails?\s+(?:are|is|were)\s+(?:being\s+)?(?:sent|stored)|"
             r"we\s+(?:currently\s+)?(?:send|store)\b|"
@@ -534,19 +554,41 @@ def _code_report_authority_hazards(
             sentence,
             flags=re.IGNORECASE,
         )
-        implementation_boundary = re.search(
+    )
+
+
+def _has_implementation_boundary(sentence: str) -> bool:
+    return bool(
+        re.search(
             r"\b(?:code|implementation|implemented|function|method|code path|"
             r"capability|can|would|when invoked|if configured|not verified)\b",
             sentence,
             flags=re.IGNORECASE,
         )
-        if positive_operation and not implementation_boundary:
-            hazards.append(
-                "An unqualified live Marketo operation was inferred from implementation "
-                "code without runtime readback."
+    )
+
+
+def _calibrate_code_runtime_claims(answer: str) -> str:
+    """Turn an evidenced code path into a code claim, not a live-state claim."""
+
+    sentence_pattern = re.compile(r"[^.!?\n]*\bmarketo\b[^.!?\n]*[.!?]?", re.IGNORECASE)
+
+    def calibrate(match: re.Match[str]) -> str:
+        sentence = match.group(0)
+        if not _marketo_positive_operation(sentence) or _has_implementation_boundary(sentence):
+            return sentence
+        if re.search(r"lead[ -]?upsert", sentence, flags=re.IGNORECASE):
+            return (
+                "The opened code implements a Marketo lead-upsert path that uses email; "
+                "this run did not include live Marketo readback proving that the path is "
+                "configured or executing."
             )
-            break
-    return hazards
+        return (
+            "The opened code implements a Marketo-related email path; this run did not "
+            "include live Marketo readback proving that the path is configured or executing."
+        )
+
+    return sentence_pattern.sub(calibrate, str(answer or ""))
 
 
 def _blocked_delivery_answer(record: dict[str, Any]) -> str:
@@ -577,16 +619,19 @@ def prepare_report_delivery(
     Stored-report quarantine is not enough: a live code answer must fail closed
     before websocket delivery and before Markdown/PDF/DOCX generation.
     """
+    delivery_answer = str(answer or "")
+    if _requires_code_grounding(scope_metadata):
+        delivery_answer = _calibrate_code_runtime_claims(delivery_answer)
     record = prepare_report_record(
-        {"answer": str(answer or ""), "sourceRefs": source_refs or []},
+        {"answer": delivery_answer, "sourceRefs": source_refs or []},
         validate_sources=validate_sources,
     )
-    if _requires_code_grounding(scope_metadata) and not str(answer or "").strip():
+    if _requires_code_grounding(scope_metadata) and not delivery_answer.strip():
         record["verificationStatus"] = "unverified"
         record["verificationReason"] = (
             "Repository evidence was gathered, but report writing returned no answer."
         )
-    mutable_links = _mutable_github_code_links(str(answer or ""))
+    mutable_links = _mutable_github_code_links(delivery_answer)
     for link in mutable_links:
         claim = (
             "Repository source is not an immutable 40-character commit permalink: "
@@ -603,7 +648,7 @@ def prepare_report_delivery(
 
     if _requires_code_grounding(scope_metadata):
         for claim in _code_report_authority_hazards(
-            str(answer or ""),
+            delivery_answer,
             record["sourceRefs"],
         ):
             if claim not in record["unsupportedClaims"]:
