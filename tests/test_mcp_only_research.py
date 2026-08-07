@@ -218,6 +218,110 @@ def test_mcp_research_can_search_then_read_a_discovered_source(monkeypatch):
     )
 
 
+def test_mcp_research_auto_opens_matches_when_model_repeats_search(monkeypatch):
+    source_url = (
+        "https://github.com/Awhitter/nursing-mastery/blob/"
+        + "a" * 40
+        + "/app/api/identity/route.ts#L148"
+    )
+    search_tool = FakeTool(
+        "search_source",
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "repo": "Awhitter/nursing-mastery",
+                        "commitSha": "a" * 40,
+                        "path": "app/api/identity/route.ts",
+                        "line": 148,
+                        "authority": 3,
+                        "score": 4,
+                        "url": source_url,
+                    }
+                ]
+            }
+        ),
+    )
+    read_tool = FakeTool(
+        "read_source",
+        json.dumps(
+            {
+                "repo": "Awhitter/nursing-mastery",
+                "commitSha": "a" * 40,
+                "path": "app/api/identity/route.ts",
+                "startLine": 118,
+                "endLine": 208,
+                "url": source_url + "-L208",
+                "lines": [{"line": 148, "text": "consentStatus: accepted"}],
+            }
+        ),
+    )
+
+    responses = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_source",
+                        "args": {"query_text": "email consent capture"},
+                        "id": "search-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_source",
+                        "args": {"query_text": "identity email consent"},
+                        "id": "search-2",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="The opened route records consent."),
+        ]
+    )
+
+    class RepeatingSearchLLM:
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, _messages):
+            return next(responses)
+
+    monkeypatch.setattr(
+        "gpt_researcher.llm_provider.generic.base.GenericLLMProvider.from_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(llm=RepeatingSearchLLM()),
+    )
+    cfg = SimpleNamespace(
+        strategic_llm_model="test-model",
+        strategic_llm_provider="test-provider",
+        llm_kwargs={},
+    )
+
+    results = asyncio.run(
+        MCPResearchSkill(cfg, SimpleNamespace(mcp_only=True)).conduct_research_with_tools(
+            "Where is email consent captured?",
+            [search_tool, read_tool],
+        )
+    )
+
+    assert read_tool.calls == [
+        {
+            "repo": "Awhitter/nursing-mastery",
+            "path": "app/api/identity/route.ts",
+            "start_line": 118,
+            "end_line": 208,
+        }
+    ]
+    opened = [item for item in results if item.get("tool_name") == "read_source"]
+    assert len(opened) == 1
+    assert "consentStatus: accepted" in opened[0]["body"]
+
+
 def test_nested_mcp_text_payload_preserves_exact_read_source_url():
     url = (
         "https://github.com/Awhitter/nursing-mastery/blob/"
