@@ -474,6 +474,11 @@ def prepare_report_delivery(
         {"answer": str(answer or ""), "sourceRefs": source_refs or []},
         validate_sources=validate_sources,
     )
+    if _requires_code_grounding(scope_metadata) and not str(answer or "").strip():
+        record["verificationStatus"] = "unverified"
+        record["verificationReason"] = (
+            "Repository evidence was gathered, but report writing returned no answer."
+        )
     mutable_links = _mutable_github_code_links(str(answer or ""))
     for link in mutable_links:
         claim = (

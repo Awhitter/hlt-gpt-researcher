@@ -108,8 +108,10 @@ class MCPResearchSkill:
                     round_number,
                 )
                 messages.append(response)
+                round_tool_names = []
                 for i, tool_call in enumerate(tool_calls, 1):
                     tool_name = tool_call.get("name", "unknown")
+                    round_tool_names.append(tool_name)
                     tool_args = tool_call.get("args", {})
                     tool_call_id = tool_call.get("id") or f"mcp-{round_number}-{i}"
                     
@@ -174,6 +176,22 @@ class MCPResearchSkill:
                                 tool_call_id=tool_call_id,
                             )
                         )
+
+                normalized_round_tools = {
+                    name.split("__")[-1].split(".")[-1].split("/")[-1]
+                    for name in round_tool_names
+                }
+                if (
+                    "search_source" in normalized_round_tools
+                    and "read_source" not in normalized_round_tools
+                ):
+                    messages.append(HumanMessage(content=(
+                        "You now have real repository search results. Open the most "
+                        "relevant returned file paths with read_source before doing "
+                        "more broad searching. Use bounded line windows around the "
+                        "matches and cover distinct systems when the question spans "
+                        "more than one repository."
+                    )))
             
             logger.info(f"Research completed with {len(research_results)} total results")
             return research_results
@@ -270,6 +288,19 @@ class MCPResearchSkill:
                         body_text = content_field
                     else:
                         body_text = str(result)
+                    nested_candidate = body_text.strip()
+                    if nested_candidate.startswith(("{", "[")):
+                        try:
+                            nested = json.loads(nested_candidate)
+                            if (
+                                isinstance(nested, dict)
+                                and nested.get("type") == "text"
+                                and isinstance(nested.get("text"), str)
+                            ):
+                                nested = json.loads(nested["text"])
+                            return self._process_tool_result(tool_name, nested)
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
                     search_results.append(formatted_result(
                         title=f"Result from {tool_name}",
                         href=f"mcp://{tool_name}",

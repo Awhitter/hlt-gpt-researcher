@@ -115,6 +115,10 @@ Select exactly {max_tools} tools, ranked by relevance to the research query.
 7. Never guess a repository path, symbol, commit, or source URL. Cite only exact
    immutable links actually returned by the source tools; if evidence is absent,
    say the implementation fact is unavailable.
+8. Search for concrete multi-word behaviors or identifiers, not broad entity
+   nouns by themselves. After search_source returns matches, inspect the best
+   paths with read_source using a focused line window instead of repeatedly
+   searching generic terms.
 """
         
         return f"""You are a research assistant with access to specialized tools. Your task is to research the following query and provide comprehensive, accurate information.
