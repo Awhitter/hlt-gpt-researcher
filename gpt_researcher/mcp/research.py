@@ -314,6 +314,10 @@ class MCPResearchSkill:
             )
         if "nurse" in user_query and "attribute" in user_query:
             seeds.append(
+                "Identity UserProfile UserConsent SvAccountDataSync "
+                "user_preferences career preferences"
+            )
+            seeds.append(
                 "DashboardResponse profile preferences consent getProfileBlueprint nurse"
             )
         return list(dict.fromkeys(seeds))[:MAX_SEEDED_SOURCE_SEARCHES]

@@ -517,6 +517,35 @@ def _code_report_authority_hazards(
                 "An estate-wide negative Marketo claim lacks an opened provider, integration, "
                 "destination, or live-readback source."
             )
+
+    # Repository code can establish that a Marketo operation is implemented,
+    # but not that the integration is configured and executing right now. The
+    # writer normally makes that distinction; fail closed when it instead emits
+    # an unqualified operational statement from code evidence.
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        if "marketo" not in sentence.lower():
+            continue
+        positive_operation = re.search(
+            r"\b(?:"
+            r"emails?\s+(?:are|is|were)\s+(?:being\s+)?(?:sent|stored)|"
+            r"we\s+(?:currently\s+)?(?:send|store)\b|"
+            r"marketo\s+(?:currently\s+)?(?:receives|stores|sends)\b"
+            r")",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        implementation_boundary = re.search(
+            r"\b(?:code|implementation|implemented|function|method|code path|"
+            r"capability|can|would|when invoked|if configured|not verified)\b",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if positive_operation and not implementation_boundary:
+            hazards.append(
+                "An unqualified live Marketo operation was inferred from implementation "
+                "code without runtime readback."
+            )
+            break
     return hazards
 
 
