@@ -13,6 +13,7 @@ import { toast } from "react-hot-toast";
 import { v4 as uuidv4 } from 'uuid';
 import { SCOPE_SOURCE_KEYS, defaultHLTResearchScope } from "@/lib/hltResearchScope";
 import { Suggestion } from "@/lib/suggestions";
+import { useChatBoxSettings } from "@/hooks/useChatBoxSettings";
 
 import Hero from "@/components/Hero";
 import ResearchPageLayout from "@/components/layouts/ResearchPageLayout";
@@ -37,38 +38,7 @@ export default function Home() {
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
   const [isInChatMode, setIsInChatMode] = useState(false);
-  const [chatBoxSettings, setChatBoxSettings] = useState<ChatBoxSettings>(() => {
-    // Default settings
-    const defaultSettings = {
-      report_type: "research_report",
-      report_source: "web",
-      tone: "Objective",
-      domains: [],
-      defaultReportType: "research_report",
-      layoutType: 'copilot',
-      mcp_enabled: false,
-      mcp_configs: [],
-      mcp_strategy: "fast",
-      hlt_research_scope: defaultHLTResearchScope,
-    };
-
-    // Try to load all settings from localStorage
-    if (typeof window !== 'undefined') {
-      const savedSettings = localStorage.getItem('chatBoxSettings');
-      if (savedSettings) {
-        try {
-          const parsedSettings = JSON.parse(savedSettings);
-          return {
-            ...defaultSettings,
-            ...parsedSettings, // Override defaults with saved settings
-          };
-        } catch (e) {
-          console.error('Error parsing saved settings:', e);
-        }
-      }
-    }
-    return defaultSettings;
-  });
+  const [chatBoxSettings, setChatBoxSettings] = useChatBoxSettings();
   const [question, setQuestion] = useState("");
   const [orderedData, setOrderedData] = useState<Data[]>([]);
   const [showHumanFeedback, setShowHumanFeedback] = useState(false);
@@ -721,11 +691,6 @@ export default function Home() {
     
     setAllLogs(newLogs);
   }, [orderedData]);
-
-  // Save chatBoxSettings to localStorage when they change
-  useEffect(() => {
-    localStorage.setItem('chatBoxSettings', JSON.stringify(chatBoxSettings));
-  }, [chatBoxSettings]);
 
   // Set chat mode when a report is complete
   useEffect(() => {
