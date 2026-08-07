@@ -137,7 +137,9 @@ def test_recent_changes_reports_what_it_actually_covered(tmp_path, monkeypatch):
     assert payload["entries_in_window"] == 40
     assert payload["entries_omitted"] == 30
     assert payload["complete"] is False
-    assert "Do NOT describe this as the full period" in payload["truncation_note"]
+    assert "Do NOT describe the bodies you happen to have as the full period" in (
+        payload["truncation_note"]
+    )
     # and it must say what it really covered, not just what was asked for
     assert payload["covers"]["to"] >= payload["covers"]["from"]
 
@@ -160,3 +162,66 @@ def test_a_complete_window_says_so(tmp_path, monkeypatch):
     payload = json.loads(server.recent_changes("nursing-mastery", days=21))
     assert payload["complete"] is True
     assert payload["truncation_note"] is None
+
+
+def test_the_index_is_always_complete_even_when_bodies_are_not(tmp_path, monkeypatch):
+    """A 340KB fortnight cannot be read in one pass, so raising caps only moves
+    the wall. The index — dates and titles for the WHOLE window — is what lets a
+    reader see the period and choose, instead of taking the newest slice.
+
+    This is the miss it exists to prevent: an agent asked for 14 days, read 3,
+    and never mentioned that sign-in had moved eight days earlier.
+    """
+    server = _load_codegraph_server()
+    repo = tmp_path / "nursing-mastery"
+    repo.mkdir()
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc)
+    lines = []
+    for i in range(40):
+        day = (today - timedelta(days=i // 4)).strftime("%Y-%m-%d")
+        lines.append(f"## {day} - entry {i}\n\n- body {i}\n")
+    (repo / "CHANGELOG.md").write_text("\n".join(lines), encoding="utf-8")
+
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(server, "_repo_readiness", lambda _repo: {})
+
+    import json
+
+    payload = json.loads(server.recent_changes("nursing-mastery", days=21, limit=5))
+
+    assert len(payload["index"]) == 40, "every headline in the window must be visible"
+    assert payload["index_complete"] is True
+    assert payload["entries_returned"] == 5
+    assert "Scan the index" in payload["truncation_note"]
+
+
+def test_specific_dates_can_be_fetched_after_scanning_the_index(tmp_path, monkeypatch):
+    """The second call: having seen the headlines, pull only what matters."""
+    server = _load_codegraph_server()
+    repo = tmp_path / "nursing-mastery"
+    repo.mkdir()
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc)
+    older = (today - timedelta(days=8)).strftime("%Y-%m-%d")
+    newer = today.strftime("%Y-%m-%d")
+    (repo / "CHANGELOG.md").write_text(
+        f"## {newer} - a mobile pass\n\n- tap targets\n\n"
+        f"## {older} - sign in gets its front door\n\n- the auth change\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "REPO_GITHUB", {"nursing-mastery": "Awhitter/nursing-mastery"})
+    monkeypatch.setattr(server, "_repo_readiness", lambda _repo: {})
+
+    import json
+
+    payload = json.loads(server.recent_changes("nursing-mastery", days=21, dates=older))
+
+    assert [e["date"] for e in payload["entries"]] == [older]
+    assert "the auth change" in payload["entries"][0]["body"]
+    # and the index still shows both, so nothing is hidden by asking narrowly
+    assert len(payload["index"]) == 2

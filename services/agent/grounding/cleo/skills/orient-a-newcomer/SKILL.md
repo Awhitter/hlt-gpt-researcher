@@ -19,7 +19,14 @@ save on `/onboarding`.
 ## Do this
 
 1. `recent_changes(repo, days=14)` — a fortnight minimum, wider for a broad
-   ask. Check `complete`; if it is false, say the window you actually covered.
+   ask. **Read `index` first.** It lists every entry's date and title for the
+   whole window and is always complete; `entries` carries full bodies for only
+   a few. Scan the index for anything about auth, identity, sessions, data
+   ownership, a near-miss, or a changed contract, then call again with
+   `dates="YYYY-MM-DD,..."` to read those bodies.
+
+   Never describe the bodies you happen to have as the whole period. If you
+   could not cover it all, say which dates you did read.
 2. `repo_overview(repo)` for the structural frame, and the code graph for any
    specific subsystem named.
 3. Rank what changed by consequence, never by visibility:

@@ -253,7 +253,9 @@ def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> st
 
 
 @mcp.tool()
-def recent_changes(repo: str, days: int = 14, limit: int = 80) -> str:
+def recent_changes(
+    repo: str, days: int = 14, limit: int = 12, dates: str = ""
+) -> str:
     """What actually shipped in a repo recently, in plain language.
 
     Reads the repo's CHANGELOG.md, which both nursing-mastery and ScraperVault
@@ -265,6 +267,20 @@ def recent_changes(repo: str, days: int = 14, limit: int = 80) -> str:
     hundreds of PRs a fortnight, while Linear's completed feed is capped and
     ordered by last-touched. Use Linear for what is OPEN, and this for what is
     DONE.
+
+    Returns TWO things, and the difference matters:
+
+    * ``index`` — every entry in the window as ``{date, title}``. Cheap, and
+      always complete for the period asked for. Read this first; it is how you
+      see the whole fortnight rather than the newest slice of it.
+    * ``entries`` — full bodies, for the newest ``limit`` entries or exactly the
+      ``dates`` you ask for (comma-separated ``YYYY-MM-DD``).
+
+    Why: this repo's fortnight is ~340KB of prose. Handed all of it, a reader
+    takes the top and stops — which is how an agent explained the product from
+    three days of a window it had asked fourteen days for, and never mentioned
+    that sign-in had moved eight days earlier. The index makes the whole period
+    visible at a glance; a second call fetches only the bodies that matter.
 
     Note the clone here is `--depth=1`, so `git log` has no history — the
     CHANGELOG file is the record, and it is the better one anyway.
@@ -284,21 +300,27 @@ def recent_changes(repo: str, days: int = 14, limit: int = 80) -> str:
         return json.dumps({"error": f"Could not read CHANGELOG.md: {error}"})
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(days, 1))).strftime("%Y-%m-%d")
+    wanted = {d.strip() for d in dates.split(",") if d.strip()}
+    index = []
     entries = []
-    in_window = 0
     bodies_truncated = []
     for match in re.finditer(r"^##\s+(\d{4}-\d{2}-\d{2})\s*[-–—]?\s*(.*)$", text, re.M):
         date, title = match.group(1), match.group(2).strip()
         if date < cutoff:
             break  # newest-first, so the first old entry ends the window
-        in_window += 1
-        if len(entries) >= limit:
-            continue  # keep counting so the caller learns what it did not get
+        # The index is ALWAYS complete for the window — titles are cheap, and
+        # seeing every headline is what stops a reader mistaking the newest
+        # slice for the period.
+        index.append({"date": date, "title": title})
+        take = (date in wanted) if wanted else (len(entries) < limit)
+        if not take:
+            continue
         body = text[match.end() : text.find("\n## ", match.end())].strip()
         if len(body) > BODY_CHARS:
             bodies_truncated.append(date)
             body = body[:BODY_CHARS]
         entries.append({"date": date, "title": title, "body": body})
+    in_window = len(index)
 
     return json.dumps(
         {
@@ -316,6 +338,8 @@ def recent_changes(repo: str, days: int = 14, limit: int = 80) -> str:
                 "from": entries[-1]["date"] if entries else None,
                 "to": entries[0]["date"] if entries else None,
             },
+            "index": index,
+            "index_complete": True,
             "complete": len(entries) == in_window and not bodies_truncated,
             "entries_in_window": in_window,
             "entries_returned": len(entries),
@@ -325,10 +349,13 @@ def recent_changes(repo: str, days: int = 14, limit: int = 80) -> str:
                 None
                 if len(entries) == in_window and not bodies_truncated
                 else (
-                    f"Only {len(entries)} of {in_window} entries since {cutoff} are "
-                    f"included, and {len(bodies_truncated)} body/bodies were cut at "
-                    f"{BODY_CHARS} chars. Do NOT describe this as the full period — "
-                    f"say what you covered, or call again with a smaller `days`."
+                    f"`index` lists ALL {in_window} entries since {cutoff} and is "
+                    f"complete — read it to see the whole period. Full bodies are "
+                    f"included for only {len(entries)} of them"
+                    + (f" ({len(bodies_truncated)} cut at {BODY_CHARS} chars)" if bodies_truncated else "")
+                    + ". Scan the index, then call again with "
+                    f"`dates=\"YYYY-MM-DD,YYYY-MM-DD\"` for the entries that matter. "
+                    f"Do NOT describe the bodies you happen to have as the full period."
                 )
             ),
             "readiness": _repo_readiness(repo_key),
