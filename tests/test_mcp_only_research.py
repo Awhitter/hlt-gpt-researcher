@@ -226,21 +226,26 @@ def test_mcp_research_auto_opens_matches_when_model_repeats_search(monkeypatch):
     )
     search_tool = FakeTool(
         "search_source",
-        json.dumps(
+        [
             {
-                "matches": [
+                "type": "text",
+                "text": json.dumps(
                     {
-                        "repo": "Awhitter/nursing-mastery",
-                        "commitSha": "a" * 40,
-                        "path": "app/api/identity/route.ts",
-                        "line": 148,
-                        "authority": 3,
-                        "score": 4,
-                        "url": source_url,
+                        "matches": [
+                            {
+                                "repo": "Awhitter/nursing-mastery",
+                                "commitSha": "a" * 40,
+                                "path": "app/api/identity/route.ts",
+                                "line": 148,
+                                "authority": 3,
+                                "score": 4,
+                                "url": source_url,
+                            }
+                        ]
                     }
-                ]
+                ),
             }
-        ),
+        ],
     )
     read_tool = FakeTool(
         "read_source",
