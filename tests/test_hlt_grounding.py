@@ -1,10 +1,11 @@
 from backend.server.hlt_grounding import (
-    merge_report_delivery_receipt,
     extract_source_refs,
+    merge_report_delivery_receipt,
     prepare_report_delivery,
     prepare_report_record,
     report_is_memory_eligible,
     sanitize_user_visible_research_data,
+    source_refs_from_research_sources,
 )
 
 
@@ -107,7 +108,56 @@ def test_code_scoped_delivery_preserves_a_validator_backed_answer():
 
     assert report["deliveryBlocked"] is False
     assert report["verificationStatus"] == "verified"
-    assert report["answer"] == answer
+    assert report["answer"].startswith(answer)
+    assert "## Sources" in report["answer"]
+    assert URL in report["answer"]
+
+
+def test_file_read_mcp_payload_becomes_a_visible_validated_source():
+    source_url = (
+        f"https://github.com/Awhitter/nursing-mastery/blob/{SHA}/"
+        "app/(home)/page.tsx#L40-L55"
+    )
+    sources = [
+        {
+            "source_type": "mcp",
+            "tool_name": "read_source",
+            "url": source_url,
+            "content": (
+                '{"repo":"Awhitter/nursing-mastery","commitSha":"'
+                + SHA
+                + '","path":"app/(home)/page.tsx","url":"'
+                + source_url
+                + '","content":"specialty and location"}'
+            ),
+        }
+    ]
+
+    refs = source_refs_from_research_sources(sources)
+    assert refs[0]["path"] == "app/(home)/page.tsx"
+    assert refs[0]["line"] == 40
+
+    delivered = prepare_report_delivery(
+        "The homepage uses nurse specialty and location.",
+        {"active_sources": ["codebase"]},
+        source_refs=[{**refs[0], "exists": True}],
+    )
+    assert delivered["deliveryBlocked"] is False
+    assert "## Sources" in delivered["answer"]
+    assert source_url in delivered["answer"]
+
+
+def test_search_source_results_do_not_count_as_opened_file_evidence():
+    sources = [
+        {
+            "source_type": "mcp",
+            "tool_name": "search_source",
+            "url": URL,
+            "content": "A broad match that was never opened.",
+        }
+    ]
+
+    assert source_refs_from_research_sources(sources) == []
 
 
 def test_mutable_or_short_github_code_link_blocks_code_scoped_delivery():

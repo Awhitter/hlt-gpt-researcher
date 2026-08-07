@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import urllib.parse
@@ -36,7 +37,12 @@ from gpt_researcher.utils.enum import Tone
 from chat.chat import ChatAgentWithMemory
 
 from server.report_store import get_report_store
-from server.hlt_grounding import merge_report_delivery_receipt, prepare_report_record
+from server.hlt_grounding import (
+    merge_report_delivery_receipt,
+    prepare_report_delivery,
+    prepare_report_record,
+    source_refs_from_research_sources,
+)
 from gpt_researcher.research_run_store import get_outputs_dir, get_research_run_store, jsonable
 from gpt_researcher.utils.langfuse_observability import (
     observe_langfuse,
@@ -417,14 +423,29 @@ async def write_report(research_request: ResearchRequest, research_id: str = Non
             scraper_override=scraper_override,
         )
 
-        report = report_information[0]
+        report = str(report_information[0])
+        researcher = None
+        sources = []
+        source_urls = []
+        if research_request.report_type != "multi_agents":
+            report, researcher = report_information
+            report = str(report)
+            sources = jsonable(researcher.get_research_sources())
+            source_urls = list(researcher.get_source_urls())
+
+        delivery_record = await asyncio.to_thread(
+            prepare_report_delivery,
+            report,
+            hlt_scope_metadata,
+            source_refs=source_refs_from_research_sources(sources),
+            validate_sources=True,
+        )
+        report = delivery_record["answer"]
         docx_path = await write_md_to_word(report, research_id)
         pdf_path = await write_md_to_pdf(report, research_id)
         md_path = await write_text_to_md(report, research_id)
-        if research_request.report_type != "multi_agents":
-            report, researcher = report_information
-            sources = jsonable(researcher.get_research_sources())
-            source_urls = list(researcher.get_source_urls())
+
+        if researcher is not None:
             image_reader = getattr(
                 researcher, "get_all_research_images", None
             ) or getattr(researcher, "get_research_images", None)
@@ -453,7 +474,11 @@ async def write_report(research_request: ResearchRequest, research_id: str = Non
                 "report": report,
                 "md_path": md_path,
                 "docx_path": docx_path,
-                "pdf_path": pdf_path
+                "pdf_path": pdf_path,
+                "verificationStatus": delivery_record["verificationStatus"],
+                "verificationReason": delivery_record["verificationReason"],
+                "sourceRefs": delivery_record["sourceRefs"],
+                "deliveryBlocked": delivery_record["deliveryBlocked"],
             }
         else:
             research_run_store.complete_run(
@@ -470,10 +495,14 @@ async def write_report(research_request: ResearchRequest, research_id: str = Non
             )
             response = {
                 "research_id": research_id,
-                "report": "",
+                "report": report,
                 "md_path": md_path,
                 "docx_path": docx_path,
                 "pdf_path": pdf_path,
+                "verificationStatus": delivery_record["verificationStatus"],
+                "verificationReason": delivery_record["verificationReason"],
+                "sourceRefs": delivery_record["sourceRefs"],
+                "deliveryBlocked": delivery_record["deliveryBlocked"],
             }
 
         return response

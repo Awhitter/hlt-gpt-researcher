@@ -32,6 +32,7 @@ from .report_store import get_report_store
 from .hlt_grounding import (
     prepare_report_delivery,
     sanitize_user_visible_research_data,
+    source_refs_from_research_sources,
 )
 
 # Import chat agent
@@ -396,10 +397,13 @@ async def handle_start_command(websocket, data: str, manager):
     else:
         report = report_result
     report = str(report)
+    sources = jsonable(researcher.get_research_sources()) if researcher else []
+    source_refs = source_refs_from_research_sources(sources)
     delivery_record = await asyncio.to_thread(
         prepare_report_delivery,
         report,
         hlt_scope_metadata,
+        source_refs=source_refs,
         validate_sources=True,
     )
     report = delivery_record["answer"]
@@ -408,7 +412,6 @@ async def handle_start_command(websocket, data: str, manager):
     file_paths["json"] = os.path.relpath(logs_handler.log_file)
     file_paths["research_id"] = research_id
     file_paths["run_id"] = research_id
-    sources = jsonable(researcher.get_research_sources()) if researcher else []
     source_urls = list(researcher.get_source_urls()) if researcher else []
     if researcher:
         image_reader = getattr(researcher, "get_all_research_images", None) or getattr(
