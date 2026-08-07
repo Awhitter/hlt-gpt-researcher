@@ -4,7 +4,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useResearchHistoryContext } from "@/hooks/ResearchHistoryContext";
 import { preprocessOrderedData } from "@/utils/dataProcessing";
-import { ChatBoxSettings, Data, ChatData, ChatMessage, QuestionData } from "@/types/data";
+import { Data, ChatData, ChatMessage, QuestionData } from "@/types/data";
 import { toast } from "react-hot-toast";
 import { getAppropriateLayout } from "@/utils/getLayout";
 
@@ -15,6 +15,7 @@ import CopilotResearchContent from "@/components/research/CopilotResearchContent
 import NotFoundContent from "@/components/research/NotFoundContent";
 import LoadingDots from "@/components/LoadingDots";
 import ResearchSidebar from "@/components/ResearchSidebar";
+import { useChatBoxSettings } from "@/hooks/useChatBoxSettings";
 
 // Import mobile components
 import MobileResearchContent from "@/components/mobile/MobileResearchContent";
@@ -33,37 +34,7 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
   const [isProcessingChat, setIsProcessingChat] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [chatBoxSettings, setChatBoxSettings] = useState<ChatBoxSettings>(() => {
-    // Default settings
-    const defaultSettings = {
-      report_source: "web",
-      report_type: "research_report",
-      tone: "Objective",
-      domains: [],
-      defaultReportType: "research_report",
-      layoutType: 'copilot',
-      mcp_enabled: false,
-      mcp_configs: [],
-      mcp_strategy: "fast",
-    };
-
-    // Try to load all settings from localStorage
-    if (typeof window !== 'undefined') {
-      const savedSettings = localStorage.getItem('chatBoxSettings');
-      if (savedSettings) {
-        try {
-          const parsedSettings = JSON.parse(savedSettings);
-          return {
-            ...defaultSettings,
-            ...parsedSettings, // Override defaults with saved settings
-          };
-        } catch (e) {
-          console.error('Error parsing saved settings:', e);
-        }
-      }
-    }
-    return defaultSettings;
-  });
+  const [chatBoxSettings, setChatBoxSettings] = useChatBoxSettings();
   const [notFound, setNotFound] = useState(false);
   const [fetchAttempted, setFetchAttempted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -90,11 +61,6 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
     }
     setSidebarOpen(false);
   };
-
-  // Save chatBoxSettings to localStorage when they change
-  useEffect(() => {
-    localStorage.setItem('chatBoxSettings', JSON.stringify(chatBoxSettings));
-  }, [chatBoxSettings]);
 
   // Load research data on mount
   useEffect(() => {
