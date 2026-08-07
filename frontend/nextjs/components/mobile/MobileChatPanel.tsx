@@ -221,7 +221,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
   const [showPreferences, setShowPreferences] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const positionedReportRef = useRef("");
+  const positionedReportRef = useRef({ answer: "", messageCount: 0 });
   const [renderedMessages, setRenderedMessages] = useState<{id: string, content: string, html: string, type: string, metadata?: any, isPrimaryReport?: boolean}[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -363,10 +363,21 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
         primaryReport &&
         answer.trim() &&
         !loading &&
-        positionedReportRef.current !== answer
+        positionedReportRef.current.answer !== answer
       ) {
-        positionedReportRef.current = answer;
+        positionedReportRef.current = {
+          answer,
+          messageCount: renderedMessages.length,
+        };
         container.scrollTop = Math.max(0, primaryReport.offsetTop - 8);
+        return;
+      }
+
+      if (
+        positionedReportRef.current.answer === answer &&
+        renderedMessages.length <= positionedReportRef.current.messageCount &&
+        !isProcessingChat
+      ) {
         return;
       }
 
@@ -379,7 +390,13 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
     if (!chatContainerRef.current) return;
 
     const observer = new MutationObserver(() => {
-      if (positionedReportRef.current === answer && !isProcessingChat) return;
+      if (
+        positionedReportRef.current.answer === answer &&
+        renderedMessages.length <= positionedReportRef.current.messageCount &&
+        !isProcessingChat
+      ) {
+        return;
+      }
       requestAnimationFrame(scrollToBottom);
     });
 
@@ -390,7 +407,7 @@ const MobileChatPanel: React.FC<MobileChatPanelProps> = ({
     });
 
     return () => observer.disconnect();
-  }, [answer, isProcessingChat, scrollToBottom]);
+  }, [answer, isProcessingChat, renderedMessages.length, scrollToBottom]);
 
   // Determine if we need to show intro message
   const showIntroMessage = !answer.trim() && (
