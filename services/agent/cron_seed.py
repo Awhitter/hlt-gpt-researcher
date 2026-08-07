@@ -21,10 +21,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 
 logger = logging.getLogger("brian")
+
+# A Slack conversation id: C/D/G (channel, DM, group) then upper alphanumerics.
+# The command below is an argv list with no shell, so this is not an injection
+# fix — it is a typo fix. A malformed SLACK_HOME_CHANNEL would otherwise be
+# baked into a job that fails to deliver, silently, every week.
+DELIVER_TARGET = re.compile(r"^slack:[CDG][A-Z0-9]{6,}$")
 
 # Each brief loads the matching skill, so the procedure lives in one place and a
 # change to the skill changes the brief too.
@@ -61,6 +68,14 @@ def seed(deliver: str, dry_run: bool = False) -> dict[str, list[str]]:
     """Create any brief that does not already exist. Returns what happened."""
     result: dict[str, list[str]] = {"created": [], "existing": [], "failed": []}
     if not deliver:
+        return result
+    if not DELIVER_TARGET.match(deliver):
+        logger.error(
+            "refusing to seed briefs: %r is not a Slack conversation id. Check "
+            "SLACK_HOME_CHANNEL — it must be the id, optionally '<id>|#name'.",
+            deliver,
+        )
+        result["failed"].append("bad-deliver-target")
         return result
 
     # Existence is checked by reading the record, NOT by shelling out to

@@ -933,3 +933,26 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
 
     assert _os.environ["SLACK_HOME_CHANNEL"] == "C0BN349TRU7"
     assert health_gateway.BOOT["cron_briefs"]["deliver"] == "slack:C0BN349TRU7"
+
+
+def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):
+    """A typo'd SLACK_HOME_CHANNEL would otherwise be baked into a job that
+    fails to deliver, silently, every week."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def explode(cmd, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError(f"seeded with a bad target: {cmd}")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", explode)
+    for bad in ("slack:", "slack:#cleo", "slack:C0BN349TRU7|#cleo", "C0BN349TRU7"):
+        result = cron_seed.seed(bad)
+        assert result["created"] == [], bad
+        assert result["failed"] == ["bad-deliver-target"], bad
+
+    # And the real one still works.
+    monkeypatch.setattr(
+        cron_seed.subprocess, "run",
+        lambda cmd, **kw: __import__("subprocess").CompletedProcess(cmd, 0, "", ""),
+    )
+    assert cron_seed.seed("slack:C0BN349TRU7")["created"]
