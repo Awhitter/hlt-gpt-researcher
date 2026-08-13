@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "katailyst": {
+      "url": "https://katailyst2.vercel.app/api/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:KATAILYST_MCP_TOKEN}"
+      }
+    },
+    "katailyst-v1": {
+      "url": "https://www.katailyst.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:KATAILYST_MCP_TOKEN}"
+      }
+    },
+    "multimediaMastery": {
+      "url": "https://multimediamastery.vercel.app/api/media/v1/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MM_AGENT_TOKEN}"
+      }
+    },
+    "gpt-researcher": {
+      "url": "https://gpt-researcher-mcp-production.up.railway.app/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:GPTR_MCP_TOKEN}"
+      }
+    }
+  }
+}

@@ -54,10 +54,13 @@ engage, jobs, forum-template, agent-canvas, brand-design-lab,
 evidence-based-business, gpt-researcher, mastra, paperclip,
 research-team`.
 
-## Tools available in this repo (auto-discovered via `.mcp.json`)
+## Tools available in this repo (auto-discovered via `.mcp.json` / `.cursor/mcp.json`)
 
 Drop into this repo with Claude Code / Cursor / any MCP client and the
-following servers auto-mount from `.mcp.json`:
+following servers auto-mount. Claude Code reads `.mcp.json`; Cursor reads the
+mirrored `.cursor/mcp.json` (same servers, `${env:VAR}` token interpolation —
+set `KATAILYST_MCP_TOKEN`, `GPTR_MCP_TOKEN`, and `MM_AGENT_TOKEN` in the
+environment Cursor launches from, or in Cloud Agent secrets):
 
 1. **`katailyst`** (HTTP, hosted) — the registry. Tools: `discover`, `traverse`,
    `get_entity`, `registry_capabilities`, `registry_health`, `registry_agent_context`,
