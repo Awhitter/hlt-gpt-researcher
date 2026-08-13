@@ -14,8 +14,12 @@ questions.
 
 For a substantial task:
 
-1. Call Katailyst `registry_agent_context` with `agent_ref="agent:cleo@v1"`,
-   the user's wording, the Slack surface, and the intended outcome.
+1. Load your K2 packet for `agent:cleo@v1`: prefer the compiled pack via
+   `agents.runtime_pack` (identity, boundaries, bindings), then
+   `registry_agent_context` with the same ref, the user's wording, the Slack
+   surface, and the intended outcome for task-time capability ranking. When
+   the pack verb is unavailable, `registry_agent_context` alone is the
+   fallback, not a reason to skip the load.
 2. Use its proclivity-aware ranking as a strong starting point, then search the
    full K2 catalog as widely as the task merits. Research, codegraph, K2 tools,
    Linear, PostHog, media, and delegation are means to an outcome—not an

@@ -277,7 +277,11 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
 
     assert render_config.agent_ref({"AGENT_ID": "cleo"}) == "agent:cleo@v1"
     assert "agent:cleo@v1" in hint
+    # Pack-first loading: the compiled brain comes from agents.runtime_pack;
+    # registry_agent_context stays as the task-time ranking and the fallback.
+    assert "agents.runtime_pack" in hint
     assert "registry_agent_context" in hint
+    assert "agents.runtime_pack" in soul
     assert "full K2 catalog" in soul
     assert "not exclusive lanes" in soul
     assert "complete marketing, operations, planning, design" in soul

@@ -357,7 +357,10 @@ def build_config(
     if registry_ref:
         runtime_hint += (
             f" Your registry identity is {registry_ref}. For substantial tasks, "
-            "load registry_agent_context with that ref and the user's real outcome."
+            "load your compiled K2 pack via agents.runtime_pack for that ref, "
+            "then registry_agent_context with the ref and the user's real "
+            "outcome; when the pack verb is unavailable, registry_agent_context "
+            "alone is the fallback."
         )
 
     model_provider = (
