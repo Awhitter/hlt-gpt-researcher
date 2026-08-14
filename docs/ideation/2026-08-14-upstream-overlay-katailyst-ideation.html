@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ideation: Stay close to upstream, make Katailyst consume the overlay</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+  <style>
+    :root {
+      --bg: #f7f4ee;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c4;
+      --card: #fffdf8;
+      --accent: #0f5c4c;
+      --accent-soft: #e4f1ec;
+      --accent-text: #0a3d33;
+      --warn-soft: #f7efe3;
+      --warn-text: #6b4a1a;
+      --chip: #ece7dc;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+      font-size: 16px;
+      line-height: 1.55;
+    }
+    strong { color: inherit; font-weight: 600; }
+    code, .mono {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.88em;
+    }
+    a { color: var(--accent); }
+    .page {
+      max-width: 920px;
+      margin-inline: auto;
+      padding: 2.25rem 1.25rem 4rem;
+    }
+    .prose { max-width: 70ch; }
+    header.meta {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    .eyebrow {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+      margin: 0 0 0.4rem;
+    }
+    h1 {
+      font-size: 1.85rem;
+      line-height: 1.2;
+      margin: 0 0 1rem;
+      font-weight: 700;
+    }
+    h2 {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 1.15rem;
+      margin: 2.4rem 0 0.8rem;
+      font-weight: 600;
+    }
+    h3 {
+      font-size: 1.2rem;
+      margin: 0 0 0.6rem;
+      font-weight: 700;
+    }
+    .meta-list {
+      display: grid;
+      grid-template-columns: 8.5rem 1fr;
+      gap: 0.35rem 1rem;
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.92rem;
+    }
+    .meta-list dt { color: var(--muted); font-weight: 500; }
+    .meta-list dd { margin: 0; }
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+    .chip {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.78rem;
+      background: var(--chip);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 0.25rem 0.7rem;
+      font-weight: 500;
+    }
+    .jump {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 1.5rem;
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.92rem;
+    }
+    .jump li { margin: 0.35rem 0; }
+    article.idea {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1.25rem 1.3rem 1.4rem;
+      margin: 0 0 1.25rem;
+    }
+    article.idea dl {
+      display: grid;
+      grid-template-columns: 7.5rem 1fr;
+      gap: 0.45rem 1rem;
+      margin: 0.9rem 0 0;
+      font-size: 0.97rem;
+    }
+    article.idea dt {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+      padding-top: 0.15rem;
+    }
+    article.idea dd { margin: 0; }
+    .rank {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      border-radius: 999px;
+      padding: 0.15rem 0.55rem;
+      margin-right: 0.4rem;
+    }
+    .diagram {
+      margin: 1rem 0 0.4rem;
+      overflow-x: auto;
+      background: var(--accent-soft);
+      border-radius: 10px;
+      padding: 0.6rem;
+    }
+    .diagram svg { display: block; width: 100%; height: auto; }
+    .caption {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin: 0.35rem 0 0;
+    }
+    table.rej {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      background: var(--card);
+    }
+    table.rej th, table.rej td {
+      text-align: left;
+      vertical-align: top;
+      padding: 0.55rem 0.7rem;
+      border-bottom: 1px solid var(--line);
+    }
+    table.rej th {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    ul.axes { padding-left: 1.2rem; }
+    footer.composition-signal {
+      margin-top: 2.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .callout {
+      background: var(--warn-soft);
+      color: var(--warn-text);
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 0.8rem 0 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="meta">
+      <p class="eyebrow">Ideation</p>
+      <h1>Stay close to upstream, make Katailyst consume the overlay</h1>
+      <dl class="meta-list">
+        <dt>Date</dt>
+        <dd><time datetime="2026-08-14">2026-08-14</time></dd>
+        <dt>Topic</dt>
+        <dd>upstream-overlay-katailyst</dd>
+        <dt>Focus</dt>
+        <dd>Keep this GPT Researcher fork close to <code>assafelovic/gpt-researcher</code> (check and pull regularly, stay similar) while owning an HLT overlay so Katailyst can easily use research plus codegraphs. Consider InfraNodus. Treat Cloudflare Sandbox SDK, Cloudflare Agents SDK, and Vercel AI SDK as optional runtimes, not packages to fold into this fork.</dd>
+        <dt>Mode</dt>
+        <dd>repo-grounded</dd>
+      </dl>
+      <div class="stats">
+        <span class="chip">7 ranked ideas</span>
+        <span class="chip">44 raw candidates</span>
+        <span class="chip">5 axes covered</span>
+        <span class="chip">13 agents</span>
+      </div>
+    </header>
+
+    <section id="grounding-context">
+      <h2>Grounding Context</h2>
+      <div class="prose">
+        <p><strong>Codebase Context.</strong> This repo is a fork of Assaf Elovic's GPT Researcher, branded Mastery Research. HLT behavior is supposed to live in overlay modules (<code>hlt_*.py</code>), not in broad edits to upstream core. A Monday workflow merges upstream <code>master</code> into a <code>sync/upstream-*</code> PR, runs two HLT tests on clean merges, and pastes a static overlay checklist into the PR body. The live docking fuse is one import at the end of <code>backend/server/app.py</code> that calls <code>install_hlt_extensions(app)</code>.</p>
+        <p>Katailyst already has three doors into this service: MCP tools whose names match upstream <code>gptr-mcp</code>, HTTP <code>/gather</code> (today a thin <code>quick_search</code> adapter with no <code>research_id</code>), and Brain/library routes. REST <code>/api/quick_search</code> is a documented web-only exception that does not mount codegraph or Katailyst presets. Codegraph is an in-repo GitNexus sidecar on Render (<code>hlt-codegraph</code>). Cleo's Slack body runs on Hermes (<code>hlt-hermes</code>) and mounts five MCP servers: gpt-researcher, codegraph, katailyst2, Linear, PostHog. InfraNodus has zero references in this tree. Cloudflare Sandbox/Agents SDK and Vercel AI SDK are not dependencies of this Python FastAPI fork.</p>
+        <p><strong>Past learnings.</strong> <code>docs/solutions/</code> does not exist. Nothing in the Compound Engineering corpus could be reused.</p>
+        <p><strong>External context.</strong> Other overlay-on-fast-upstream projects add watched-file annotations on sync PRs (this repo already lists four paths, but only as inert prose). InfraNodus is a text-network / gap-detection MCP meant to consume research output, not replace a researcher. CodeGraph's default-single-tool plus env allowlist is the usual way to stop MCP retrievers from flooding context. Upstream GPT Researcher v3.5.1 (June 2026) already ships MCP tool names that match this fork. Cloudflare and Vercel sandboxes are places agents <em>run</em> and then <em>call</em> MCP tools — not packages to install inside a research server.</p>
+      </div>
+    </section>
+
+    <section id="topic-axes">
+      <h2>Topic Axes</h2>
+      <ul class="axes prose">
+        <li>Upstream sync hygiene</li>
+        <li>HLT overlay surface</li>
+        <li>Katailyst consumption</li>
+        <li>Graph layers</li>
+        <li>Agent runtimes</li>
+      </ul>
+    </section>
+
+    <section id="ranked-ideas">
+      <h2>Ranked Ideas</h2>
+      <ul class="jump">
+        <li><a href="#idea-1">1. Overlay contract as code</a></li>
+        <li><a href="#idea-2">2. One research envelope Katailyst can bind</a></li>
+        <li><a href="#idea-3">3. Runtime status of forces</a></li>
+        <li><a href="#idea-4">4. InfraNodus after the report, not beside the retriever</a></li>
+        <li><a href="#idea-5">5. One codegraph instrument on the tray</a></li>
+        <li><a href="#idea-6">6. Freeze the two-door overlay API</a></li>
+        <li><a href="#idea-7">7. Make pack-load and persona registration observable</a></li>
+      </ul>
+
+      <article class="idea" id="idea-1">
+        <h3><span class="rank">1</span> Overlay contract as code</h3>
+        <p>Stop treating “we stay close to upstream” as a full-tree merge plus a comment. Publish a machine-readable overlay manifest (the four watched paths already listed in the Monday workflow, plus the <code>app.py</code> install stamp, firecrawl, Langfuse, and any in-tree GPTR patches). The weekly PR then grades which of those paths actually changed, asserts the install hook still ran, and fails CI if a leaf module imports <code>hlt_extensions</code>. Conflicted merges still open a PR; clean weeks still stay similar to Assaf — they just stop relying on someone remembering the checklist.</p>
+        <div class="diagram" aria-hidden="true">
+          <svg viewBox="0 0 840 220" role="img" aria-label="Today the weekly merge is one unranked blob. The idea grades overlay files separately from pure upstream files.">
+            <rect x="20" y="36" width="240" height="148" rx="10" fill="#fffdf8" stroke="#0f5c4c" stroke-width="1.5"/>
+            <text x="140" y="64" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="14" font-weight="600">Today</text>
+            <text x="140" y="96" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="13">full-tree merge</text>
+            <text x="140" y="118" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="13">static checklist in PR body</text>
+            <text x="140" y="140" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="13">HLT tests skipped on conflict</text>
+            <text x="140" y="162" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="12">attention is unranked</text>
+            <path d="M278 110 H338" stroke="#0f5c4c" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="#0f5c4c"/>
+              </marker>
+            </defs>
+            <rect x="354" y="20" width="200" height="72" rx="10" fill="#e4f1ec" stroke="#0f5c4c"/>
+            <text x="454" y="48" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">overlay paths</text>
+            <text x="454" y="70" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">grade + canary tests</text>
+            <rect x="354" y="108" width="200" height="72" rx="10" fill="#fffdf8" stroke="#d9d2c4"/>
+            <text x="454" y="136" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">pure upstream</text>
+            <text x="454" y="158" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">informational</text>
+            <rect x="580" y="64" width="236" height="92" rx="10" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="698" y="100" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">still Assaf's tree</text>
+            <text x="698" y="124" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">HLT survives as a contract</text>
+          </svg>
+        </div>
+        <p class="caption">Illustrative: the weekly job still pulls theirs; the overlay becomes a graded contract instead of a grocery list.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>Upstream sync hygiene</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> <code>upstream-sync.yml</code> lists overlay files as inert PR-body bullets and skips HLT tests when <code>conflicts != ''</code>. <code>hlt_extensions.py</code> says if <code>app.py</code> is regenerated, re-add the one import. <code>AGENTS.md</code> says leaves never import <code>hlt_extensions</code>, with no test enforcing it.</dd>
+          <dt>Rationale</dt>
+          <dd>This is the actual “stay up on theirs, keep ours on the side” mechanism. Without a contract, Monday work spends equal attention on CSS and on the docking fuse that, if dropped, silently kills <code>/health</code>, <code>/gather</code>, and Brain.</dd>
+          <dt>Downsides</dt>
+          <dd>The manifest must be kept honest as HLT grows into firecrawl, Brain UI, and <code>mcp_server/</code> — those already sit outside the <code>hlt_*</code> prefix. A wrapper entrypoint that never touches <code>app.py</code> is a later variant, not required for this direction.</dd>
+          <dt>Confidence</dt>
+          <dd>88%</dd>
+          <dt>Complexity</dt>
+          <dd>Low</dd>
+        </dl>
+      </article>
+
+      <article class="idea" id="idea-2">
+        <h3><span class="rank">2</span> One research envelope Katailyst can bind</h3>
+        <p>Do not grow the FastAPI process so “all our stuff is inside the researcher.” Katailyst already has three doors. Make them return the same envelope: scopes applied, presets expanded, <code>research_id</code>, sources, report, library hits. Generate <code>GET /api/hlt/capabilities</code> (and the Katailyst capability doc) from the live tool list so the registry cannot omit <code>get_research_images</code> again. Add a <code>/gather?mode=report</code> path so Create-hub does not have to hand-sequence <code>deep_research</code> then <code>write_report</code>. Point orchestrate and Cleo at MCP / <code>/gather</code>, never at REST <code>/api/quick_search</code>, if they need codegraph.</p>
+        <div class="diagram" aria-hidden="true">
+          <svg viewBox="0 0 840 200" role="img" aria-label="Three Katailyst doors converge on one research_id envelope.">
+            <rect x="16" y="24" width="160" height="48" rx="8" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="96" y="54" text-anchor="middle" fill="#1c1915" font-family="IBM Plex Sans, sans-serif" font-size="13">MCP tools</text>
+            <rect x="16" y="84" width="160" height="48" rx="8" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="96" y="114" text-anchor="middle" fill="#1c1915" font-family="IBM Plex Sans, sans-serif" font-size="13">HTTP /gather</text>
+            <rect x="16" y="144" width="160" height="40" rx="8" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="96" y="170" text-anchor="middle" fill="#1c1915" font-family="IBM Plex Sans, sans-serif" font-size="13">Brain library</text>
+            <path d="M176 48 H250" stroke="#0f5c4c" stroke-width="2" marker-end="url(#arrow2)"/>
+            <path d="M176 108 H250" stroke="#0f5c4c" stroke-width="2" marker-end="url(#arrow2)"/>
+            <path d="M176 164 H250" stroke="#0f5c4c" stroke-width="2" marker-end="url(#arrow2)"/>
+            <defs>
+              <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="#0f5c4c"/>
+              </marker>
+            </defs>
+            <rect x="250" y="56" width="280" height="88" rx="10" fill="#e4f1ec" stroke="#0f5c4c"/>
+            <text x="390" y="92" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="14" font-weight="600">research_id envelope</text>
+            <text x="390" y="116" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">scopes · presets · sources · report</text>
+            <rect x="560" y="56" width="260" height="88" rx="10" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="690" y="92" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="14" font-weight="600">Katailyst / Cleo</text>
+            <text x="690" y="116" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">one bindable capability</text>
+          </svg>
+        </div>
+        <p class="caption">Illustrative: “easily use it” is a shared envelope, not more product stuffed into FastAPI.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>Katailyst consumption</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> <code>scripts/katailyst_capability.md</code> lists five MCP tools; <code>mcp_server/tools.py</code> registers six, including <code>get_research_images</code>. <code>/gather</code> returns findings and <code>external_scan_id: None</code> with no <code>research_id</code>. REST <code>/api/quick_search</code> is the documented web-only exception.</dd>
+          <dt>Rationale</dt>
+          <dd>If Create-hub or orchestrate hits the cheap REST door, codegraph never mounts and “all our stuff is inside the researcher” is a lie in practice. A generated manifest plus one envelope is how K2 stays honest as scopes grow.</dd>
+          <dt>Downsides</dt>
+          <dd>A single K2-native <code>research</code> verb with the five upstream names as a facade is a later variant; the five tools have different signatures and a stateful handoff, so do not collapse them until the envelope exists.</dd>
+          <dt>Confidence</dt>
+          <dd>84%</dd>
+          <dt>Complexity</dt>
+          <dd>Medium</dd>
+        </dl>
+      </article>
+
+      <article class="idea" id="idea-3">
+        <h3><span class="rank">3</span> Runtime status of forces</h3>
+        <p>Cloudflare Sandbox SDK, Cloudflare Agents SDK, and Vercel AI SDK are caller options. They do not belong in this Python tree. Cleo stays on Hermes with the locked Slack toolset (no <code>execute_code</code>, no terminal, no computer use). Any future sandboxed execution lives in another process whose network allowlist is Mastery Research MCP + codegraph + Katailyst2. Freeze a versioned MCP tool schema as the only integration surface those runtimes need. Add a CI check that fails if those packages ever land in <code>pyproject.toml</code> or the Next app's dependencies.</p>
+        <div class="diagram" aria-hidden="true">
+          <svg viewBox="0 0 840 190" role="img" aria-label="Agent bodies stay outside this fork and call MCP. This repo stays the research lab.">
+            <rect x="20" y="30" width="190" height="130" rx="10" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="115" y="58" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">Cleo on Hermes</text>
+            <text x="115" y="84" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">Slack body, locked tools</text>
+            <text x="115" y="128" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="12">stays here</text>
+            <rect x="250" y="30" width="190" height="130" rx="10" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="345" y="58" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">Sandbox worker</text>
+            <text x="345" y="84" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">CF / Vercel / E2B</text>
+            <text x="345" y="128" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="12">elsewhere, if needed</text>
+            <rect x="500" y="30" width="320" height="130" rx="10" fill="#e4f1ec" stroke="#0f5c4c"/>
+            <text x="660" y="70" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="14" font-weight="600">this fork</text>
+            <text x="660" y="98" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="13">Mastery Research MCP</text>
+            <text x="660" y="122" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="13">+ codegraph MCP</text>
+          </svg>
+        </div>
+        <p class="caption">Illustrative: the attached SDKs are where agents run; this repo stays the cited-research lab they invite.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>Agent runtimes</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> Slack toolset excludes host execution because anyone who can mention Cleo would get code execution on the container. <code>pyproject.toml</code> has no sandbox/agent SDK packages. <code>external:</code> Cloudflare and Vercel sandboxes are framed industry-wide as execution hosts that call MCP, not as research-server internals.</dd>
+          <dt>Rationale</dt>
+          <dd>This answers the attached SDK skills without migrating Cleo off Hermes or turning Mastery Research into an agent host — which would fight upstream and the overlay rule.</dd>
+          <dt>Downsides</dt>
+          <dd>Sandboxed charts or executable artifacts still need a home; that home is a sibling worker, not a pip install here. Do not wait for that worker before freezing the MCP schema.</dd>
+          <dt>Confidence</dt>
+          <dd>86%</dd>
+          <dt>Complexity</dt>
+          <dd>Low</dd>
+        </dl>
+      </article>
+
+      <article class="idea" id="idea-4">
+        <h3><span class="rank">4</span> InfraNodus after the report, not beside the retriever</h3>
+        <p>InfraNodus is not a second researcher and not a peer of GitNexus. On <code>report_complete</code>, optionally push the finished prose through InfraNodus's hosted MCP (gap detection / text network) and store “what this report did not cover” next to the library entry. Those structural holes can seed the suggestion strip and the next <code>deep_research</code> query. If a preset is ever added, it must be readiness-gated hosted HTTP like Apify — never a browser <code>npx</code> sample. Do not add InfraNodus to the MCP retriever's tool lottery.</p>
+        <div class="diagram" aria-hidden="true">
+          <svg viewBox="0 0 840 170" role="img" aria-label="GitNexus stays the code MRI. InfraNodus is a later gap pass on finished reports.">
+            <rect x="24" y="28" width="220" height="114" rx="10" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="134" y="64" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">GitNexus</text>
+            <text x="134" y="90" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">structural code graph</text>
+            <text x="134" y="112" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="12">during research</text>
+            <rect x="280" y="28" width="220" height="114" rx="10" fill="#e4f1ec" stroke="#0f5c4c"/>
+            <text x="390" y="64" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">GPT Researcher</text>
+            <text x="390" y="90" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">cited report writer</text>
+            <text x="390" y="112" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="12">report_complete</text>
+            <rect x="536" y="28" width="280" height="114" rx="10" fill="#fffdf8" stroke="#0f5c4c"/>
+            <text x="676" y="64" text-anchor="middle" fill="#0a3d33" font-family="IBM Plex Sans, sans-serif" font-size="13" font-weight="600">InfraNodus</text>
+            <text x="676" y="90" text-anchor="middle" fill="#1c1915" font-family="Source Serif 4, Georgia, serif" font-size="12">text-network gaps</text>
+            <text x="676" y="112" text-anchor="middle" fill="#5c564c" font-family="IBM Plex Sans, sans-serif" font-size="12">after the report</text>
+          </svg>
+        </div>
+        <p class="caption">Illustrative: two graphs, two times. Code MRI during the run; gap PET on the finished prose.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>Graph layers</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> <code>search_prior_reports</code> is keyword overlap, cheap by design. Repo-wide InfraNodus matches: zero. <code>external:</code> InfraNodus MCP is built for structural gaps and GraphRAG over existing text, not crawling.</dd>
+          <dt>Rationale</dt>
+          <dd>This is the one InfraNodus shape that honors “consider it” without replacing the researcher or competing with codegraph inside the tool picker.</dd>
+          <dt>Downsides</dt>
+          <dd>Vendor lock and data-handling (<code>doNotSave</code> exists on their API). Library JSON grows. If the hosted MCP is down, research must still complete.</dd>
+          <dt>Confidence</dt>
+          <dd>76%</dd>
+          <dt>Complexity</dt>
+          <dd>Medium</dd>
+        </dl>
+      </article>
+
+      <article class="idea" id="idea-5">
+        <h3><span class="rank">5</span> One codegraph instrument on the tray</h3>
+        <p>Mounting the codegraph server is not the same as selecting GitNexus. Upstream's MCP retriever lets the LLM pick two or three tools from <em>all</em> mounted MCP tools, while the sidecar exposes a full tray (<code>query</code>, <code>context</code>, <code>impact</code>, <code>trace</code>, source search, …) on a memory-bound box. For codebase scope, default the overlay to one allowlisted tool (and an env var to widen it). Keep <code>hlt-codegraph</code> as-is; do not move analyze off the disk-owning service — that idea is already rejected in <code>reindex.sh</code> because Render disks are single-service.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>Graph layers</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> <code>gpt_researcher/retrievers/mcp/retriever.py</code> selects 2–3 tools from all available MCP tools. Codegraph registers about ten <code>@mcp.tool()</code> entries. No <code>CODEGRAPH_MCP_TOOLS</code> allowlist exists today.</dd>
+          <dt>Rationale</dt>
+          <dd>This is how Katailyst actually gets codegraphs through the researcher without turning Auto/codebase into an OOM lottery.</dd>
+          <dt>Downsides</dt>
+          <dd>A too-tight default may hide <code>impact</code>/<code>trace</code> when those are the right tools. The allowlist should be overlay-side so upstream retriever code stays untouched.</dd>
+          <dt>Confidence</dt>
+          <dd>81%</dd>
+          <dt>Complexity</dt>
+          <dd>Medium</dd>
+        </dl>
+      </article>
+
+      <article class="idea" id="idea-6">
+        <h3><span class="rank">6</span> Freeze the two-door overlay API</h3>
+        <p>Matching upstream tool names is compatibility. Matching upstream semantics is not required. Freeze this as the overlay contract: MCP <code>quick_search</code> / <code>deep_research</code> with <code>scope=auto</code> may escalate into presets (codegraph, Katailyst, …); REST <code>/api/quick_search</code> never does. Test both. When a browser-supplied stdio MCP config is dropped because this container has no Node and one failing stdio poisons the run, put that drop on the run payload the UI and Katailyst can see — not only in a server log.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>HLT overlay surface</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> <code>mcp_server/tools.py</code> escalates estate scopes to a short research pass so Katailyst2/GitHub actually fire. <code>hlt_extensions.py</code> documents REST as the web-only exception. Stdio configs are dropped with a warning; the frontend never reads <code>dropped_mcp_configs</code>.</dd>
+          <dt>Rationale</dt>
+          <dd>“Keep much similar” is about Assaf's product remaining recognizable, not about accidentally teaching generic gptr-mcp clients that REST and MCP behave the same. Loud drops stop silent under-delivery.</dd>
+          <dt>Downsides</dt>
+          <dd>A generic client pointed at the hosted MCP URL inherits HLT estate behavior. That is desirable if documented; surprising if not.</dd>
+          <dt>Confidence</dt>
+          <dd>80%</dd>
+          <dt>Complexity</dt>
+          <dd>Low</dd>
+        </dl>
+      </article>
+
+      <article class="idea" id="idea-7">
+        <h3><span class="rank">7</span> Make pack-load and persona registration observable</h3>
+        <p>Cleo's boot is supposed to fetch <code>agents.runtime_pack</code> first, then fall back to <code>registry_agent_context</code>. Today that order is a prompt hint, not an observed health signal — so a degraded pack looks like “Cleo being weird.” Meanwhile docs and <code>render.yaml</code> describe <code>AGENT_ID=brian</code>, but <code>AGENT_REFS</code> only registers Cleo, so Brian boots without a registry ref and never gets the pack-load instruction. Register every on-disk persona, fail loud on unknown <code>AGENT_ID</code>, and report which K2 verb actually fired on <code>/health</code>.</p>
+        <dl>
+          <dt>Axis</dt>
+          <dd>Agent runtimes</dd>
+          <dt>Basis</dt>
+          <dd><code>direct:</code> <code>AGENT_REFS = {"cleo": "agent:cleo@v1"}</code>; <code>agent_ref()</code> returns <code>None</code> for <code>brian</code>. <code>K2_PACKET_LOAD_ORDER</code> is written into a client hint only. Slack toolset lockdown is already persona-agnostic; the missing piece is the K2 routing contract per <code>grounding/</code> directory.</dd>
+          <dt>Rationale</dt>
+          <dd>Katailyst cannot “easily use” research if the Slack body is silently running without its compiled pack. This is the smallest move that makes the current Cleo/K2 design honest in production.</dd>
+          <dt>Downsides</dt>
+          <dd>Registering Brian without a live K2 census row would still fail the pack fetch; the health signal should distinguish “persona unknown here” from “K2 has no cleo/brian yet.”</dd>
+          <dt>Confidence</dt>
+          <dd>87%</dd>
+          <dt>Complexity</dt>
+          <dd>Low</dd>
+        </dl>
+      </article>
+    </section>
+
+    <section id="rejection-summary">
+      <h2>Rejection Summary</h2>
+      <table class="rej">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Idea</th>
+            <th>Reason rejected</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>G</td><td>cgroup/ulimit around gitnexus analyze</td><td>Basis refuted/weak: <code>reindex.sh</code> already warns heap caps are worse than useless; native memory, not V8.</td></tr>
+          <tr><td>CC</td><td>Move analyze off the serving box</td><td>Basis refuted: Render disks are single-service; indexer cannot write where the MCP server reads.</td></tr>
+          <tr><td>Z</td><td>Never-merge pin + overlay-only main</td><td>Contradicts “stay close to upstream / keep much similar”; weekly merge is the asked identity.</td></tr>
+          <tr><td>J</td><td>Auto-merge clean sync PRs</td><td>Too expensive relative to trust: the current two-file gate is too thin (idea 1 must exist first).</td></tr>
+          <tr><td>DD</td><td>Canary on every upstream SHA</td><td>Not actionable as stated (no native subscribe to a repo we do not own); Monday + overlay contract is enough.</td></tr>
+          <tr><td>BB</td><td>One K2 <code>research</code> verb replacing five tools</td><td>Vague: five signatures and a stateful <code>research_id</code> handoff have no concrete collapse mechanism. Folded into idea 2 as a later variant.</td></tr>
+          <tr><td>M</td><td>Auto-write CE solutions cards from reports</td><td>Not grounded here: <code>docs/solutions/</code> is an empty CE convention, not this repo's practice.</td></tr>
+          <tr><td>S</td><td>InfraNodus as a research-time MCP preset</td><td>Duplicate of a weaker on-ramp; idea 4 keeps post-report as primary so it never enters the retriever lottery.</td></tr>
+          <tr><td>AA</td><td>uvicorn wrapper, zero lines in app.py</td><td>Overlap with idea 1; keep the existing one-line contract and defend it before changing the process entrypoint.</td></tr>
+          <tr><td>I</td><td>Add <code>test_agent_boot.py</code> to the sync gate only</td><td>Duplicate of a slice of idea 1 / 7; not a standalone direction.</td></tr>
+          <tr><td>D</td><td>Collapse Katailyst token env aliases</td><td>Below ambition floor for this topic — real cleanup, not a direction worth a team strategy meeting.</td></tr>
+          <tr><td>P</td><td>Symbol-tagged report memory</td><td>Interesting compounding, but second-order to idea 5 (tool selection) and idea 4 (library gaps).</td></tr>
+          <tr><td>V (as stated)</td><td>SOFA claiming “three MCP mounts”</td><td>Basis weak on the mount count (five, not three). Rebuilt as idea 3 with the corrected inventory.</td></tr>
+        </tbody>
+      </table>
+      <p class="callout">No axis was left empty. Graph layers has two survivors on purpose: codegraph (structural) and InfraNodus (text-network) are different graphs, not two takes on the same idea.</p>
+    </section>
+
+    <footer class="composition-signal">Composed 2026-08-14T03:30Z by ce-ideate from the GPT Researcher overlay / Katailyst consumption / InfraNodus / runtime-SDK focus.</footer>
+  </div>
+</body>
+</html>
