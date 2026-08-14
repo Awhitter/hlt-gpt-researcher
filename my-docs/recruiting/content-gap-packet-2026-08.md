@@ -71,9 +71,13 @@ live posting data) that nobody else has.
 
 ## Evidence gaps to close before scaling
 
-- Pains #1 and #5 receipts are dated (2011). The weekly audience sweep should
-  land fresh (2025-26) confirmations before a campaign leans on the exact
-  phrasing.
+- Pain #1 now has a fresh receipt (LinkedIn nurse comment, 2026-04, plus 2026
+  market corroboration: ~8.6% RN vacancy alongside 50-100-application new-grad
+  searches — the "shortage but no offers" paradox is itself campaign material).
+  Pain #5's receipt is still dated (2011); the weekly sweep should land a
+  fresh confirmation before a campaign leans on the exact phrasing. One fresh
+  structural receipt for #5's urgency: top residency application windows
+  reportedly stay open only 3-7 days (globalnurseguide.com, 2026).
 - Region-level pay quotes are missing — needed if #3 becomes state-localized.
 - No competitor teardown yet (Nurse.org, Incredible Health, Trusted Health
   content arms). Run one audience+recruiting-scoped Mastery Research pass

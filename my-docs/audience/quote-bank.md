@@ -22,6 +22,21 @@ Format per entry: the quote, then source link, signal, date, and theme tags.
      the fetched source page on that date. The weekly sweep should keep
      appending fresher receipts above older ones. -->
 
+> "as a newer nurse I have got only a few interviews as an RN and yet even with extensive background in healthcare I get looked passed for not having a BSN or any acute care experience but experience can't be gain unless someone actually gives new nurses a chance"
+
+- Source: https://www.linkedin.com/posts/pamela-moss-rn-cen-074b5338_nursing-healthcareleadership-newgradnurses-activity-7452558724730322944-yvBy (comment on an RN's post about AI screening locking out new grads)
+- Signal: nurse-voice comment on a widely-engaged RN leadership post; the post itself argues ATS/AI filters reject new grads before a human reads them
+- Date: 2026-04
+- Themes: `first-job` `experience-wall` `ats-screening` `connections`
+
+Corroborating 2026 market receipts (publication voice, not nurse voice — kept
+separate on purpose): The Nursing Directory (2026) reports new grads "applying
+to 50, 80, 100 positions and receiving either silence or generic rejection
+emails," some waiting "six months to a year after passing the NCLEX," against
+an 8.6% RN vacancy rate, quoting Sarah K. Wells, MSN, RN (2026-05-13): "It is
+not you. It is a systems problem."
+(https://thenursingdirectory.com/news/new-grad-nurses-job-market-paradox-2026)
+
 > "Even as a new grad, starting pay there should be no less than $30-35/hr., with a schedule you should be able to see while interviewing to show how often reviews are and how your salary will change with them."
 
 - Source: https://www.incrediblehealth.com/nurse-advice/questions/a2bc305c/what-would-you-consider-an-acceptable-starting-pay
