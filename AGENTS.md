@@ -62,19 +62,23 @@ mirrored `.cursor/mcp.json` (same servers, `${env:VAR}` token interpolation —
 set `KATAILYST_MCP_TOKEN`, `GPTR_MCP_TOKEN`, and `MM_AGENT_TOKEN` in the
 environment Cursor launches from, or in Cloud Agent secrets):
 
-1. **`katailyst`** (HTTP, hosted) — the registry. Tools: `discover`, `traverse`,
-   `get_entity`, `registry_capabilities`, `registry_health`, `registry_agent_context`,
-   `katailyst_orchestrate`, `tool_describe`/`tool_execute`, `memory_query`/`memory_write`.
-   First call to make in any new task: `discover` with a 2-sentence intent.
-2. **`multimediaMastery`** (HTTP, hosted) — image / video / TTS generation.
+1. **`katailyst`** (HTTP, hosted) — Katailyst2, the current registry. Tools:
+   `discover`, `traverse`, `get_entity`, `registry_capabilities`,
+   `registry_health`, `registry_agent_context`, `katailyst_orchestrate`,
+   `tool_describe`/`tool_execute`, `memory_query`/`memory_write`. First call
+   in any new task: `discover` with a 2-sentence intent.
+2. **`katailyst-v1`** (HTTP, hosted) — the v1 registry at
+   `https://www.katailyst.com/mcp`. Same Bearer token as `katailyst`. Use
+   Katailyst2 for new work; v1 is the fallback the health docs still cite.
+3. **`multimediaMastery`** (HTTP, hosted) — image / video / TTS generation.
    Live at `multimediamastery.vercel.app/api/media/v1/*`. Default image model:
    FAL nano-banana-2. Cloudinary upload server-side.
-3. **`gpt-researcher`** (HTTP, hosted) — HLT-hosted GPT Researcher MCP server.
+4. **`gpt-researcher`** (HTTP, hosted) — HLT-hosted GPT Researcher MCP server.
    URL: `https://gpt-researcher-mcp-production.up.railway.app/mcp`.
    Auth: `Authorization: Bearer ${GPTR_MCP_TOKEN}`. Tools:
    `deep_research`, `quick_search`, `write_report`, `get_research_sources`,
-   `get_research_context`; resource: `research://{topic}`. Owner's manual:
-   `docs/usage/owners-manual.md`.
+   `get_research_context`, `get_research_images`; resource:
+   `research://{topic}`. Owner's manual: `docs/usage/owners-manual.md`.
 
 Human UI: `https://gpt-researcher-ui.vercel.app` is branded as **Mastery
 Research**. Ask is the always-on surface; the other tabs (Nurse voice,

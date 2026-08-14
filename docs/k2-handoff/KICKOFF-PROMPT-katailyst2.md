@@ -49,7 +49,7 @@ disagree, the repo's types win:
 6. Run this repo's own gates (`pnpm verify` and the registry/seed tests) and
    fix what they surface.
 7. Prove it: `agents.runtime_pack`, `agents.shell_config`, and the compat
-   `registry.agent_context` for `agent:cleo` must each return a real packet,
+   `registry_agent_context` for `agent:cleo` must each return a real packet,
    not a miss. Record the receipts in the PR description.
 
 Hard boundaries: do not flip `is_online` (fleet states: this lands at
