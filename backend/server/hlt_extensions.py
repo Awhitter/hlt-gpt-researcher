@@ -107,7 +107,7 @@ _codegraph_health_cache: tuple[float, list[dict[str, Any]]] | None = None
 # Paths that must remain callable without auth so the frontend + Railway
 # healthcheck + static assets keep working. Tight allowlist — every other
 # route requires `X-API-Key`.
-_PUBLIC_EXACT: set[str] = {"/", "/health", "/favicon.ico"}
+_PUBLIC_EXACT: set[str] = {"/", "/health", "/favicon.ico", "/api/hlt/capabilities"}
 _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/site/",      # Next.js static build
     "/static/",    # Any static mounts
@@ -134,9 +134,10 @@ _SCOPE_INSTRUCTIONS = {
         "repo maps, pull requests, and architecture notes over generic web sources."
     ),
     "cms": (
-        "Use available Katailyst2 registry, knowledge-base, playbook, skill, and "
-        "ecosystem-map context when it is relevant to the question. Do not treat "
-        "this as corporate CMS or question-bank access."
+        "Use the Katailyst2 capability graph, not web search: call discover then "
+        "get_entity or traverse on returned refs. Load packs with "
+        "registry_agent_context, memory_query, or registry_artifact_body when "
+        "those tools are present. Do not treat this as corporate CMS or QBank."
     ),
     "qbank": (
         "Use read-only corporate CMS and question-bank context through the "
@@ -334,6 +335,14 @@ def _scope_instruction(key: str) -> str:
             "documented intent, operational receipt, and live-system access. A source "
             "not connected to this run is currently unavailable, not permanently "
             "forbidden."
+        )
+    if key == "cms":
+        return (
+            "For estate capability questions, call discover then get_entity or "
+            "traverse on returned refs; use registry_agent_context or memory_query "
+            "when present. If only tool_search/tool_execute are listed, search the "
+            "catalog then execute read paths — never write or publish. Katailyst is "
+            "the capability graph, not web search or corporate CMS."
         )
     return _SCOPE_INSTRUCTIONS[key]
 
@@ -717,11 +726,18 @@ def _mcp_config_for_preset(preset: str, name: str | None = None) -> dict[str, An
         logger.warning("Skipping unknown MCP preset: %s", preset)
         return None
 
+    headers = _bearer_headers(token)
+    # Do not default this to `bootstrap` — that is the first-glance slice.
+    # Unset means the full K2 catalog; operators can still narrow via env.
+    if preset == "katailyst":
+        toolset = (os.getenv("KATAILYST_TOOLSET") or "").strip()
+        if toolset:
+            headers = {**headers, "X-Katailyst-Toolset": toolset}
     return {
         "name": name,
         "connection_url": url,
         "connection_type": "streamable_http",
-        "connection_headers": _bearer_headers(token),
+        "connection_headers": headers,
     }
 
 
@@ -1115,6 +1131,13 @@ def install(
     @app.get("/api/hlt/readiness", tags=["hlt"])
     def readiness():  # noqa: D401
         return get_hlt_readiness()
+
+    @app.get("/api/hlt/capabilities", tags=["hlt"])
+    def capabilities():  # noqa: D401
+        """Public door map so Katailyst binds MCP instead of guessing REST."""
+        from mcp_server.tool_catalog import research_capabilities
+
+        return research_capabilities()
 
     @app.post("/gather", tags=["hlt"])
     async def katailyst_gather(request: Request):  # noqa: D401

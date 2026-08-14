@@ -772,7 +772,6 @@ def register_tools(mcp: FastMCP) -> None:
             f"use write_report with a custom prompt to generate a structured {report_format}."
         )
 
-    logger.info(
-        "Registered GPT Researcher MCP tools: deep_research, quick_search, "
-        "write_report, get_research_sources, get_research_context, get_research_images"
-    )
+    from mcp_server.tool_catalog import RESEARCH_MCP_TOOLS
+
+    logger.info("Registered GPT Researcher MCP tools: %s", ", ".join(RESEARCH_MCP_TOOLS))

@@ -98,7 +98,9 @@ links rather than competing with the main prompt.
 `scope="auto"`. Pin `["codebase","cms"]` or pass `"none"` to override.
 Estate questions on `quick_search` escalate to a short scoped research pass
 (`mode: "scoped_research"`) — expect seconds, not milliseconds. Pass
-`scope="none"` for a guaranteed cheap web scan. Fast, Balanced, and Deep use
+`scope="none"` for a guaranteed cheap web scan. Registry/CMS scope mounts
+the full Katailyst2 catalog (not the `bootstrap` slice) and pins `discover`
+→ `get_entity`/`traverse` so the run actually uses the graph. Fast, Balanced, and Deep use
 progressively wider 5/8/12-result pools per query. Research returns attributed
 source images when pages expose them; agents can set
 `include_generated_images=true` for optional non-likeness illustrations and

@@ -16,6 +16,7 @@ owned:
   - tests/test_hlt_*.py
   - tests/test_firecrawl_retriever.py
   - tests/test_overlay_contract.py
+  - tests/test_tool_catalog.py
   - overlay/
   - scripts/check_overlay_contract.py
   - .github/workflows/upstream-sync.yml
@@ -51,3 +52,4 @@ leaves:
   - backend/server/hlt_scope_inference.py
   - backend/server/hlt_suggestions.py
   - backend/server/hlt_grounding.py
+  - mcp_server/tool_catalog.py

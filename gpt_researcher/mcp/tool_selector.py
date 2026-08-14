@@ -42,19 +42,99 @@ class MCPToolSelector:
         """
 
         required_names = ("search_source", "read_source", "verify_source_ref")
+        return MCPToolSelector._pin_named_tools(
+            selected_tools,
+            all_tools,
+            required_names,
+            max_tools,
+        )
 
-        def matches(tool, required_name: str) -> bool:
-            name = str(getattr(tool, "name", ""))
-            return name == required_name or name.endswith(
-                (f"__{required_name}", f".{required_name}", f"/{required_name}")
+    @staticmethod
+    def ensure_katailyst_registry_tools(
+        selected_tools: List,
+        all_tools: List,
+        max_tools: int = 8,
+    ) -> List:
+        """Pin the Katailyst2 graph so research is not a 3-tool web search.
+
+        A default MCP retriever asks the LLM to pick three tools from a 30+
+        catalog. That routinely drops ``discover`` / ``traverse`` / ``get_entity``
+        (and the progressive ``tool_search`` / ``tool_execute`` pair), so estate
+        questions never touch the registry even when the server is mounted.
+        """
+
+        required_names = (
+            "discover",
+            "traverse",
+            "get_entity",
+            "tool_search",
+            "tool_execute",
+            "registry_agent_context",
+            "memory_query",
+            "registry_artifact_body",
+            "registry_capabilities",
+            "tool_describe",
+        )
+        return MCPToolSelector._pin_named_tools(
+            selected_tools,
+            all_tools,
+            required_names,
+            max_tools,
+        )
+
+    @staticmethod
+    def ensure_estate_research_tools(
+        selected_tools: List,
+        all_tools: List,
+        max_tools: int = 10,
+    ) -> List:
+        """Keep code-source and Katailyst graph tools on the bound set together."""
+
+        code_tools = MCPToolSelector.ensure_code_source_tools(
+            [],
+            all_tools,
+            max_tools=3,
+        )
+        registry_tools = MCPToolSelector.ensure_katailyst_registry_tools(
+            [],
+            all_tools,
+            max_tools=6,
+        )
+        return MCPToolSelector._pin_named_tools(
+            [*code_tools, *registry_tools, *selected_tools],
+            all_tools,
+            (),
+            max_tools,
+        )
+
+    @staticmethod
+    def _pin_named_tools(
+        selected_tools: List,
+        all_tools: List,
+        required_names: tuple,
+        max_tools: int,
+    ) -> List:
+        """Prefix ``required_names`` (if present) onto the LLM's selection."""
+
+        pinned = []
+        claimed_aliases: set[str] = set()
+        for required_name in required_names:
+            aliases = MCPToolSelector._name_aliases(required_name)
+            if claimed_aliases & aliases:
+                continue
+            match = next(
+                (
+                    tool
+                    for tool in all_tools
+                    if MCPToolSelector._tool_name_matches(tool, required_name)
+                ),
+                None,
             )
+            if match is None:
+                continue
+            pinned.append(match)
+            claimed_aliases |= aliases
 
-        pinned = [
-            tool
-            for required_name in required_names
-            for tool in all_tools
-            if matches(tool, required_name)
-        ]
         combined = []
         seen = set()
         for tool in [*pinned, *selected_tools]:
@@ -66,6 +146,31 @@ class MCPToolSelector:
             if len(combined) >= max_tools:
                 break
         return combined
+
+    @staticmethod
+    def _name_aliases(required_name: str) -> set[str]:
+        return {
+            required_name,
+            required_name.replace(".", "_"),
+            required_name.replace("_", "."),
+        }
+
+    @staticmethod
+    def _tool_basename(tool) -> str:
+        # Keep dotted K2 names (tool.search); only strip langchain server__ prefixes.
+        return str(getattr(tool, "name", "")).split("__")[-1].split("/")[-1]
+
+    @staticmethod
+    def _tool_name_matches(tool, required_name: str) -> bool:
+        name = MCPToolSelector._tool_basename(tool)
+        aliases = MCPToolSelector._name_aliases(required_name)
+        if name in aliases:
+            return True
+        return any(
+            name.endswith(suffix)
+            for alias in aliases
+            for suffix in (f"__{alias}", f".{alias}", f"/{alias}")
+        )
 
     async def select_relevant_tools(self, query: str, all_tools: List, max_tools: int = 3) -> List:
         """
@@ -208,8 +313,10 @@ class MCPToolSelector:
         """
         # Define patterns for research-relevant tools
         research_patterns = [
-            'search', 'get', 'read', 'fetch', 'find', 'list', 'query', 
-            'lookup', 'retrieve', 'browse', 'view', 'show', 'describe'
+            'search', 'get', 'read', 'fetch', 'find', 'list', 'query',
+            'lookup', 'retrieve', 'browse', 'view', 'show', 'describe',
+            'discover', 'traverse', 'entity', 'registry', 'capability',
+            'memory',
         ]
         
         scored_tools = []
