@@ -120,6 +120,7 @@ backend/server/
   hlt_media.py           ← Cloudinary for the media scope
   hlt_text.py            ← shared tokenizer/stopwords
 mcp_server/tools.py      ← MCP tools; both default scope="auto"
+overlay/manifest.yaml    ← owned overlay vs docking stamps (Monday sync grades this)
 frontend/nextjs/         ← Mastery Research UI (Vercel)
 docs/usage/              ← this folder — operator docs
 docs/prd/mastery-brain.md

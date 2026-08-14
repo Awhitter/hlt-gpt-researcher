@@ -1,9 +1,9 @@
 name: Weekly upstream sync
 
 # Keeps this fork "main-branch-ish" against assafelovic/gpt-researcher.
-# Merges upstream into a sync branch, runs the HLT test suite, and opens an
-# AI-reviewable PR. On merge conflicts it opens the PR anyway with a conflict
-# report so an agent can resolve it.
+# Merges upstream into a sync branch, grades the overlay contract, runs the
+# HLT test suite on clean merges, and opens an AI-reviewable PR. On merge
+# conflicts it still opens the PR (with markers) so an agent can resolve it.
 
 on:
   schedule:
@@ -55,17 +55,41 @@ jobs:
           git push -u origin "$BRANCH"
 
       - name: Set up Python
-        if: steps.merge.outputs.behind != '0' && steps.merge.outputs.conflicts == ''
+        if: steps.merge.outputs.behind != '0'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Overlay contract
+        if: steps.merge.outputs.behind != '0'
+        id: overlay
+        run: |
+          pip install pyyaml
+          set +e
+          python scripts/check_overlay_contract.py \
+            --diff-base origin/main \
+            --write-report overlay-grade.md
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Run HLT test suite
         if: steps.merge.outputs.behind != '0' && steps.merge.outputs.conflicts == ''
         id: tests
         run: |
-          pip install -r requirements.txt pytest >/dev/null 2>&1 || true
-          if python -m pytest tests/test_hlt_extensions.py tests/test_firecrawl_retriever.py -q; then
+          pip install -r requirements.txt pytest
+          if python -m pytest \
+            tests/test_hlt_extensions.py \
+            tests/test_hlt_grounding.py \
+            tests/test_hlt_scope_inference.py \
+            tests/test_hlt_suggestions.py \
+            tests/test_firecrawl_retriever.py \
+            tests/test_overlay_contract.py \
+            -q; then
             echo "result=pass" >> "$GITHUB_OUTPUT"
           else
             echo "result=fail" >> "$GITHUB_OUTPUT"
@@ -76,23 +100,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          OVERLAY="${{ steps.overlay.outputs.result }}"
           if [ -n "${{ steps.merge.outputs.conflicts }}" ]; then
-            STATUS="**Merge conflicts** in: ${{ steps.merge.outputs.conflicts }} — conflict markers are committed on this branch; resolve before merging."
+            STATUS="**Merge conflicts** in: ${{ steps.merge.outputs.conflicts }} — conflict markers are committed on this branch; resolve before merging. Overlay contract: **${OVERLAY}**."
+          elif [ "$OVERLAY" != "pass" ]; then
+            STATUS="Clean merge but overlay contract **failing** — restore docking stamps before merging."
           elif [ "${{ steps.tests.outputs.result }}" = "pass" ]; then
-            STATUS="Clean merge, HLT test suite **passing**."
+            STATUS="Clean merge, overlay contract and HLT tests **passing**."
           else
-            STATUS="Clean merge but HLT test suite **failing** — investigate before merging."
+            STATUS="Clean merge and overlay contract passing, but HLT test suite **failing** — investigate before merging."
           fi
+
+          {
+            echo "Weekly sync from assafelovic/gpt-researcher."
+            echo
+            echo "${STATUS}"
+            echo
+            if [ -f overlay-grade.md ]; then
+              cat overlay-grade.md
+            else
+              echo "Overlay grade was not produced."
+            fi
+          } > /tmp/sync-pr-body.md
 
           gh pr create \
             --head "${{ steps.merge.outputs.branch }}" \
             --title "Upstream sync $(date +%Y-%m-%d) (${{ steps.merge.outputs.behind }} commits)" \
-            --body "Weekly sync from assafelovic/gpt-researcher.
-
-          ${STATUS}
-
-          HLT overlay files to double-check after any upstream churn:
-          - backend/server/hlt_extensions.py
-          - gpt_researcher/retrievers/firecrawl/
-          - frontend/nextjs/components/brain/
-          - mcp_server/" || echo "PR may already exist for this branch"
+            --body-file /tmp/sync-pr-body.md || echo "PR may already exist for this branch"

@@ -37,7 +37,9 @@ mcp_server/tools.py                   MCP tools (default scope="auto")
 
 Leaves never import `hlt_extensions`. New Brain/tab work goes in
 `hlt_brain.py`; new Auto signals go in `hlt_scope_inference.py`; the router
-stays the thin compose point.
+stays the thin compose point. The owned-vs-docking contract lives in
+[`overlay/manifest.yaml`](overlay/manifest.yaml) and is enforced by
+`scripts/check_overlay_contract.py` (Monday sync grades it even on conflicts).
 
 ## Where it sits in the HLT ecosystem
 

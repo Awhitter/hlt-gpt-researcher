@@ -1,0 +1,53 @@
+# HLT overlay contract for this GPT Researcher fork.
+# Owned paths live only here. Docking files are upstream files we patch and
+# must re-stamp after a regen. Leaves must never import hlt_extensions.
+# Graded by scripts/check_overlay_contract.py and the Monday upstream-sync job.
+version: 1
+
+owned:
+  - backend/server/hlt_*.py
+  - mcp_server/
+  - gpt_researcher/retrievers/firecrawl/
+  - gpt_researcher/utils/langfuse_observability.py
+  - frontend/nextjs/components/brain/
+  - frontend/nextjs/lib/hltResearchScope.ts
+  - frontend/nextjs/lib/hltBranding.ts
+  - frontend/nextjs/lib/brainTabs.ts
+  - tests/test_hlt_*.py
+  - tests/test_firecrawl_retriever.py
+  - tests/test_overlay_contract.py
+  - overlay/
+  - scripts/check_overlay_contract.py
+  - .github/workflows/upstream-sync.yml
+  - .github/workflows/audience-sweep.yml
+  - .github/workflows/hlt-checks.yml
+  - AGENTS.md
+  - docs/usage/START-HERE.md
+
+docking:
+  - path: backend/server/app.py
+    markers:
+      - _install_hlt_extensions(app)
+      - hlt_research_scope
+      - _hlt_prepare_research_request
+  - path: backend/server/server_utils.py
+    markers:
+      - prepare_hlt_research_request
+  - path: gpt_researcher/retrievers/__init__.py
+    markers:
+      - FirecrawlSearch
+  - path: gpt_researcher/retrievers/utils.py
+    markers:
+      - '"firecrawl"'
+  - path: gpt_researcher/actions/retriever.py
+    markers:
+      - 'case "firecrawl":'
+
+# Router and doors may import hlt_extensions. These files must not.
+leaves:
+  - backend/server/hlt_brain.py
+  - backend/server/hlt_media.py
+  - backend/server/hlt_text.py
+  - backend/server/hlt_scope_inference.py
+  - backend/server/hlt_suggestions.py
+  - backend/server/hlt_grounding.py

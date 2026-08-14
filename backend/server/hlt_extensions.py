@@ -1,7 +1,11 @@
 """HLT entrypoint and research-request router for the GPT Researcher app.
 
-Isolated from upstream code so it can be re-applied after upstream merges
-without touching `backend/server/app.py` beyond a single import line.
+Isolated from upstream core so Monday's sync can re-apply HLT behavior.
+The docking surface is larger than a single import: `app.py` and
+`server_utils.py` call `prepare_research_request`, carry `hlt_research_scope`,
+and `app.py` still ends with `_install_hlt_extensions(app)`. Those stamps,
+plus the Firecrawl retriever registrations, are the overlay contract in
+`overlay/manifest.yaml` (checked by `scripts/check_overlay_contract.py`).
 
 This module owns auth, integration readiness, MCP scope presets, and the
 request router. Everything else lives in sibling `hlt_*` leaf modules that
@@ -10,6 +14,8 @@ this one composes — leaves never import back into here:
     hlt_text.py            shared stopwords + tokenizer
     hlt_media.py           Cloudinary search for the `media` scope
     hlt_brain.py           /api/brain/* estate context, library, Linear
+    hlt_grounding.py       source validation and report delivery receipts
+    hlt_suggestions.py     Ask suggestion bank
     hlt_scope_inference.py picks scopes when the caller sends `auto`
     hlt_extensions.py      auth · readiness · presets · router · routes  <- here
 
@@ -17,7 +23,8 @@ The router is the single place a research request gets shaped. All three
 doors go through `prepare_research_request`: the web UI (WebSocket), the MCP
 tools, and `POST /report/`. `POST /api/quick_search` is the one deliberate
 exception — it is web-only, because it runs no MCP tools and reads no local
-corpora (see its docstring in `app.py`).
+corpora (see its docstring in `app.py`). `mcp_server/tools.py` is a door, not
+a leaf, so it may import this module.
 
 Adds:
   1. `GET /health` - dedicated liveness probe (Railway healthcheck target).
@@ -26,12 +33,14 @@ Adds:
      unset, the middleware is a no-op (useful for local dev).
   3. `/api/brain/*` and scope-aware research request preparation.
 
-Usage (one line at the bottom of `app.py`):
+Usage (EOF of `app.py` plus the in-file call sites listed in the manifest):
 
-    from server.hlt_extensions import install as install_hlt_extensions
-    install_hlt_extensions(app)
+    from server.hlt_extensions import install as _install_hlt_extensions
+    _install_hlt_extensions(app)
 
-Upstream merges: if `app.py` is regenerated, just re-add that one import.
+Upstream merges: if `app.py` is regenerated, restore every docking marker in
+`overlay/manifest.yaml` — not only the install line. The Monday sync PR
+fails the overlay contract until those stamps are back.
 """
 from __future__ import annotations
 
