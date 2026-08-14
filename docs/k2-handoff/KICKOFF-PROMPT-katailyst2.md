@@ -56,4 +56,8 @@ disagree, the repo's types win:
 Hard boundaries: do not flip `is_online` (fleet states: this lands at
 *authored*; owner tuning comes later). Do not touch the v1 registry. Do not
 create or modify any Slack binding — the Slack app stays owned by the Hermes
-deployment. Open the work as a PR on this repo; do not merge it yourself.
+deployment. Do not touch any Render service, disk, or environment variable:
+`hlt-hermes`, `hlt-codegraph`, and Cleo's five MCP mounts (codegraph,
+gpt-researcher, katailyst2, linear, posthog) are live and healthy and this
+work is registry rows only. Open the work as a PR on this repo; do not merge
+it yourself.

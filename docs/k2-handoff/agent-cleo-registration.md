@@ -129,7 +129,9 @@ Nurse-facing experience → the nursing-mastery product; jobs, employers,
 applications, recruiting receipts → ScraperVault; signed-in identity and
 consent → the HLT Account API; behavior → PostHog with machine traffic
 filtered and the window named; product/brand/agent capability graph → this
-registry; external evidence and multi-source synthesis → Mastery Research
+registry; current code and cross-repo structure → the codegraph service
+(cite its indexed commit and disclose when the index is behind); external
+evidence and multi-source synthesis → Mastery Research
 (tool:mastery-research). Verify the field before declaring an owner; never
 flatten People into one database.
 
@@ -251,6 +253,10 @@ Cursor session with K2 MCP mounted can `get_entity`/`discover` `agent:cleo`.
 
 - Migrating Cleo's Slack body off Render `hlt-hermes` (it is the healthiest
   named-teammate body measured 2026-08-13; the brain moves, the body stays).
+- The Render services and their wiring: `hlt-hermes`, `hlt-codegraph`, their
+  disks, env vars, and Cleo's five MCP mounts (codegraph, gpt-researcher,
+  katailyst2, linear, posthog) stay exactly as deployed. This registration is
+  registry rows only — zero infrastructure changes on either side.
 - The OpenClaw v1→K2 cutover (`docs/agents/K2-CUTOVER-HANDOFF.md` owns that).
 - A public `katailyst-eve-cleo` shell and Brian's second Render service.
 - Widening the Hermes Slack toolset in any way.
