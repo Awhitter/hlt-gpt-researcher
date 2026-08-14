@@ -22,6 +22,13 @@ Format per entry: the quote, then source link, signal, date, and theme tags.
      the fetched source page on that date. The weekly sweep should keep
      appending fresher receipts above older ones. -->
 
+> "I remember when I was preparing for the NCLEX myself, I had started working full-time at a local hospital, thinking I could handle both. At first, it felt manageable, but as my test date got closer, the fatigue and stress began to build. I had to make the tough decision to step back from work temporarily"
+
+- Source: https://community.kaplan.com/careercommunity/discussion/12131/should-you-work-while-studying-for-the-nclex
+- Signal: first-person on Kaplan Career Community (staff/community post, not a forum thread); adjacent to pain #5 — this is work-vs-study, not apply-vs-study
+- Date: 2025-07 (edited 2025-11)
+- Themes: `nclex-vs-job-search` `timing` `adjacent`
+
 > "as a newer nurse I have got only a few interviews as an RN and yet even with extensive background in healthcare I get looked passed for not having a BSN or any acute care experience but experience can't be gain unless someone actually gives new nurses a chance"
 
 - Source: https://www.linkedin.com/posts/pamela-moss-rn-cen-074b5338_nursing-healthcareleadership-newgradnurses-activity-7452558724730322944-yvBy (comment on an RN's post about AI screening locking out new grads)

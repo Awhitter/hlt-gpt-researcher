@@ -8,7 +8,7 @@
 > **Shortest possible paste** (instead of the full text below):
 >
 > ```
-> Fetch https://raw.githubusercontent.com/Awhitter/hlt-gpt-researcher/cursor/cleo-k2-org-map-fd55/docs/k2-handoff/KICKOFF-PROMPT-katailyst2.md and execute everything below its horizontal rule as your task.
+> Fetch docs/k2-handoff/KICKOFF-PROMPT-katailyst2.md from Awhitter/hlt-gpt-researcher (try branch main, then cursor/cleo-k2-org-map-fd55 if main 404s) and execute everything below its horizontal rule as your task.
 > ```
 
 ---
@@ -20,13 +20,12 @@ grounding tells her to load a K2 packet, but no `cleo` row exists here, so
 that call returns nothing.
 
 The complete registration package (census row, seed field content, doctrine,
-skill body, links, proof steps, and deliberate scope exclusions) is here —
-fetch it first and treat it as the content source of truth:
+skill body, links, proof steps, and deliberate scope exclusions) lives at
+`docs/k2-handoff/agent-cleo-registration.md` in `Awhitter/hlt-gpt-researcher`.
+Fetch it first and treat it as the content source of truth. Try in this order:
 
-https://raw.githubusercontent.com/Awhitter/hlt-gpt-researcher/cursor/cleo-k2-org-map-fd55/docs/k2-handoff/agent-cleo-registration.md
-
-(If that branch is gone, the file lives at `docs/k2-handoff/agent-cleo-registration.md`
-on `main` of `Awhitter/hlt-gpt-researcher` after PR #90 merges.)
+1. `https://raw.githubusercontent.com/Awhitter/hlt-gpt-researcher/main/docs/k2-handoff/agent-cleo-registration.md`
+2. If that 404s, the same path on `cursor/cleo-k2-org-map-fd55`
 
 Apply it using THIS repo's own current conventions — the package supplies
 content, not exact code; where its field names and the current seed helpers

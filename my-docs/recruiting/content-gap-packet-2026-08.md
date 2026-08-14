@@ -47,6 +47,16 @@ questions nurses actually type ("applied to residency haven't heard back",
 "is $X normal new grad offer", "off orientation feel unsafe") and routes each
 into the matching NM tool with live posting data.
 
+### Competitor snapshot (public pages, 2026-08-14)
+
+| Player | What they actually publish | What they don't, that NM can |
+| --- | --- | --- |
+| Nurse.org | Ranked residency lists, news explainers (pipeline/orientation compression, TRAPs / stay-or-pay, CA AB 692), empowerment pieces about NRPs as a purchased curriculum | Live posting-backed pay; the applicant-side "Manager Review then silence" experience; a first-contract reader that uses the nurse's own offer |
+| Incredible Health | Job board + a nurse Q&A (the $20/hr Tempe thread we already quoted) | Structured residency-application tracking; routing from a pain story into a tool |
+| Trusted Health / similar | Travel-package and marketplace content | New-grad first-job journey + live staff-pay comparison |
+
+NM's unique combo is live posting pay (293 pages, Nurse Pay Check) + pain-matched tools (`residency-reality`, `new-grad-radar`, `offer-negotiation`, `first-90-days`) without the editorial front doors those tools need. Opportunity #1 and #3 are the ones no competitor currently occupies with both the nurse's words and live numbers.
+
 ## Opportunities (each anchored to a quote-bank receipt)
 
 | # | Working title | Pain (receipt) | Routes to | Rail |
@@ -74,10 +84,10 @@ live posting data) that nobody else has.
 - Pain #1 now has a fresh receipt (LinkedIn nurse comment, 2026-04, plus 2026
   market corroboration: ~8.6% RN vacancy alongside 50-100-application new-grad
   searches — the "shortage but no offers" paradox is itself campaign material).
-  Pain #5's receipt is still dated (2011); the weekly sweep should land a
-  fresh confirmation before a campaign leans on the exact phrasing. One fresh
-  structural receipt for #5's urgency: top residency application windows
-  reportedly stay open only 3-7 days (globalnurseguide.com, 2026).
+  Pain #5 has a 2025 Kaplan first-person receipt for work-vs-study; a fresh
+  forum voice for apply-vs-study is still missing. One structural receipt for
+  #5's urgency: top residency application windows reportedly stay open only
+  3-7 days (globalnurseguide.com, 2026).
 - Region-level pay quotes are missing — needed if #3 becomes state-localized.
 - No competitor teardown yet (Nurse.org, Incredible Health, Trusted Health
   content arms). Run one audience+recruiting-scoped Mastery Research pass

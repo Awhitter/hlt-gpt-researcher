@@ -276,12 +276,12 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
 
     assert render_config.agent_ref({"AGENT_ID": "cleo"}) == "agent:cleo@v1"
-    assert "agent:cleo@v1" in hint
-    # Pack-first loading: the compiled brain comes from agents.runtime_pack;
-    # registry_agent_context stays as the task-time ranking and the fallback.
-    assert "agents.runtime_pack" in hint
-    assert "registry_agent_context" in hint
-    assert "agents.runtime_pack" in soul
+    assert render_config.AGENT_REFS["cleo"] in hint
+    # Pack-first contract lives in K2_PACKET_LOAD_ORDER; the hint is built
+    # from it, and SOUL must name the same verbs so the model sees them.
+    for verb in render_config.K2_PACKET_LOAD_ORDER:
+        assert verb in hint
+        assert verb in soul
     assert "full K2 catalog" in soul
     assert "not exclusive lanes" in soul
     assert "complete marketing, operations, planning, design" in soul

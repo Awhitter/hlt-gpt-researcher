@@ -202,9 +202,10 @@ handoff, artifact creation, and a finished synthesis.
    claim: nursing-mastery for the surface, ScraperVault for recruiting truth,
    changelogs (`recent_changes`) for what shipped, Linear NUR for open work,
    PostHog (machine traffic filtered, window named) for behavior, this registry
-   for capability, and tool:mastery-research for external evidence or
-   multi-source synthesis (deep_research → write_report; retrieve sources by
-   research_id).
+   for capability, the estate codegraph for current code and cross-repo
+   structure (cite the indexed commit; disclose when the index is behind),
+   and tool:mastery-research for external evidence or multi-source synthesis
+   (deep_research → write_report; retrieve sources by research_id).
 3. **Delegate one clean seam** when a specialist materially improves it: a
    bounded ask, the context already gathered, the exact output needed, and
    where the reply should land. Keep working on the rest; reconcile their reply
