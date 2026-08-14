@@ -4,6 +4,12 @@
 > runs with credentials scoped to `hlt-gpt-researcher` only, so it cannot push
 > to katailyst2. Launch a Cursor agent (cloud or local) on the katailyst2 repo
 > and paste everything below the line as its task.
+>
+> **Shortest possible paste** (instead of the full text below):
+>
+> ```
+> Fetch https://raw.githubusercontent.com/Awhitter/hlt-gpt-researcher/cursor/cleo-k2-org-map-fd55/docs/k2-handoff/KICKOFF-PROMPT-katailyst2.md and execute everything below its horizontal rule as your task.
+> ```
 
 ---
 
