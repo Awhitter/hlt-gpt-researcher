@@ -203,15 +203,18 @@
         <dt>Topic</dt>
         <dd>upstream-overlay-katailyst</dd>
         <dt>Focus</dt>
-        <dd>Keep this GPT Researcher fork close to <code>assafelovic/gpt-researcher</code> (check and pull regularly, stay similar) while owning an HLT overlay so Katailyst can easily use research plus codegraphs. Consider InfraNodus. Treat Cloudflare Sandbox SDK, Cloudflare Agents SDK, and Vercel AI SDK as optional runtimes, not packages to fold into this fork.</dd>
+        <dd>Keep this GPT Researcher fork close to <code>assafelovic/gpt-researcher</code> (check and pull regularly, stay similar) while owning an HLT overlay so Katailyst can easily use research plus codegraphs. Consider InfraNodus. Treat Cloudflare Sandbox SDK, Cloudflare Agents SDK, and Vercel AI SDK as optional runtimes, not packages to fold into this fork. Continuation: is Apify Ultimate Scraper useful <em>inside</em> this repo?</dd>
         <dt>Mode</dt>
         <dd>repo-grounded</dd>
+        <dt>Updated</dt>
+        <dd><time datetime="2026-08-14">2026-08-14</time> — Apify continuation (keep hosted MCP, reject CLI-in-researcher)</dd>
       </dl>
       <div class="stats">
         <span class="chip">7 ranked ideas</span>
         <span class="chip">44 raw candidates</span>
         <span class="chip">5 axes covered</span>
         <span class="chip">13 agents</span>
+        <span class="chip">Apify: keep MCP, not CLI</span>
       </div>
     </header>
 
@@ -220,6 +223,7 @@
       <div class="prose">
         <p><strong>Codebase Context.</strong> This repo is a fork of Assaf Elovic's GPT Researcher, branded Mastery Research. HLT behavior is supposed to live in overlay modules (<code>hlt_*.py</code>), not in broad edits to upstream core. A Monday workflow merges upstream <code>master</code> into a <code>sync/upstream-*</code> PR, runs two HLT tests on clean merges, and pastes a static overlay checklist into the PR body. The live docking fuse is one import at the end of <code>backend/server/app.py</code> that calls <code>install_hlt_extensions(app)</code>.</p>
         <p>Katailyst already has three doors into this service: MCP tools whose names match upstream <code>gptr-mcp</code>, HTTP <code>/gather</code> (today a thin <code>quick_search</code> adapter with no <code>research_id</code>), and Brain/library routes. REST <code>/api/quick_search</code> is a documented web-only exception that does not mount codegraph or Katailyst presets. Codegraph is an in-repo GitNexus sidecar on Render (<code>hlt-codegraph</code>). Cleo's Slack body runs on Hermes (<code>hlt-hermes</code>) and mounts five MCP servers: gpt-researcher, codegraph, katailyst2, Linear, PostHog. InfraNodus has zero references in this tree. Cloudflare Sandbox/Agents SDK and Vercel AI SDK are not dependencies of this Python FastAPI fork.</p>
+        <p><strong>Apify (2026-08-14 continuation).</strong> Apify is already an overlay preset, not a missing product. <code>hlt_extensions.py</code> mounts <code>https://mcp.apify.com</code> when <code>APIFY_TOKEN</code> is set, and only for Deep web (<code>firecrawl</code> scope) or Audience — so research can reach forums and social that Firecrawl cannot. Production scraping stays Firecrawl. The weekly audience sweep asks for r/nursing, r/StudentNurse, and allnurses.com via that same scope, not via a CLI. Upstream's MCP retriever then lets the LLM pick 2–3 tools from <em>every</em> mounted MCP tool; Apify's hosted server exposes the whole store (<code>search-actors</code>, <code>call-actor</code>, RAG browser, …). That is the same lottery idea 5 already names for codegraph. There is no dedicated Allnurses actor in the Apify Store (2026-08-14 search); Reddit has several pay-per-event scrapers (e.g. <code>trudax/reddit-scraper-lite</code>). The Cursor “Ultimate Scraper” skill is an operator workflow (pick an actor, run it, save a file). It is not a second scraper to install in this FastAPI fork. This cloud VM has no Apify CLI and no <code>APIFY_TOKEN</code>; the Cursor Apify MCP in the session is a different door, for agents, not for Railway.</p>
         <p><strong>Past learnings.</strong> <code>docs/solutions/</code> does not exist. Nothing in the Compound Engineering corpus could be reused.</p>
         <p><strong>External context.</strong> Other overlay-on-fast-upstream projects add watched-file annotations on sync PRs (this repo already lists four paths, but only as inert prose). InfraNodus is a text-network / gap-detection MCP meant to consume research output, not replace a researcher. CodeGraph's default-single-tool plus env allowlist is the usual way to stop MCP retrievers from flooding context. Upstream GPT Researcher v3.5.1 (June 2026) already ships MCP tool names that match this fork. Cloudflare and Vercel sandboxes are places agents <em>run</em> and then <em>call</em> MCP tools — not packages to install inside a research server.</p>
       </div>
@@ -246,6 +250,7 @@
         <li><a href="#idea-5">5. One codegraph instrument on the tray</a></li>
         <li><a href="#idea-6">6. Freeze the two-door overlay API</a></li>
         <li><a href="#idea-7">7. Make pack-load and persona registration observable</a></li>
+        <li><a href="#apify-continuation">Continuation: Apify Ultimate Scraper</a></li>
       </ul>
 
       <article class="idea" id="idea-1">
@@ -411,7 +416,7 @@
 
       <article class="idea" id="idea-5">
         <h3><span class="rank">5</span> One codegraph instrument on the tray</h3>
-        <p>Mounting the codegraph server is not the same as selecting GitNexus. Upstream's MCP retriever lets the LLM pick two or three tools from <em>all</em> mounted MCP tools, while the sidecar exposes a full tray (<code>query</code>, <code>context</code>, <code>impact</code>, <code>trace</code>, source search, …) on a memory-bound box. For codebase scope, default the overlay to one allowlisted tool (and an env var to widen it). Keep <code>hlt-codegraph</code> as-is; do not move analyze off the disk-owning service — that idea is already rejected in <code>reindex.sh</code> because Render disks are single-service.</p>
+        <p>Mounting the codegraph server is not the same as selecting GitNexus. Upstream's MCP retriever lets the LLM pick two or three tools from <em>all</em> mounted MCP tools, while the sidecar exposes a full tray (<code>query</code>, <code>context</code>, <code>impact</code>, <code>trace</code>, source search, …) on a memory-bound box. For codebase scope, default the overlay to one allowlisted tool (and an env var to widen it). Keep <code>hlt-codegraph</code> as-is; do not move analyze off the disk-owning service — that idea is already rejected in <code>reindex.sh</code> because Render disks are single-service. The same allowlist pattern applies to Apify when Audience/Deep web mounts <code>mcp.apify.com</code>: pin a named actor (Reddit scrape for the weekly sweep) instead of handing the LLM <code>call-actor</code> against the whole store. Firecrawl remains the default page scraper; Apify is the forum/social specialist, not a second generic crawler.</p>
         <dl>
           <dt>Axis</dt>
           <dd>Graph layers</dd>
@@ -491,12 +496,23 @@
           <tr><td>D</td><td>Collapse Katailyst token env aliases</td><td>Below ambition floor for this topic — real cleanup, not a direction worth a team strategy meeting.</td></tr>
           <tr><td>P</td><td>Symbol-tagged report memory</td><td>Interesting compounding, but second-order to idea 5 (tool selection) and idea 4 (library gaps).</td></tr>
           <tr><td>V (as stated)</td><td>SOFA claiming “three MCP mounts”</td><td>Basis weak on the mount count (five, not three). Rebuilt as idea 3 with the corrected inventory.</td></tr>
+          <tr><td>AP</td><td>Install Apify Ultimate Scraper / CLI inside this researcher</td><td>Duplicate of the existing hosted Apify MCP preset. Railway has no Node <code>npx</code> path (stdio MCP is already dropped for that reason). A CLI skill is for Cursor operators doing one-off scrapes, not for FastAPI research runs. Blind <code>call-actor</code> is a pay-per-event bill and the same 2–3 tool lottery as unfiltered codegraph.</td></tr>
+          <tr><td>AQ</td><td>Replace Firecrawl with Apify web-scraper</td><td>Production scraper is Firecrawl on purpose (same plan as the Firecrawl retriever). Apify's generic <code>apify/web-scraper</code> is a second crawler, not a forum specialist. Keep Firecrawl for pages; pin Reddit (and later others) on Apify only where Firecrawl cannot.</td></tr>
         </tbody>
       </table>
-      <p class="callout">No axis was left empty. Graph layers has two survivors on purpose: codegraph (structural) and InfraNodus (text-network) are different graphs, not two takes on the same idea.</p>
+      <p class="callout">No axis was left empty. Graph layers has two survivors on purpose: codegraph (structural) and InfraNodus (text-network) are different graphs, not two takes on the same idea. Apify is already a scrape specialist on the Deep-web/Audience axis — it does not get a new ranked slot; it inherits idea 5's allowlist.</p>
     </section>
 
-    <footer class="composition-signal">Composed 2026-08-14T03:30Z by ce-ideate from the GPT Researcher overlay / Katailyst consumption / InfraNodus / runtime-SDK focus.</footer>
+    <section id="apify-continuation">
+      <h2>Continuation: Apify Ultimate Scraper</h2>
+      <div class="prose">
+        <p><strong>Verdict: useful as a Cursor operator skill and as a pinned actor on the existing Apify MCP preset. Not useful as a new thing to build inside this repo.</strong></p>
+        <p>Where it already lives: Deep web and Audience scopes append <code>{"name": "apify", "preset": "apify"}</code> when a token exists. That is the right door. Where it should not live: a second scraper package, an <code>apify-cli</code> in the Railway image, or letting research-time LLMs shop the whole Actor store.</p>
+        <p>If the weekly audience sweep still comes back thin on Reddit, the next concrete move (after idea 5's allowlist) is to name one actor — <code>trudax/reddit-scraper-lite</code> is the high-use community option — and cap spend. Allnurses has no Store actor; keep Firecrawl there. Do not run paid scrapes from this environment until that pin exists.</p>
+      </div>
+    </section>
+
+    <footer class="composition-signal">Composed 2026-08-14T03:30Z by ce-ideate; Apify continuation 2026-08-14T04:00Z. Overlay / Katailyst consumption / InfraNodus / runtime-SDK / Apify-MCP-not-CLI.</footer>
   </div>
 </body>
 </html>
