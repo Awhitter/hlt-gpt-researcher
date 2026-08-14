@@ -238,3 +238,35 @@ maintained nightly from the canonical Obsidian system maps).
 If you make a meaningful behavior change in this repo, edit this file by
 hand to capture the new agent-relevant constraints. Don't let the
 auto-generated stub become the only word on the repo's actual rules.
+
+## Cursor Cloud specific instructions
+
+Dependencies are refreshed automatically by the Cloud Agent update script
+(`pip install -r requirements.txt` + `pytest pytest-asyncio faiss-cpu`, and
+`pnpm -C frontend/nextjs install --frozen-lockfile`). The runtime is **Python
+3.12** and **Node 22** (matches `.github/workflows/hlt-checks.yml`). Only
+`python3` exists on PATH — there is no `python`. pip installs to `~/.local`,
+which is **not on PATH**, so invoke pytest as `python3 -m pytest` (not `pytest`).
+
+### Running the two services (dev mode)
+
+- **Backend (FastAPI, port 8000):** `python3 -m uvicorn backend.server.app:app --host 0.0.0.0 --port 8000` (or `python3 main.py`). Serves the vanilla static UI at `/`, health at `/health`, and `/api/brain/*`. It starts fine with **no API keys**.
+- **Frontend (Next.js UI, port 3000):** `cd frontend/nextjs && npm run dev` (pnpm also works). Set `NEXT_PUBLIC_GPTR_API_URL=http://localhost:8000` so it talks to the local backend. The team-access gate is disabled locally because `TEAM_ACCESS_PASSWORD` is unset — no login is needed in dev.
+
+### The one real gotcha: research needs an LLM key
+
+The environment sets up and both services run with no secrets, but **actually
+executing research** (the UI ask box, `POST /api/quick_search`, the WebSocket
+run, MCP `deep_research`/`quick_search`) requires an LLM key —
+`OPENAI_API_KEY` (or another configured provider) — and ideally a web
+retriever key (`TAVILY_API_KEY` or `FIRECRAWL_API_KEY`). Without an LLM key the
+full pipeline still engages (Auto scope inference runs, the Plan/Search/Read/
+Write phase rail appears) but the run ends in `RUN FAILED: Missing
+credentials`. So a bare "run failed on missing OPENAI_API_KEY" is the expected
+no-secret state, not a wiring bug. Put keys in a repo-root `.env` (see
+`.env.example`); `main.py`/`load_dotenv(override=True)` picks it up.
+
+### Lint / test / build (all runnable without API keys)
+
+- **Backend tests:** the explicit list in `.github/workflows/hlt-checks.yml` (run with `python3 -m pytest`). The *rest* of `tests/` reaches for `OPENAI_API_KEY`/`TAVILY_API_KEY` and will fail/skip without them — stick to the CI list for key-free runs.
+- **Frontend tests + typecheck:** from `frontend/nextjs`, `node --test <the .test.mjs files listed in hlt-checks.yml>`, `./node_modules/.bin/tsc --noEmit`, and `./node_modules/.bin/next lint`.
