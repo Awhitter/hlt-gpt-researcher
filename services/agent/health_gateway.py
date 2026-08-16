@@ -37,6 +37,31 @@ logger = logging.getLogger("hlt-agent")
 HERMES_HOME = Path(os.getenv("HERMES_HOME", "/data/hermes"))
 GATEWAY_ENABLED = os.getenv("AGENT_ENABLE_GATEWAY", "0") == "1"
 
+# ── Socket Mode transport markers ────────────────────────────────────────────
+# Cleo answered nobody in Slack from 2026-08-09T03:14:58Z to 2026-08-16, and
+# /health returned 200 the entire time: `running` only asks whether the child
+# PROCESS is alive, and `slack_adapter_available` is an import check made once at
+# boot. Neither can see a websocket. The adapter's own health check fired twice,
+# called disconnect(), and reconnected onto an aiohttp session that was already
+# closed — so the process supervised cron happily while two orphaned socket
+# clients retried forever. Render never bounced her because the check passed.
+#
+# The adapter says all of this in its logs, so the supervisor reads them.
+SOCKET_UP_MARKERS = (
+    "Bolt app is running",
+    "Socket Mode connected",
+    "slack connected",
+)
+SOCKET_DOWN_MARKERS = (
+    "Failed to connect",
+    "Session is closed",
+    "Socket Mode unhealthy",
+    "Connector is closed",
+)
+# One dropped frame is normal; Slack rotates sockets and the adapter reconnects.
+# A run of failures with no successful connect between them is the stuck state.
+SOCKET_FAILURE_TOLERANCE = int(os.getenv("AGENT_SOCKET_FAILURE_TOLERANCE", "5"))
+
 # Give up after this many crashes so a bad config surfaces in /health instead
 # of hiding behind an endless restart loop.
 MAX_RESTARTS = 5
@@ -83,12 +108,18 @@ class GatewaySupervisor:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._proc: subprocess.Popen[bytes] | None = None
+        self._proc: subprocess.Popen[str] | None = None
         self._stop = threading.Event()
         self._restarts = 0
         self._last_exit_code: int | None = None
         self._gave_up_reason: str | None = None
         self._started_at: float | None = None
+        # Socket Mode transport state, read off the child's own log stream. See
+        # `_note_gateway_line` for why this is observed rather than asked.
+        self._socket_connected_at: float | None = None
+        self._socket_last_failure: str | None = None
+        self._socket_last_failure_at: float | None = None
+        self._socket_failures_since_connect = 0
 
     @property
     def cli_present(self) -> bool:
@@ -122,6 +153,7 @@ class GatewaySupervisor:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             running = self._proc is not None and self._proc.poll() is None
+            now = time.time()
             return {
                 "requested": GATEWAY_ENABLED,
                 "running": running,
@@ -131,12 +163,79 @@ class GatewaySupervisor:
                 "restarts": self._restarts,
                 "last_exit_code": self._last_exit_code,
                 "uptime_seconds": (
-                    round(time.time() - self._started_at, 1)
+                    round(now - self._started_at, 1)
                     if running and self._started_at
                     else None
                 ),
                 "stopped_reason": self._gave_up_reason,
+                # None = not observed yet (boot grace). True/False = observed.
+                "slack_socket_connected": self._socket_state(),
+                "slack_socket_connected_seconds_ago": (
+                    round(now - self._socket_connected_at, 1)
+                    if self._socket_connected_at
+                    else None
+                ),
+                "slack_socket_failures_since_connect": self._socket_failures_since_connect,
+                "slack_socket_last_failure": self._socket_last_failure,
+                "slack_socket_last_failure_seconds_ago": (
+                    round(now - self._socket_last_failure_at, 1)
+                    if self._socket_last_failure_at
+                    else None
+                ),
             }
+
+    def _socket_state(self) -> bool | None:
+        """Is the Slack websocket actually up? None until we have seen either marker.
+
+        Not a probe. Slack's Socket Mode gives the process no "am I connected"
+        API, and `auth.test` answers about the TOKEN, not the transport — it
+        would have returned 200 for all seven days Cleo sat deaf. The adapter
+        does say so in its own logs, so that is what this reads.
+        """
+        if self._socket_connected_at is None and self._socket_last_failure_at is None:
+            return None
+        if self._socket_connected_at is None:
+            return False
+        if self._socket_last_failure_at is None:
+            return True
+        # A reconnect storm always logs failures AFTER the last good connect.
+        if self._socket_last_failure_at <= self._socket_connected_at:
+            return True
+        return self._socket_failures_since_connect < SOCKET_FAILURE_TOLERANCE
+
+    def _note_gateway_line(self, line: str) -> None:
+        """Update transport state from one line of the child's log stream."""
+        if any(marker in line for marker in SOCKET_UP_MARKERS):
+            with self._lock:
+                self._socket_connected_at = time.time()
+                self._socket_failures_since_connect = 0
+                self._socket_last_failure = None
+            return
+        if any(marker in line for marker in SOCKET_DOWN_MARKERS):
+            with self._lock:
+                self._socket_last_failure_at = time.time()
+                self._socket_last_failure = line.strip()[:300]
+                self._socket_failures_since_connect += 1
+
+    def _pump_output(self, proc: subprocess.Popen[str]) -> None:
+        """Tee the child's log stream: through to our stdout, and past the watcher.
+
+        Piping is the cost of observing the transport at all, so the pump exists
+        to make sure Render's log stream is unchanged by it — every line still
+        goes out, in order, and a crash in the watcher can never swallow one.
+        """
+        stream = proc.stdout
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                print(line, end="", flush=True)
+                try:
+                    self._note_gateway_line(line)
+                except Exception:  # noqa: BLE001 - a watcher must never kill the log stream
+                    logger.exception("socket-state watcher failed on a log line")
+        except Exception:  # noqa: BLE001 - the child dying mid-read is the supervisor's business
+            logger.exception("gateway log pump stopped")
 
     def start(self) -> None:
         if not GATEWAY_ENABLED:
@@ -158,9 +257,26 @@ class GatewaySupervisor:
                 # stream, which is where anyone debugging this will actually look.
                 cmd = gateway_command()
                 logger.info("gateway argv: %s", " ".join(cmd))
-                self._proc = subprocess.Popen(cmd, cwd=str(HERMES_HOME))
+                # Piped, not inherited, so the transport watcher can read the
+                # adapter's own connect/disconnect lines. `_pump_output` writes
+                # every line straight back out, so Render's stream is unchanged.
+                self._proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(HERMES_HOME),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
                 self._started_at = time.time()
+                self._socket_connected_at = None
+                self._socket_last_failure = None
+                self._socket_last_failure_at = None
+                self._socket_failures_since_connect = 0
                 proc = self._proc
+            threading.Thread(
+                target=self._pump_output, args=(proc,), name="hermes-gateway-logs", daemon=True
+            ).start()
 
             exit_code = proc.wait()
             if self._stop.is_set():
@@ -472,6 +588,20 @@ def health() -> dict[str, Any]:
         status, mode = "degraded", "gateway_slack_auth_failed"
     elif gateway["running"] and gateway["slack_adapter_available"] and slack_scopes_bad:
         status, mode = "degraded", "gateway_slack_scopes_missing"
+    elif (
+        gateway["running"]
+        and gateway["slack_adapter_available"]
+        # `.get`, not `[]`: a snapshot assembled anywhere else — an older cached
+        # payload, a test double — must not turn /health into a 500. A missing
+        # key reads as "not observed", which is the same as a fresh boot.
+        and gateway.get("slack_socket_connected") is False
+    ):
+        # Deaf with every other light green. The adapter exists, the process is
+        # up, the token is fine — and the websocket has been retrying into a
+        # closed session. This is the branch that would have caught Cleo's
+        # seven-day silence on day one; `is False` rather than falsy on purpose,
+        # because None means "not observed yet" and must not degrade a boot.
+        status, mode = "degraded", "gateway_slack_socket_down"
     elif gateway["running"] and gateway["slack_adapter_available"]:
         status, mode = "ok", "gateway"
     elif gateway["running"]:
@@ -524,6 +654,21 @@ def health() -> dict[str, Any]:
             "The gateway is running but Hermes could not build a Slack adapter, "
             "so the bot is connected to nothing. slack-bolt is an optional "
             "upstream extra — the image must install hermes-agent[slack]."
+        )
+    elif mode == "gateway_slack_socket_down":
+        failure = gateway.get("slack_socket_last_failure") or "no marker captured"
+        ago = gateway.get("slack_socket_connected_seconds_ago")
+        last_good = (
+            f"last connected {round(ago / 3600, 1)}h ago"
+            if ago
+            else "never connected since this process started"
+        )
+        payload["note"] = (
+            "The gateway process is up and Slack authentication is fine, but the "
+            "Socket Mode websocket is not connected, so Cleo cannot hear anyone — "
+            f"{gateway.get('slack_socket_failures_since_connect')} consecutive connect failures, "
+            f"{last_good}. Last failure: {failure}. Restarting the service reconnects it; "
+            "if it recurs, the adapter is reusing a closed aiohttp session on reconnect."
         )
     elif mode == "gateway_slack_auth_failed":
         payload["note"] = (

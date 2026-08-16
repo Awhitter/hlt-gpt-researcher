@@ -220,7 +220,7 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
     assert config["model"]["provider"] == "xai-oauth"
-    assert config["model"]["default"] == "grok-4.5"
+    assert config["model"]["default"] == "grok-4.6"
     assert config["model"]["max_tokens"] == 32_768
     assert set(config["mcp_servers"]) == {"gpt-researcher", "codegraph", "katailyst2", "linear"}
     # `gateway:` and `memory.seed_paths` were in the old example file and are
@@ -343,7 +343,7 @@ def test_model_override_precedence(tmp_path):
 def test_subscription_provider_is_default_but_can_be_overridden(tmp_path):
     default = render_config.render(env={}, home=tmp_path)
     assert default["model_provider"] == "xai-oauth"
-    assert default["model"] == "grok-4.5"
+    assert default["model"] == "grok-4.6"
 
     openrouter = render_config.build_config(
         {"HERMES_INFERENCE_PROVIDER": "openrouter", "OPENROUTER_MODEL": "anthropic/claude-sonnet-5"}

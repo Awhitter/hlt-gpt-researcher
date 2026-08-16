@@ -32,7 +32,12 @@ GENERATED_BY = "hlt-render-boot"
 # upstream Hermes provider override, so operators can still switch without a
 # code change.
 DEFAULT_PROVIDER = "xai-oauth"
-DEFAULT_MODEL = "grok-4.5"
+# grok-4.6 (released 2026-08-12) supersedes 4.5 on the same subscription at the
+# same list price, and scores 60.9 on Artificial Analysis' intelligence index
+# against 4.5's 55.8 — a free +5.1. Nothing here was watching for it, which is
+# the whole reason katailyst2 now runs a release rail; Cleo is outside that
+# loop's reach, so her pin is checked by hand at the same cadence.
+DEFAULT_MODEL = "grok-4.6"
 DEFAULT_MAX_TOKENS = 32_768
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "xai-oauth": DEFAULT_MODEL,
