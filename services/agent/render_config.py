@@ -49,6 +49,25 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
 # hosted persona load them at task time instead of copying them into prompts.
 AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo@v1"}
 
+# Pack-first load order for substantial work. The compiled brain comes from
+# the pack verb; the context verb is task-time ranking and the fallback when
+# the pack verb is unavailable. Tests and the boot hint share this tuple so a
+# rename cannot silently desync the Slack instruction from the contract.
+K2_PACK_VERB = "agents.runtime_pack"
+K2_CONTEXT_VERB = "registry_agent_context"
+K2_PACKET_LOAD_ORDER = (K2_PACK_VERB, K2_CONTEXT_VERB)
+
+
+def k2_packet_load_hint(registry_ref: str) -> str:
+    pack, context = K2_PACKET_LOAD_ORDER
+    return (
+        f" Your registry identity is {registry_ref}. For substantial tasks, "
+        f"load your compiled K2 pack via {pack} for that ref, "
+        f"then {context} with the ref and the user's real "
+        f"outcome; when the pack verb is unavailable, {context} "
+        "alone is the fallback."
+    )
+
 # THE most important setting in this file.
 #
 # Upstream's default Slack toolset is `hermes-slack`, whose own description is
@@ -360,10 +379,7 @@ def build_config(
         "through MCP and K2. Long work is fine; show one useful progress update."
     )
     if registry_ref:
-        runtime_hint += (
-            f" Your registry identity is {registry_ref}. For substantial tasks, "
-            "load registry_agent_context with that ref and the user's real outcome."
-        )
+        runtime_hint += k2_packet_load_hint(registry_ref)
 
     model_provider = (
         _clean(env, "HERMES_INFERENCE_PROVIDER") or DEFAULT_PROVIDER

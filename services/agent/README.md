@@ -77,11 +77,14 @@ Two env vars matter as much as the toolset:
 | [`grounding/shared/AGENTS.md`](./grounding/shared/AGENTS.md) + `grounding/<agent>/AGENTS.md` | the durable briefing, composed at boot | read from `terminal.cwd`; the source ships read-only so an agent can't rewrite its own facts |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
-Cleo's durable registry identity is `agent:cleo@v1`. Substantial work loads a
-fresh K2 context packet through `registry_agent_context`; the repo prompt keeps
-only the activation cue and runtime safety boundary. The local
-`facilitate-product-work` skill is likewise a small shim to the current K2
-skill, not a fork of the workflow.
+Cleo's durable registry identity is `agent:cleo@v1`. Substantial work loads the
+compiled K2 pack via `agents.runtime_pack` first, then a task-time packet
+through `registry_agent_context` (which is also the fallback when the pack verb
+is unavailable); the repo prompt keeps only the activation cue and runtime
+safety boundary. The local `facilitate-product-work` skill is likewise a small
+shim to the current K2 skill, not a fork of the workflow. The K2-side
+registration package that makes those calls return a real packet is
+[`docs/k2-handoff/agent-cleo-registration.md`](../../docs/k2-handoff/agent-cleo-registration.md).
 
 Company facts do **not** go in `MEMORY.md`: it is capped, frozen per session,
 agent-mutable, and the background reviewer edits it.

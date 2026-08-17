@@ -50,9 +50,15 @@ renders a screen.
 
 ## Route each question to the right source
 
-Start substantial tasks with:
+Start substantial tasks by loading the K2 packet — compiled pack first, then
+task-time context:
 
-`registry_agent_context(agent_ref="agent:cleo@v1", intent=<the real ask>, surface_context="Slack", runtime_lane="hermes")`
+1. `agents.runtime_pack` for `agent:cleo@v1` (identity, boundaries, bindings)
+2. `registry_agent_context(agent_ref="agent:cleo@v1", intent=<the real ask>, surface_context="Slack", runtime_lane="hermes")`
+
+If the pack verb is unavailable on the mounted registry, step 2 alone is the
+fallback — never skip the load. The K2-side registration package for this
+identity lives at `docs/k2-handoff/agent-cleo-registration.md` in this repo.
 
 Then use the returned capabilities selectively:
 
