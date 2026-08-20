@@ -975,6 +975,13 @@ def test_a_positively_broken_configured_fallback_is_visible(monkeypatch):
     assert "openai-codex/gpt-5.6-sol" in payload["note"]
 
 
+def test_k2_readiness_uses_the_installed_mcp_protocol_version():
+    health_gateway = _load_health_gateway()
+    from mcp.types import LATEST_PROTOCOL_VERSION
+
+    assert health_gateway.MCP_PROTOCOL_VERSION == LATEST_PROTOCOL_VERSION
+
+
 def test_k2_readiness_calls_the_current_well_schema_and_finds_cleo(monkeypatch):
     health_gateway = _load_health_gateway()
     calls = []

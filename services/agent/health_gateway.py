@@ -67,6 +67,10 @@ SOCKET_FAILURE_TOLERANCE = int(os.getenv("AGENT_SOCKET_FAILURE_TOLERANCE", "5"))
 # Emitted only after a provider call succeeds and reports usage. This is
 # stronger evidence than config or a pre-call "conversation turn" line: it
 # captures the route that actually answered, including a Hermes fallback.
+# Contract source: pinned Hermes ``agent/conversation_loop.py`` at
+# HERMES_UPSTREAM_REF. If upstream changes the formatter this intentionally
+# yields no observed route (missing proof) instead of guessing from a nearby
+# pre-call log; the parser test and exact-SHA canary make that drift visible.
 SUCCESSFUL_MODEL_ROUTE_RE = re.compile(
     r"API call #\d+: model=(?P<model>\S+) provider=(?P<provider>\S+)\s"
 )
@@ -349,7 +353,15 @@ BOOT: dict[str, Any] = {}
 
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test"
-MCP_PROTOCOL_VERSION = "2025-06-18"
+
+# Use the protocol revision shipped in the same MCP SDK Hermes runs. A dated
+# literal here can keep a custom health probe green after the actual client has
+# moved to a different wire contract. The fallback matches pinned Hermes'
+# conservative streamable-HTTP fallback for older SDK builds.
+try:
+    from mcp.types import LATEST_PROTOCOL_VERSION as MCP_PROTOCOL_VERSION
+except (ImportError, AttributeError):  # pragma: no cover - current image has MCP
+    MCP_PROTOCOL_VERSION = "2025-03-26"
 
 # These are the scopes that make Cleo useful in the surfaces she promises:
 # channel mentions, private/group threads, user resolution, and visible file
