@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed the agent's recurring briefs at boot, idempotently.
+"""Retire the old recurring briefs safely; retain legacy seed helpers.
 
 Why this exists rather than granting her the `cronjob` tool: a scheduled run
 happens with nobody watching, and the tool would let anyone who can @mention her
@@ -13,8 +13,10 @@ Jobs are created through `hermes cron create` rather than by writing
 computation, schedule parsing), and hand-building that file is how you get a job
 that looks present and never fires.
 
-Idempotent by name — an existing job is left exactly as it is, including any
-edit an operator has made to it.
+Boot no longer calls ``seed``. It inventories and pauses the three legacy jobs
+through ``retire_stale_briefs`` after writing a durable recovery export. The
+older seed helpers remain only for explicit operator recovery and their pinned
+regression tests; an existing job is still left exactly as it is.
 """
 from __future__ import annotations
 
@@ -23,7 +25,9 @@ import logging
 import os
 import re
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("hlt-agent")
 
@@ -78,6 +82,154 @@ BRIEFS: tuple[dict[str, str], ...] = (
         ),
     },
 )
+LEGACY_BRIEF_NAMES = frozenset(brief["name"] for brief in BRIEFS)
+LEGACY_EXPORT_NAME = "nm-legacy-briefs-before-retirement.json"
+
+
+def _jobs_from_payload(payload: object) -> list[dict[str, object]]:
+    """Normalize the cron store shapes supported by pinned Hermes."""
+    raw = payload if isinstance(payload, list) else (
+        payload.get("jobs", []) if isinstance(payload, dict) else []
+    )
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+    if not isinstance(raw, list):
+        return []
+    return [job for job in raw if isinstance(job, dict)]
+
+
+def retire_stale_briefs(dry_run: bool = False) -> dict[str, Any]:
+    """Export and pause the three superseded briefs without deleting history.
+
+    The pre-retirement records are written once on the durable disk. We then
+    ask Hermes to pause each live job by its exact id, preserving its run
+    history and making recovery a simple ``hermes cron resume <id>``. If the
+    record cannot be read or exported, nothing is paused: reversible means the
+    backup exists before the state change.
+    """
+    result: dict[str, Any] = {
+        "policy": "retired",
+        "inventory": [],
+        "paused": [],
+        "already_paused": [],
+        "not_found": [],
+        "failed": [],
+        "export_path": "",
+    }
+    home = Path(os.environ.get("HERMES_HOME") or "/data/hermes")
+    jobs_file = home / "cron" / "jobs.json"
+    if not jobs_file.exists():
+        result["not_found"] = sorted(LEGACY_BRIEF_NAMES)
+        return result
+    try:
+        payload = json.loads(jobs_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("cron jobs.json unreadable (%s); legacy briefs left untouched", exc)
+        result["failed"] = ["read-jobs-file"]
+        return result
+
+    legacy = [
+        job for job in _jobs_from_payload(payload)
+        if str(job.get("name") or "") in LEGACY_BRIEF_NAMES
+    ]
+    result["inventory"] = [
+        {
+            "id": str(job.get("id") or job.get("job_id") or ""),
+            "name": str(job.get("name") or ""),
+            "enabled": bool(job.get("enabled", True)),
+            "state": str(job.get("state") or ""),
+        }
+        for job in legacy
+    ]
+    found_names = {str(job.get("name") or "") for job in legacy}
+    result["not_found"] = sorted(LEGACY_BRIEF_NAMES - found_names)
+    if not legacy:
+        return result
+
+    export_dir = home / "cron" / "retired"
+    export_path = export_dir / LEGACY_EXPORT_NAME
+    result["export_path"] = str(export_path)
+    if not dry_run and export_path.exists():
+        try:
+            previous_export = json.loads(export_path.read_text(encoding="utf-8"))
+            exported_ids = {
+                str(job.get("id") or job.get("job_id") or "")
+                for job in _jobs_from_payload(previous_export)
+            }
+            current_ids = {
+                str(job.get("id") or job.get("job_id") or "") for job in legacy
+            }
+            if (
+                not isinstance(previous_export, dict)
+                or previous_export.get("version") != "hlt.legacy_cron_export.v1"
+                or not current_ids.issubset(exported_ids)
+            ):
+                raise ValueError("existing export does not cover the current jobs")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "legacy brief export is not a valid recovery point (%s); jobs left untouched",
+                exc,
+            )
+            result["failed"] = ["read-export"]
+            return result
+    elif not dry_run:
+        try:
+            export_dir.mkdir(parents=True, exist_ok=True)
+            temp_path = export_path.with_suffix(".tmp")
+            temp_path.write_text(
+                json.dumps(
+                    {
+                        "version": "hlt.legacy_cron_export.v1",
+                        "exported_at": datetime.now(UTC).isoformat(),
+                        "source": str(jobs_file),
+                        "jobs": legacy,
+                        "restore": "hermes cron resume <job-id>",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temp_path, export_path)
+        except OSError as exc:
+            logger.warning("legacy brief export failed (%s); jobs left untouched", exc)
+            result["failed"] = ["write-export"]
+            return result
+
+    for job in legacy:
+        name = str(job.get("name") or "")
+        job_id = str(job.get("id") or job.get("job_id") or "")
+        state = str(job.get("state") or "").lower()
+        if not bool(job.get("enabled", True)) or state in {"paused", "disabled"}:
+            result["already_paused"].append(name)
+            continue
+        if not job_id:
+            result["failed"].append(f"missing-id:{name}")
+            continue
+        if dry_run:
+            result["paused"].append(name)
+            continue
+        cmd = ["hermes", "cron", "pause", job_id]
+        try:
+            done = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120, check=False
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("cron pause %s failed: %s", name, exc)
+            result["failed"].append(name)
+            continue
+        if done.returncode == 0:
+            result["paused"].append(name)
+        else:
+            logger.warning(
+                "cron pause %s exited %s: %s",
+                name,
+                done.returncode,
+                (done.stderr or done.stdout)[:300],
+            )
+            result["failed"].append(name)
+    return result
 
 
 def seed(deliver: str, dry_run: bool = False) -> dict[str, list[str]]:

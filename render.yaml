@@ -73,6 +73,10 @@ services:
         value: /data/hermes
       - key: OPENROUTER_API_KEY
         sync: false
+      # First-class web research backend. The Docker image bakes Hermes'
+      # matching Firecrawl extra because lazy dependency installs are disabled.
+      - key: FIRECRAWL_API_KEY
+        sync: false
       - key: GPTR_MCP_URL
         sync: false
       - key: GPTR_MCP_TOKEN
@@ -142,9 +146,11 @@ services:
       # xAI OAuth; set openrouter only for an intentional paid fallback/cutover.
       - key: HERMES_INFERENCE_PROVIDER
         sync: false
-      # Optional model override; defaults to grok-4.5 on xAI OAuth.
+      # Optional model override; defaults to grok-4.6 on xAI OAuth.
       - key: HERMES_MODEL
         sync: false
-      # Comma-separated provider fallbacks for 429/503/overload.
+      # Optional JSON list or comma-separated provider:model route override.
+      # Unset uses Codex GPT-5.6 Sol, then Kimi K3, Qwen 3.8 Max and the latest
+      # DeepSeek V4 Pro on OpenRouter.
       - key: HERMES_FALLBACK_PROVIDERS
         sync: false

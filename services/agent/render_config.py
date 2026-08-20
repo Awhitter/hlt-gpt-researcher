@@ -16,9 +16,11 @@ Those two facts together make the upstream defaults unsafe: see SLACK_TOOLSETS.
 """
 from __future__ import annotations
 
+import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -41,8 +43,25 @@ DEFAULT_MODEL = "grok-4.6"
 DEFAULT_MAX_TOKENS = 32_768
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "xai-oauth": DEFAULT_MODEL,
-    "openrouter": "anthropic/claude-sonnet-5",
+    "openai-codex": "gpt-5.6-sol",
+    "openrouter": "moonshotai/kimi-k3",
 }
+
+# Recovery order, not a second policy engine. Hermes walks this list only when
+# the active route fails after its bounded retry. Every entry is a real model
+# id from the provider's current catalog; provider-only strings are not a valid
+# Hermes fallback contract and are intentionally never emitted.
+#
+# xAI stays primary because the owner already pays for SuperGrok. Codex is the
+# first recovery route because its ChatGPT subscription is also already paid
+# for. OpenRouter is the independent paid safety net: one broad frontier model,
+# then two inexpensive long-context/tool-capable routes.
+DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
+    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+    {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
+    {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
+    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813"},
+)
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
@@ -138,7 +157,11 @@ SLACK_PLATFORM_HINT = (
     "For exact interface text or labeled structure, prefer a deterministic "
     "prototype or diagram tool; use image generation for imagery. A text diagram "
     "is a fallback, not the requested high-fidelity mockup.\n"
-    "Keep ordinary replies concise. Long work is fine when the outcome needs it."
+    "Slack already shows your live work status and progressively edits one answer. "
+    "Do not narrate each tool call as a separate message, do not use a send-message "
+    "tool to deliver the answer you are currently composing, and return exactly one "
+    "final answer. Keep ordinary replies concise; long work is fine when the outcome "
+    "needs it."
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
@@ -186,6 +209,81 @@ def _clean(env: Mapping[str, str], key: str) -> str | None:
 def _csv(env: Mapping[str, str], key: str) -> list[str]:
     raw = _clean(env, key) or ""
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _fallback_entry(value: object) -> dict[str, str] | None:
+    """Normalize one operator-supplied fallback without guessing a model.
+
+    Hermes' pinned contract is a list of objects with BOTH ``provider`` and
+    ``model``. The old renderer emitted provider-name strings, which Hermes
+    quietly filtered out. We accept a JSON object or the concise
+    ``provider:model`` form, and retain provider-only input only for providers
+    whose default model is explicitly pinned above.
+    """
+    if isinstance(value, dict):
+        provider = str(value.get("provider") or "").strip().lower()
+        model = str(value.get("model") or "").strip()
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if ":" in raw:
+            provider, model = raw.split(":", 1)
+            provider, model = provider.strip().lower(), model.strip()
+        else:
+            provider = raw.lower()
+            model = PROVIDER_DEFAULT_MODELS.get(provider, "")
+    else:
+        return None
+    if not provider or not model:
+        return None
+    return {"provider": provider, "model": model}
+
+
+def fallback_providers(
+    env: Mapping[str, str], *, primary_provider: str, primary_model: str
+) -> list[dict[str, str]]:
+    """Return the exact ordered route objects the pinned Hermes runtime reads.
+
+    ``HERMES_FALLBACK_PROVIDERS`` may be either JSON or a comma-separated list
+    of ``provider:model`` entries. Unset means the HLT recovery chain above.
+    Invalid entries are skipped, duplicates collapse, and the primary route is
+    removed so recovery never loops back to the backend that just failed.
+    """
+    raw = _clean(env, "HERMES_FALLBACK_PROVIDERS")
+    default_values = [dict(route) for route in DEFAULT_FALLBACK_PROVIDERS]
+    values: list[object]
+    explicitly_disabled = False
+    if raw is None:
+        values = default_values
+    elif raw.startswith(("[", "{")):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            values = default_values
+        else:
+            explicitly_disabled = isinstance(decoded, list) and not decoded
+            values = decoded if isinstance(decoded, list) else [decoded]
+    else:
+        values = [part.strip() for part in raw.split(",") if part.strip()]
+
+    primary = (primary_provider.strip().lower(), primary_model.strip().lower())
+    seen: set[tuple[str, str]] = set()
+    routes: list[dict[str, str]] = []
+    for value in values:
+        route = _fallback_entry(value)
+        if route is None:
+            continue
+        identity = (route["provider"].lower(), route["model"].lower())
+        if identity == primary or identity in seen:
+            continue
+        seen.add(identity)
+        routes.append(route)
+    if raw is not None and not routes and not explicitly_disabled:
+        return fallback_providers(
+            {}, primary_provider=primary_provider, primary_model=primary_model
+        )
+    return routes
 
 
 def agent_ref(env: Mapping[str, str]) -> str | None:
@@ -314,9 +412,9 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
         extra["group_allow_admin_from"] = list(admins)
 
     slack: dict[str, Any] = {
-        # Upstream's default uses Slack's assistant status API, which
-        # disables the compose box while the agent thinks.
-        "typing_indicator": False,
+        # Slack's Assistant status line is ephemeral. Keep it on so a long
+        # research turn feels alive without adding one progress post per tool.
+        "typing_indicator": True,
         # Default posts "♻️ Gateway online" into the workspace on every
         # redeploy. Operator noise for end users.
         "gateway_restart_notification": False,
@@ -392,7 +490,38 @@ def build_config(
             "gateway_notify_interval": 900,
             # Fast failover to the fallback provider rather than slow retries.
             "api_max_retries": 1,
+            # High is the pinned Hermes recommendation for Codex-backed Slack:
+            # xhigh can consume the turn in hidden thought without visible text.
+            # The chosen xAI/OpenAI/OpenRouter routes all support high.
+            "reasoning_effort": "high",
             "environment_hint": runtime_hint,
+        },
+        # Slack has no native draft API, but Hermes' edit transport is a true
+        # single-message stream: one post is progressively updated and the
+        # last update gets the final Block Kit rendering.
+        "streaming": {
+            "enabled": True,
+            "transport": "edit",
+            "edit_interval": 1.0,
+            "buffer_threshold": 40,
+            "cursor": " ▉",
+        },
+        "display": {
+            "platforms": {
+                "slack": {
+                    "streaming": True,
+                    # The ephemeral Assistant status line carries the useful
+                    # current action. Progress/commentary bubbles would leave a
+                    # permanent transcript of the process instead of the work.
+                    "live_status": "full",
+                    "tool_progress": "off",
+                    "interim_assistant_messages": False,
+                    "long_running_notifications": False,
+                    "busy_ack_detail": False,
+                    "show_reasoning": False,
+                    "show_commentary": False,
+                }
+            }
         },
         # Project-context discovery reads AGENTS.md from here.
         "terminal": {"cwd": grounding_dir},
@@ -462,7 +591,9 @@ def build_config(
         "curator": {"prune_builtins": False},
     }
 
-    fallback = _csv(env, "HERMES_FALLBACK_PROVIDERS")
+    fallback = fallback_providers(
+        env, primary_provider=model_provider, primary_model=model_name
+    )
     if fallback:
         config["fallback_providers"] = fallback
 
@@ -495,11 +626,27 @@ def render(
         "config_path": str(path),
         "model": config["model"]["default"],
         "model_provider": config["model"]["provider"],
+        "configured_model_route": [
+            {
+                "provider": config["model"]["provider"],
+                "model": config["model"]["default"],
+                "role": "primary",
+            },
+            *[
+                {**route, "role": f"fallback-{index}"}
+                for index, route in enumerate(
+                    config.get("fallback_providers", []), start=1
+                )
+            ],
+        ],
         "max_tokens": config["model"]["max_tokens"],
         "agent_ref": agent_ref(env) or "",
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
         "hermes_upstream_ref": _clean(env, "HERMES_UPSTREAM_REF") or "",
         "openrouter_key_present": bool(_clean(env, "OPENROUTER_API_KEY")),
+        "web_search_backend": config.get("tools", {})
+        .get("web_search", {})
+        .get("provider", ""),
         # What Hermes was ACTUALLY handed, mcp-* grants included — not the
         # static tuple. Reporting the tuple hid the fact that four mounted MCP
         # servers had none of their tools granted.
@@ -523,6 +670,18 @@ def render(
         # The cron briefs deliver here; reported so /health shows an unset
         # home channel rather than leaving the briefs quietly unseeded.
         "home_channel_id": (build_home_channel(env) or {}).get("chat_id", ""),
+        "slack_presentation": {
+            "one_message_stream": bool(config.get("streaming", {}).get("enabled")),
+            "transport": config.get("streaming", {}).get("transport"),
+            "tool_progress": config.get("display", {})
+            .get("platforms", {})
+            .get("slack", {})
+            .get("tool_progress"),
+            "live_status": config.get("display", {})
+            .get("platforms", {})
+            .get("slack", {})
+            .get("live_status"),
+        },
         "mcp_mounted": sorted(servers),
         "mcp_unconfigured": [n for n, _, _ in MCP_TARGETS if n not in servers],
         "mcp_without_token": sorted(

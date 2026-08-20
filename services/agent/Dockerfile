@@ -20,6 +20,9 @@ WORKDIR /app
 #                "not actually available to me in this session" and she was right.
 #   tts-premium  the ElevenLabs client for text_to_speech
 #   fal          the FAL client for image_generate
+#   firecrawl    the SDK behind the configured Firecrawl web-search provider;
+#                lazy installs are disabled in config, so a key without this
+#                extra leaves web search selected and impossible to run
 #
 # Each is asserted below, so a missing extra is a red build rather than a
 # silent capability hole. Render keeps the last
@@ -36,12 +39,13 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes fetch --depth=1 origin "${HERMES_REF}" \
     && git -C /opt/hermes checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
-    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal]" \
+    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
     && { python -c "import mcp" || { echo "mcp extra missing after install"; exit 1; }; } \
     && { python -c "import elevenlabs" || { echo "tts-premium extra missing after install"; exit 1; }; } \
-    && { python -c "import fal_client" || { echo "fal extra missing after install"; exit 1; }; }
+    && { python -c "import fal_client" || { echo "fal extra missing after install"; exit 1; }; } \
+    && { python -c "from firecrawl import Firecrawl" || { echo "firecrawl extra missing after install"; exit 1; }; }
 
 # Regression for the exact Slack failure Alec saw:
 # `Model generated invalid tool call: mcp__codegraph__context`.

@@ -18,9 +18,9 @@ cites sources.
 | Who | Door | URL / mount | Status |
 | --- | --- | --- | --- |
 | Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app | live |
-| Agents (Claude Code, Cursor, Katailyst) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
+| Agents (Claude Code, Cursor, Katailyst2) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
 | Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` | live |
-| Humans, in Slack | **Cleo**, Nursing Mastery product-owner facilitator | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | live |
+| Humans, in Slack | **Cleo**, Nursing Mastery product-owner facilitator | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | trust the current `/health` seam readback |
 
 The research core is the provider layer. Katailyst2 is the canonical
 registry/orchestration layer for product-specific facilitator agents. The

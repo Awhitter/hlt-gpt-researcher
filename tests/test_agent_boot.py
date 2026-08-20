@@ -15,6 +15,7 @@ untrusted web pages.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 from pathlib import Path
 
@@ -359,6 +360,111 @@ def test_subscription_provider_is_default_but_can_be_overridden(tmp_path):
     assert openrouter["model"]["default"] == "anthropic/claude-sonnet-5"
 
 
+def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
+    """Provider-name strings are silently discarded by pinned Hermes.
+
+    The recovery chain must therefore contain a provider and an exact model at
+    every hop, in owner-approved order: subscription routes before the paid
+    OpenRouter safety net.
+    """
+    config = render_config.build_config(FULL_ENV)
+
+    assert config["fallback_providers"] == [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
+        {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
+        {
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-pro-0813",
+        },
+    ]
+    assert all(
+        isinstance(route, dict) and set(route) == {"provider", "model"}
+        for route in config["fallback_providers"]
+    )
+    assert config["agent"]["reasoning_effort"] == "high"
+
+    summary = render_config.render(env=FULL_ENV, home=tmp_path)
+    assert summary["configured_model_route"][0] == {
+        "provider": "xai-oauth",
+        "model": "grok-4.6",
+        "role": "primary",
+    }
+    assert summary["configured_model_route"][1]["role"] == "fallback-1"
+
+
+def test_fallback_override_accepts_json_and_compact_routes():
+    json_override = render_config.build_config(
+        {
+            **FULL_ENV,
+            "HERMES_FALLBACK_PROVIDERS": json.dumps(
+                [
+                    {"provider": "xai-oauth", "model": "grok-4.6"},
+                    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                ]
+            ),
+        }
+    )
+    assert json_override["fallback_providers"] == [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"}
+    ]
+
+    compact = render_config.build_config(
+        {
+            **FULL_ENV,
+            "HERMES_FALLBACK_PROVIDERS": (
+                "openai-codex,openrouter:qwen/qwen3.8-max"
+            ),
+        }
+    )
+    assert compact["fallback_providers"] == [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
+    ]
+
+    # A typo cannot silently erase every recovery route; [] is the explicit
+    # operator spelling when no fallback is truly desired.
+    malformed = render_config.build_config(
+        {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": "[{not-json"}
+    )
+    assert malformed["fallback_providers"] == list(
+        render_config.DEFAULT_FALLBACK_PROVIDERS
+    )
+    disabled = render_config.build_config(
+        {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": "[]"}
+    )
+    assert "fallback_providers" not in disabled
+
+
+def test_slack_uses_one_edited_stream_without_permanent_progress_bubbles(tmp_path):
+    config = render_config.build_config(FULL_ENV)
+    slack_display = config["display"]["platforms"]["slack"]
+
+    assert config["streaming"] == {
+        "enabled": True,
+        "transport": "edit",
+        "edit_interval": 1.0,
+        "buffer_threshold": 40,
+        "cursor": " ▉",
+    }
+    assert config["platforms"]["slack"]["typing_indicator"] is True
+    assert slack_display["streaming"] is True
+    assert slack_display["live_status"] == "full"
+    assert slack_display["tool_progress"] == "off"
+    assert slack_display["interim_assistant_messages"] is False
+    assert slack_display["show_reasoning"] is False
+    assert slack_display["show_commentary"] is False
+
+    summary = render_config.render(env=FULL_ENV, home=tmp_path)
+    assert summary["slack_presentation"] == {
+        "one_message_stream": True,
+        "transport": "edit",
+        "tool_progress": "off",
+        "live_status": "full",
+    }
+
+
 def test_single_reply_cap_does_not_reserve_the_whole_context_window(tmp_path):
     """A diagram request must not pre-authorize 128k output tokens.
 
@@ -532,6 +638,8 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "mcp_prefixed_tool_name('codegraph', 'context')" in dockerfile
     assert "mcp__codegraph__context" in dockerfile
     assert "ENV HERMES_UPSTREAM_REF=${HERMES_REF}" in dockerfile
+    assert "[slack,mcp,tts-premium,fal,firecrawl]" in dockerfile
+    assert "from firecrawl import Firecrawl" in dockerfile
 
 
 def test_the_verbosity_flag_goes_where_upstream_declares_it():
@@ -576,6 +684,26 @@ def test_a_junk_verbosity_still_boots_the_gateway():
 
     assert health_gateway.gateway_command("loud") == BASE_ARGV + ["-v"]
     assert health_gateway.gateway_command("") == BASE_ARGV + ["-v"]
+
+
+def test_health_observes_the_route_that_actually_answered(monkeypatch):
+    """Configured order is intent; this line is emitted after a real success."""
+    health_gateway = _load_health_gateway()
+    supervisor = health_gateway.GatewaySupervisor()
+    monkeypatch.setattr(health_gateway.time, "time", lambda: 1_000.0)
+
+    assert supervisor.snapshot()["observed_model_route"] is None
+    supervisor._note_gateway_line(
+        "INFO API call #3: model=gpt-5.6-sol provider=openai-codex "
+        "prompt=1200 completion=80\n"
+    )
+
+    assert supervisor.snapshot()["observed_model_route"] == {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "source": "successful_api_call",
+        "seconds_ago": 0.0,
+    }
 
 
 # --- the model credential ---------------------------------------------------
@@ -680,6 +808,74 @@ def test_an_unreachable_check_never_condemns_a_working_key(monkeypatch):
     assert health_gateway.openrouter_key_kind("") == "unknown"
 
 
+def test_every_configured_model_route_gets_a_separate_readiness_result(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(
+        health_gateway,
+        "subscription_auth_readiness",
+        lambda provider: {
+            "provider": provider,
+            "logged_in": provider in {"xai-oauth", "openai-codex"},
+            "last_refresh": None,
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(health_gateway, "openrouter_key_kind", lambda key: "inference")
+    routes = [
+        {"provider": "xai-oauth", "model": "grok-4.6", "role": "primary"},
+        {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "role": "fallback-1",
+        },
+        {
+            "provider": "openrouter",
+            "model": "moonshotai/kimi-k3",
+            "role": "fallback-2",
+        },
+    ]
+
+    ready = health_gateway.model_route_readiness(
+        routes, {"OPENROUTER_API_KEY": "sk-or-test"}
+    )
+
+    assert [route["available"] for route in ready] == [True, True, True]
+    assert ready[0]["credential"] == "subscription_oauth"
+    assert ready[2]["detail"] == {"kind": "inference"}
+
+
+def test_a_rate_limited_codex_profile_is_not_called_an_available_fallback(monkeypatch):
+    """Valid OAuth is not the same thing as capacity to answer this turn."""
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(
+        health_gateway,
+        "subscription_auth_readiness",
+        lambda provider: {
+            "provider": provider,
+            "logged_in": True,
+            "rate_limited": provider == "openai-codex",
+            "reset_at": "2026-08-21T04:00:00Z",
+            "last_refresh": None,
+            "error": "quota exhausted" if provider == "openai-codex" else "",
+        },
+    )
+    routes = [
+        {"provider": "xai-oauth", "model": "grok-4.6", "role": "primary"},
+        {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "role": "fallback-1",
+        },
+    ]
+
+    ready = health_gateway.model_route_readiness(routes, {})
+
+    assert ready[0]["available"] is True
+    assert ready[1]["available"] is False
+    assert ready[1]["detail"]["logged_in"] is True
+    assert ready[1]["detail"]["rate_limited"] is True
+
+
 def test_missing_active_subscription_auth_degrades_the_gateway(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
@@ -738,6 +934,247 @@ def test_openrouter_fallback_state_does_not_condemn_ready_xai(monkeypatch):
 
     assert payload["status"] == "ok"
     assert payload["mode"] == "gateway"
+
+
+def test_a_positively_broken_configured_fallback_is_visible(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+        },
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "model_provider": "xai-oauth",
+            "subscription_auth": {"provider": "xai-oauth", "logged_in": True},
+            "model_route_readiness": [
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "primary",
+                    "available": True,
+                },
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                    "role": "fallback-1",
+                    "available": False,
+                },
+            ],
+            "slack_auth": {},
+            "mcp_mounted": [],
+        }
+    )
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == "gateway_model_fallback_degraded"
+    assert "openai-codex/gpt-5.6-sol" in payload["note"]
+
+
+def test_k2_readiness_proves_the_bound_cleo_contract(monkeypatch):
+    health_gateway = _load_health_gateway()
+    calls = []
+    responses = iter(
+        [
+            (
+                {"result": {"protocolVersion": health_gateway.MCP_PROTOCOL_VERSION}},
+                "session-1",
+                {"x-katailyst-repo": "katailyst2"},
+            ),
+            (
+                {
+                    "result": {
+                        "tools": [
+                            {"name": "registry_search"},
+                            {"name": "registry_agent_context"},
+                        ]
+                    }
+                },
+                "session-1",
+                {},
+            ),
+            (
+                {
+                    "result": {
+                        "structuredContent": {
+                            "currentAgentContractStatus": "loaded",
+                            "currentAgentContract": {"agentRef": "agent:cleo@v4"},
+                        }
+                    }
+                },
+                "session-1",
+                {},
+            ),
+        ]
+    )
+
+    def fake_post(url, token, payload, **kwargs):
+        calls.append((url, token, payload, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
+
+    result = health_gateway.k2_agent_readiness(
+        "https://katailyst2.vercel.app/mcp", "k2-secret", "agent:cleo@v1"
+    )
+
+    assert result["transport_ok"] is True
+    assert result["server_repo"] == "katailyst2"
+    assert result["server_matches_katailyst2"] is True
+    assert result["agent_context_tool_listed"] is True
+    assert result["contract_status"] == "loaded"
+    assert result["resolved_agent_ref"] == "agent:cleo@v4"
+    assert result["identity_matches"] is True
+    assert calls[-1][2]["params"]["arguments"] == {
+        "query": "Cleo runtime identity readiness",
+        "limit": 1,
+        "graphDepth": 1,
+        "agentRef": "agent:cleo@v1",
+        "includeSpecialists": False,
+    }
+
+
+def test_k2_readiness_does_not_confuse_a_healthy_mount_with_a_missing_agent(monkeypatch):
+    health_gateway = _load_health_gateway()
+    responses = iter(
+        [
+            (
+                {"result": {}},
+                "session-1",
+                {"x-katailyst-repo": "katailyst2"},
+            ),
+            (
+                {"result": {"tools": [{"name": "registry.agent_context"}]}},
+                "session-1",
+                {},
+            ),
+            (
+                {
+                    "result": {
+                        "structuredContent": {
+                            "currentAgentContractStatus": "not_found",
+                            "currentAgentContract": None,
+                        }
+                    }
+                },
+                "session-1",
+                {},
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        health_gateway, "_mcp_post", lambda *args, **kwargs: next(responses)
+    )
+
+    result = health_gateway.k2_agent_readiness(
+        "https://katailyst2.vercel.app/mcp", "k2-secret", "agent:cleo@v1"
+    )
+
+    assert result["transport_ok"] is True
+    assert result["agent_context_tool_listed"] is True
+    assert result["contract_status"] == "not_found"
+    assert result["identity_matches"] is False
+
+
+def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypatch):
+    health_gateway = _load_health_gateway()
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"result": {}}, "legacy-session", {"x-katailyst-repo": "katailyst"}
+
+    monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
+
+    result = health_gateway.k2_agent_readiness(
+        "https://www.katailyst.com/mcp", "legacy-secret", "agent:cleo@v1"
+    )
+
+    assert len(calls) == 1
+    assert result["transport_ok"] is True
+    assert result["server_matches_katailyst2"] is False
+    assert result["contract_status"] == "wrong_server"
+    assert result["identity_matches"] is None
+
+
+@pytest.mark.parametrize(
+    ("readiness", "expected_mode"),
+    [
+        (
+            {
+                "mounted": False,
+                "bearer_present": False,
+                "transport_ok": None,
+                "server_matches_katailyst2": None,
+                "agent_context_tool_listed": False,
+                "contract_status": "not_mounted",
+                "identity_matches": None,
+            },
+            "gateway_k2_unreachable",
+        ),
+        (
+            {
+                "mounted": True,
+                "bearer_present": True,
+                "transport_ok": True,
+                "server_matches_katailyst2": False,
+                "agent_context_tool_listed": False,
+                "contract_status": "wrong_server",
+                "identity_matches": None,
+                "server_repo": "katailyst",
+            },
+            "gateway_k2_wrong_server",
+        ),
+        (
+            {
+                "mounted": True,
+                "bearer_present": True,
+                "transport_ok": True,
+                "server_matches_katailyst2": True,
+                "agent_context_tool_listed": True,
+                "contract_status": "not_found",
+                "identity_matches": False,
+            },
+            "gateway_k2_contract_missing",
+        ),
+    ],
+)
+def test_health_names_the_exact_k2_readiness_seam(monkeypatch, readiness, expected_mode):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+        },
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo@v1",
+            "model_provider": "xai-oauth",
+            "subscription_auth": {"logged_in": True},
+            "k2_agent_readiness": readiness,
+            "slack_auth": {},
+            "mcp_mounted": ["katailyst2"],
+        }
+    )
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == expected_mode
 
 
 def _fake_slack(monkeypatch, *, payload=None, scopes="", http_status=None, boom=False):
@@ -997,6 +1434,26 @@ def test_capabilities_use_the_documented_provider_surface():
     assert render_config.build_config(FULL_ENV)["tools"]["web_search"]["provider"] == "ddgs"
 
 
+def test_firecrawl_readiness_requires_both_the_key_and_baked_sdk(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    summary = render_config.render(
+        env={**FULL_ENV, "FIRECRAWL_API_KEY": "fc-x"}, home=tmp_path
+    )
+    assert summary["web_search_backend"] == "firecrawl"
+
+    monkeypatch.setattr(
+        health_gateway.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "firecrawl" else None,
+    )
+    assert health_gateway.web_search_readiness(
+        "firecrawl", {"FIRECRAWL_API_KEY": "fc-x"}
+    )["available"] is True
+    missing_key = health_gateway.web_search_readiness("firecrawl", {})
+    assert missing_key["available"] is False
+    assert missing_key["credential_present"] is False
+
+
 def test_recent_change_is_ranked_by_consequence_not_visibility():
     """She pulled recent_changes correctly and still buried the important part.
 
@@ -1054,6 +1511,130 @@ def test_an_orientation_asks_for_a_fortnight():
 
 
 # --- recurring briefs -------------------------------------------------------
+
+
+def test_stale_briefs_are_exported_before_they_are_paused(tmp_path, monkeypatch):
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cron_dir = tmp_path / "cron"
+    cron_dir.mkdir()
+    jobs = [
+        {"id": "job-monday", "name": "nm-monday-brief", "enabled": True},
+        {"id": "job-board", "name": "nm-board-health", "enabled": True},
+        {
+            "id": "job-owner",
+            "name": "nm-product-owner-work",
+            "enabled": True,
+        },
+        {"id": "job-keep", "name": "useful-new-job", "enabled": True},
+    ]
+    (cron_dir / "jobs.json").write_text(
+        json.dumps({"jobs": jobs}), encoding="utf-8"
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        # The recovery point must exist before the first state change.
+        assert (cron_dir / "retired" / cron_seed.LEGACY_EXPORT_NAME).is_file()
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", fake_run)
+
+    result = cron_seed.retire_stale_briefs()
+
+    assert result["paused"] == [
+        "nm-monday-brief",
+        "nm-board-health",
+        "nm-product-owner-work",
+    ]
+    assert result["failed"] == []
+    assert calls == [
+        ["hermes", "cron", "pause", "job-monday"],
+        ["hermes", "cron", "pause", "job-board"],
+        ["hermes", "cron", "pause", "job-owner"],
+    ]
+    exported = json.loads(Path(result["export_path"]).read_text(encoding="utf-8"))
+    assert exported["version"] == "hlt.legacy_cron_export.v1"
+    assert {job["id"] for job in exported["jobs"]} == {
+        "job-monday",
+        "job-board",
+        "job-owner",
+    }
+    assert exported["restore"] == "hermes cron resume <job-id>"
+
+
+def test_already_paused_briefs_stay_paused_and_recoverable(tmp_path, monkeypatch):
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cron_dir = tmp_path / "cron"
+    cron_dir.mkdir()
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "job-monday",
+                        "name": "nm-monday-brief",
+                        "enabled": False,
+                        "state": "paused",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cron_seed.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("already-paused job was paused again")
+        ),
+    )
+
+    result = cron_seed.retire_stale_briefs()
+
+    assert result["already_paused"] == ["nm-monday-brief"]
+    assert Path(result["export_path"]).is_file()
+
+
+def test_an_invalid_existing_cron_export_blocks_retirement(tmp_path, monkeypatch):
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cron_dir = tmp_path / "cron"
+    retired = cron_dir / "retired"
+    retired.mkdir(parents=True)
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "job-monday",
+                        "name": "nm-monday-brief",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (retired / cron_seed.LEGACY_EXPORT_NAME).write_text(
+        '{"version":"wrong","jobs":[]}', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(
+        cron_seed.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("retired without a valid recovery point")
+        ),
+    )
+
+    result = cron_seed.retire_stale_briefs()
+
+    assert result["paused"] == []
+    assert result["failed"] == ["read-export"]
 
 
 def test_a_brief_delivers_to_the_home_channel_not_to_origin(tmp_path, monkeypatch):
@@ -1170,14 +1751,22 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setattr(health_gateway.supervisor, "start", lambda: None)
     monkeypatch.setattr(health_gateway, "openrouter_key_kind", lambda key: "inference")
-    monkeypatch.setattr(health_gateway.cron_seed, "seed", lambda deliver: {"deliver": deliver})
+    monkeypatch.setattr(
+        health_gateway.cron_seed,
+        "retire_stale_briefs",
+        lambda: {"policy": "retired", "paused": ["nm-monday-brief"]},
+    )
 
     health_gateway.boot()
 
     import os as _os
 
     assert _os.environ["SLACK_HOME_CHANNEL"] == "C0BN349TRU7"
-    assert health_gateway.BOOT["cron_briefs"]["deliver"] == "slack:C0BN349TRU7"
+    assert health_gateway.BOOT["cron_briefs"] == {
+        "policy": "retired",
+        "paused": ["nm-monday-brief"],
+    }
+    assert health_gateway.BOOT["cron_smoke"] == "retired-with-recurring-briefs"
 
 
 def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):

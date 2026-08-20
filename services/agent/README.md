@@ -20,11 +20,10 @@ in Katailyst2 is the fleet orchestrator persona — a different thing — so nev
 call these agents Hermes in docs, Slack, or the registry. The Render service keeps the
 hostname `hlt-hermes` only because Render cannot rename a service in place.
 
-**Production readback (2026-08-07): live.** The Cleo gateway is connected, all
-five configured MCP servers are mounted and granted, image/audio backends are
-ready, and the recurring briefs are seeded. `/health` is the current authority;
-it now verifies the Slack token and reports the OAuth scopes Slack actually
-granted rather than repeating the desired manifest.
+Do not preserve a dated “live” claim here. `/health` is the current authority:
+it separates configured routes from observed provider success, verifies Slack's
+actual OAuth grant, proves the canonical Katailyst2 door and Cleo contract, and
+reports the reversible retirement state of the old recurring briefs.
 
 ## How the container is put together
 
@@ -100,16 +99,19 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| SuperGrok / Premium+ OAuth | Primary model credentials, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
-| `OPENROUTER_API_KEY` | Optional paid model fallback |
+| SuperGrok / Premium+ OAuth | Primary Grok 4.6 credentials, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
+| ChatGPT subscription OAuth | First recovery route, stored by `hermes auth add openai-codex` in the persistent Hermes auth store |
+| `OPENROUTER_API_KEY` | Independent Kimi/Qwen/DeepSeek recovery routes |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
 | `SLACK_ADMIN_USERS` | CSV Slack user IDs allowed privileged slash commands |
 | `SLACK_ALLOWED_CHANNELS` | CSV channel allowlist |
 | `HERMES_INFERENCE_PROVIDER` | Provider override; default `xai-oauth` |
-| `HERMES_MODEL` | Model override; default `grok-4.5` |
-| `HERMES_FALLBACK_PROVIDERS` | CSV provider fallbacks for 429/503 |
+| `HERMES_MODEL` | Model override; default `grok-4.6` |
+| `HERMES_FALLBACK_PROVIDERS` | Optional JSON route objects or CSV `provider:model` override; `[]` explicitly disables recovery |
+| `FIRECRAWL_API_KEY` | Selects Firecrawl for Hermes web search; the image bakes the matching SDK extra |
+| `WEB_SEARCH_BACKEND` | Explicit Hermes web backend override; keyless default is DDGS |
 | `GPTR_MCP_URL` / `GPTR_MCP_TOKEN` | Hosted researcher MCP |
 | `CODEGRAPH_MCP_URL` / `CODEGRAPH_MCP_TOKEN` | Estate code graph |
 | `KATAILYST2_MCP_URL` / `KATAILYST2_MCP_TOKEN` | Registry |
@@ -119,11 +121,26 @@ leave your file alone and say so in `/health`.
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
 
-`/health.config.model_provider`, `.model`, and `.max_tokens` expose the live
-inference route. Subscription providers also report a token-free
-`subscription_auth.logged_in` readback. Cleo caps one generated provider reply
-at 32,768 tokens so a small Slack artifact does not pre-authorize a model's
-128k maximum; this does not reduce the model's readable context or tool loop.
+`/health.config.configured_model_route` exposes the intended ordered route:
+Grok 4.6, Codex GPT-5.6 Sol, then the current Kimi K3, Qwen 3.8 Max, and
+DeepSeek V4 Pro OpenRouter routes. `model_route_readiness` checks each route's
+credential without exposing tokens. `gateway.observed_model_route` remains
+empty until a successful model call, then names the provider/model that really
+answered — including a fallback. Cleo caps one generated provider reply at
+32,768 tokens so a small Slack artifact does not pre-authorize a model's 128k
+maximum; this does not reduce the model's readable context or tool loop.
+
+`/health.config.k2_agent_readiness` is deliberately stricter than
+`mcp_mounted`. It verifies that the endpoint identifies itself as
+`x-katailyst-repo: katailyst2`, lists the agent-context tool, calls it with the
+same bearer Hermes receives, and confirms the token-bound contract resolves to
+`agent:cleo` (the revision may advance). A mounted legacy v1 bridge or a healthy
+K2 server with no Cleo contract is degraded, not silently called ready.
+
+Slack uses Hermes' single-message edit stream. The answer progressively updates
+in place, the ephemeral Assistant status shows the current useful action, and
+per-tool/interim commentary bubbles stay off. The model returns one final answer
+instead of using a Slack send tool to duplicate its own response.
 
 `/health.config.hermes_upstream_ref` exposes the immutable Hermes runtime SHA
 baked into the image. The image build also asserts that `codegraph.context`
@@ -157,18 +174,20 @@ Steps 1-3 need Alec's login. **Cleo's app already exists** — for her, skip to
 ### Connect the model subscription
 
 Cleo's primary model uses the owner's SuperGrok / Premium+ entitlement through
-Hermes' xAI device-code OAuth provider. From a Render shell run:
+Hermes' xAI device-code OAuth provider. Her first fallback uses ChatGPT
+subscription OAuth. From a Render shell run both:
 
 ```bash
 hermes auth add xai-oauth
+hermes auth add openai-codex
 ```
 
-Open the displayed xAI URL, approve the code, then verify
-`/health.config.subscription_auth.logged_in` is `true`. The refresh token stays
-in the service's persistent `HERMES_HOME`; it is never a Render environment
-variable or a Slack message. A successful login is not the final proof: run a
-real one-shot or Slack task because xAI can still deny inference to a
-subscription tier after issuing OAuth tokens.
+Open each displayed URL, approve its code, then verify both subscription routes
+under `/health.config.model_route_readiness`. Refresh tokens stay in the
+service's persistent `HERMES_HOME`; they are never Render environment variables
+or Slack messages. A successful login is not the final proof: run a real Slack
+task and read `gateway.observed_model_route`, because a provider can still deny
+inference after issuing OAuth tokens.
 
 ## Smoke
 
@@ -184,6 +203,11 @@ Read the answer, not the status code — the service intentionally stays up (HTT
 | `readiness_gateway` | Gateway not requested. Expected before step 4. |
 | `gateway` | The agent is running. `gateway.uptime_seconds` climbs. |
 | `gateway_down` | Requested but not running. `status: degraded`, and `gateway.stopped_reason` / `last_exit_code` say what happened. |
+| `gateway_k2_unreachable` | The canonical Cleo K2 route is absent, unauthenticated, or not callable. |
+| `gateway_k2_wrong_server` | The endpoint answered but did not identify itself as Katailyst2 (usually the legacy v1 bridge). |
+| `gateway_k2_contract_missing` | K2 is live, but the same bearer did not resolve the `agent:cleo` contract. |
+| `gateway_web_search_degraded` | The selected web backend is missing its credential or installed SDK. |
+| `gateway_model_fallback_degraded` | Primary can answer, but at least one configured recovery route is positively unavailable. |
 
 Check `config.mcp_mounted` lists the configured servers,
 `config.mcp_without_token` is empty, `config.slack_auth.auth_ok` is true, and
@@ -206,7 +230,21 @@ can't, because the tool isn't loaded.
 | Answers but knows nothing about the estate | Check `config.mcp_mounted` and `config.mcp_without_token`. |
 | Anyone can run `/model` | `SLACK_ADMIN_USERS` is unset. |
 | `subscription_auth.logged_in: false` with provider `xai-oauth` | The SuperGrok OAuth grant is absent or expired; run `hermes auth add xai-oauth`. |
-| `openrouter_key_present: false` | The optional paid fallback is absent; it does not invalidate a ready subscription primary. |
+| Codex fallback unavailable | Run `hermes auth add openai-codex`, then prove it with a bounded canary rather than token presence alone. |
+| `openrouter_key_present: false` | Grok may still answer, but the independent OpenRouter recovery routes are unavailable and health is degraded. |
+
+## Retired recurring briefs
+
+Boot no longer creates the three legacy jobs `nm-monday-brief`,
+`nm-board-health`, and `nm-product-owner-work`. Before the gateway starts, it
+reads the durable Hermes cron store, writes the exact matching records once to
+`$HERMES_HOME/cron/retired/nm-legacy-briefs-before-retirement.json`, and pauses
+each job by ID. It never deletes jobs or run history. If the source record or
+recovery export is unreadable, it pauses nothing. To restore one intentionally:
+
+```bash
+hermes cron resume <job-id>
+```
 
 ## Repairing Cleo's scopes when `/health` names a gap
 
