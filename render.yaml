@@ -113,6 +113,10 @@ services:
       # API. The public wrapper never exposes the loopback listener or token.
       - key: OPENCLAW_HQ_HOOK_TOKEN
         sync: false
+      # Exactly-once K2 admission ledger. This is on the existing persistent
+      # Render disk; never place it in the container's ephemeral /tmp layer.
+      - key: HLT_AGENT_RUN_LEDGER_PATH
+        value: /data/hermes/agent-runs.sqlite3
       # Slack user IDs allowed to run privileged slash commands (/model, /cron,
       # /yolo). REQUIRED before going live: with no admin list, Hermes disables
       # slash gating entirely and every workspace member can run every command.

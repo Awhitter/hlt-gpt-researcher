@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import agent_run_ledger
 import cron_seed
 import grounding
 import render_config
@@ -380,6 +381,10 @@ SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test"
 HERMES_API_BASE_URL = "http://127.0.0.1:8642"
 MAX_HOOK_MESSAGE_CHARS = 65_536
 MAX_HOOK_TIMEOUT_SECONDS = 900
+ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v1"
+_RUN_LEDGER_LOCK = threading.Lock()
+_RUN_LEDGER: agent_run_ledger.AgentRunLedger | None = None
+_RUN_LEDGER_PATH: Path | None = None
 
 # Use the protocol revision shipped in the same MCP SDK Hermes runs. A dated
 # literal here can keep a custom health probe green after the actual client has
@@ -770,6 +775,43 @@ def _hook_authorized(authorization: str | None) -> bool:
     )
 
 
+def _agent_run_ledger_path() -> Path:
+    configured = os.getenv("HLT_AGENT_RUN_LEDGER_PATH", "").strip()
+    return (
+        Path(configured).expanduser()
+        if configured
+        else HERMES_HOME / "agent-runs.sqlite3"
+    )
+
+
+def get_agent_run_ledger() -> agent_run_ledger.AgentRunLedger:
+    global _RUN_LEDGER, _RUN_LEDGER_PATH
+    path = _agent_run_ledger_path()
+    with _RUN_LEDGER_LOCK:
+        if _RUN_LEDGER is None or _RUN_LEDGER_PATH != path:
+            _RUN_LEDGER = agent_run_ledger.AgentRunLedger(path)
+            _RUN_LEDGER_PATH = path
+        return _RUN_LEDGER
+
+
+def agent_run_ledger_readiness() -> dict[str, Any]:
+    try:
+        result = get_agent_run_ledger().probe()
+        return {
+            "ready": result.get("ready") is True,
+            "schema_version": result.get("schema_version"),
+            "storage": "durable_sqlite",
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "schema_version": None,
+            "storage": "durable_sqlite",
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+        }
+
+
 def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate K2's existing external-host envelope without widening it."""
     message = str(payload.get("message") or "").strip()
@@ -798,14 +840,27 @@ def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("metadata must be an object")
     if metadata.get("katailyst_agent_ref") != expected_ref:
         raise ValueError("metadata.katailyst_agent_ref does not match this runtime")
-    if not str(metadata.get("katailyst_run_id") or "").strip():
+    k2_run_id = str(metadata.get("katailyst_run_id") or "").strip()
+    if not k2_run_id:
         raise ValueError("metadata.katailyst_run_id is required")
-    if not str(metadata.get("katailyst_org_id") or "").strip():
+    # This exact deterministic id is precomputed by K2 before POST and survives
+    # a lost response. Reject non-canonical ids instead of letting two spellings
+    # identify the same admission.
+    agent_run_ledger.wrapper_run_id(k2_run_id)
+    if session_key != f"hook:k2:{k2_run_id}":
+        raise ValueError("sessionKey must exactly match metadata.katailyst_run_id")
+    org_id = str(metadata.get("katailyst_org_id") or "").strip()
+    if not org_id:
         raise ValueError("metadata.katailyst_org_id is required")
+    if len(org_id) > 200:
+        raise ValueError("metadata.katailyst_org_id is too long")
     return {
         "message": message,
         "session_key": session_key,
         "timeout_seconds": timeout_seconds,
+        "agent_ref": expected_ref,
+        "k2_run_id": k2_run_id,
+        "org_id": org_id,
         "metadata": dict(metadata),
     }
 
@@ -880,70 +935,204 @@ def _schedule_run_timeout(run_id: str, token: str, timeout_seconds: int) -> None
     timer.start()
 
 
-def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = _validate_hook_payload(payload)
-    token = _hook_token()
-    status, response = _hermes_api_json(
-        "/v1/runs",
-        method="POST",
-        token=token,
-        session_key=normalized["session_key"],
-        payload={
-            "input": normalized["message"],
-            "session_id": normalized["session_key"],
-            "instructions": (
-                "This is a governed internal Katailyst2 mission for Cleo. "
-                "Complete the work end to end, preserve evidence, and do not "
-                "send the result to Slack unless the mission itself explicitly "
-                "requests a governed external effect."
-            ),
-        },
-        timeout=8.0,
-    )
-    run_id = str(response.get("run_id") or "").strip()
-    if status != 202 or not re.fullmatch(r"run_[a-f0-9]{32}", run_id):
-        error = response.get("error")
-        if isinstance(error, Mapping):
-            error = error.get("message") or error.get("code")
-        raise RuntimeError(
-            f"Hermes run dispatch failed (HTTP {status}): {str(error or 'invalid response')[:180]}"
-        )
-    _schedule_run_timeout(run_id, token, normalized["timeout_seconds"])
-    return {
-        "ok": True,
-        "runId": run_id,
-        "status": "queued",
-        "statusUrl": f"/hooks/agent/runs/{run_id}",
+def _provider_status(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "pending": "queued",
+        "accepted": "queued",
+        "started": "running",
+        "in_progress": "running",
+        "processing": "running",
+        "succeeded": "completed",
+        "success": "completed",
+        "canceled": "cancelled",
+        "aborted": "cancelled",
     }
+    return aliases.get(normalized, normalized or "unknown")
+
+
+def _admission_receipt(record: Mapping[str, Any]) -> dict[str, Any]:
+    admission_status = str(record.get("admission_status") or "unknown")
+    provider_status = _provider_status(record.get("provider_status"))
+    if admission_status == "queued":
+        public_status = "queued"
+    elif admission_status == "dispatching":
+        public_status = "unknown"
+    else:
+        public_status = provider_status
+    terminal = admission_status == "terminal"
+    body: dict[str, Any] = {
+        "ok": public_status == "completed" if terminal else True,
+        "runId": str(record.get("wrapper_run_id") or ""),
+        "status": public_status,
+        "terminal": terminal,
+        "admissionStatus": admission_status,
+        "statusUrl": f"/hooks/agent/runs/{record.get('wrapper_run_id')}",
+    }
+    recovery_code = str(record.get("recovery_code") or "")
+    if admission_status == "dispatching" and not recovery_code:
+        recovery_code = "provider_admission_ambiguous"
+    if recovery_code and not terminal:
+        body["recovery"] = {
+            "code": recovery_code,
+            "required": True,
+        }
+    if terminal and record.get("output_text"):
+        body["output"] = str(record["output_text"])
+    if record.get("error_text") and (terminal or recovery_code):
+        body["error"] = str(record["error_text"])
+    if terminal and record.get("usage") is not None:
+        body["usage"] = record["usage"]
+    return body
+
+
+def _hook_admission_fingerprint(normalized: Mapping[str, Any]) -> str:
+    return agent_run_ledger.request_fingerprint(
+        {
+            "message": normalized["message"],
+            "sessionKey": normalized["session_key"],
+            "timeoutSeconds": normalized["timeout_seconds"],
+            "agentRef": normalized["agent_ref"],
+            "metadata": normalized["metadata"],
+        }
+    )
+
+
+def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Admit exactly once, then cross the provider boundary at most once."""
+    normalized = _validate_hook_payload(payload)
+    ledger = get_agent_run_ledger()
+    record, _created = ledger.admit(
+        k2_run_id=normalized["k2_run_id"],
+        session_key=normalized["session_key"],
+        org_id=normalized["org_id"],
+        agent_ref=normalized["agent_ref"],
+        fingerprint=_hook_admission_fingerprint(normalized),
+    )
+    wrapper_id = str(record["wrapper_run_id"])
+
+    # Only the process that atomically moves queued -> dispatching may call
+    # Hermes. A replay of dispatching is the crash-ambiguous state and must not
+    # speculate that a second POST is safe.
+    if record.get("admission_status") != "queued" or not ledger.claim_dispatch(
+        wrapper_id
+    ):
+        return _admission_receipt(ledger.get(wrapper_id) or record)
+
+    token = _hook_token()
+    try:
+        status, response = _hermes_api_json(
+            "/v1/runs",
+            method="POST",
+            token=token,
+            session_key=normalized["session_key"],
+            payload={
+                "input": normalized["message"],
+                "session_id": normalized["session_key"],
+                "instructions": (
+                    "This is a governed internal Katailyst2 mission for Cleo. "
+                    "Complete the work end to end, preserve evidence, and do not "
+                    "send the result to Slack unless the mission itself explicitly "
+                    "requests a governed external effect."
+                ),
+            },
+            timeout=8.0,
+        )
+    except Exception as exc:
+        ledger.mark_dispatch_ambiguous(
+            wrapper_id,
+            f"provider admission response unavailable: {type(exc).__name__}: {exc}",
+        )
+        return _admission_receipt(ledger.get(wrapper_id) or record)
+
+    provider_run_id = str(response.get("run_id") or "").strip()
+    if status == 202 and re.fullmatch(r"run_[a-f0-9]{32}", provider_run_id):
+        # This binding is the second durable fact. A crash before it leaves the
+        # admission in dispatching/unknown forever rather than dispatching twice.
+        ledger.bind_provider(wrapper_id, provider_run_id)
+        try:
+            _schedule_run_timeout(provider_run_id, token, normalized["timeout_seconds"])
+        except Exception as exc:
+            logger.warning(
+                "could not schedule timeout for provider run %s: %s",
+                provider_run_id,
+                exc,
+            )
+        return _admission_receipt(ledger.get(wrapper_id) or record)
+
+    error = response.get("error")
+    if isinstance(error, Mapping):
+        error = error.get("message") or error.get("code")
+    detail = f"Hermes admission HTTP {status}: {error or 'invalid response'}"
+    if 400 <= status < 500:
+        # A concrete client rejection is the one safe proof that Hermes did not
+        # accept this mission. Persist it as terminal so K2 can close the run.
+        ledger.mark_terminal(wrapper_id, "failed", error=detail)
+    else:
+        # A 2xx with a malformed id or any server-side response can have crossed
+        # the provider boundary. Never infer that retrying is safe.
+        ledger.mark_dispatch_ambiguous(wrapper_id, detail)
+    return _admission_receipt(ledger.get(wrapper_id) or record)
 
 
 def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
     if not re.fullmatch(r"run_[a-f0-9]{32}", run_id):
         return 400, {"ok": False, "error": "invalid runId"}
-    status, response = _hermes_api_json(
-        f"/v1/runs/{run_id}", token=_hook_token(), timeout=6.0
-    )
-    if status != 200:
-        return status, {
-            "ok": False,
-            "runId": run_id,
-            "error": "Hermes run was not available",
-        }
-    state = str(response.get("status") or "unknown")
-    terminal = state in {"completed", "failed", "cancelled"}
-    body: dict[str, Any] = {
-        "ok": state == "completed" if terminal else True,
-        "runId": run_id,
-        "status": state,
-        "terminal": terminal,
-    }
-    if terminal and isinstance(response.get("output"), str):
-        body["output"] = response["output"]
-    if terminal and response.get("error"):
-        body["error"] = str(response["error"])[:2_000]
-    if terminal and isinstance(response.get("usage"), Mapping):
-        body["usage"] = dict(response["usage"])
-    return 200, body
+    ledger = get_agent_run_ledger()
+    record = ledger.get(run_id)
+    if record is None:
+        return 404, {"ok": False, "runId": run_id, "error": "run not admitted"}
+    if record.get("admission_status") != "provider_bound":
+        return 200, _admission_receipt(record)
+
+    provider_run_id = str(record.get("provider_run_id") or "")
+    if not re.fullmatch(r"run_[a-f0-9]{32}", provider_run_id):
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_binding_invalid",
+            "durable admission has no valid native Hermes run id",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
+
+    try:
+        status, response = _hermes_api_json(
+            f"/v1/runs/{provider_run_id}", token=_hook_token(), timeout=6.0
+        )
+    except Exception as exc:
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_status_unavailable",
+            f"native Hermes status unavailable: {type(exc).__name__}: {exc}",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
+
+    returned_provider_id = str(response.get("run_id") or provider_run_id)
+    if status != 200 or returned_provider_id != provider_run_id:
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_status_unavailable",
+            f"native Hermes status HTTP {status} or mismatched provider id",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
+
+    provider_status = _provider_status(response.get("status"))
+    if provider_status in {"completed", "failed", "cancelled"}:
+        ledger.mark_terminal(
+            run_id,
+            provider_status,
+            output=response.get("output"),
+            error=response.get("error"),
+            usage=response.get("usage"),
+        )
+    elif provider_status in {"queued", "running", "waiting_for_approval"}:
+        ledger.note_provider_status(run_id, provider_status)
+    else:
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_status_unknown",
+            f"native Hermes returned unsupported status {provider_status!r}",
+        )
+    return 200, _admission_receipt(ledger.get(run_id) or record)
 
 
 def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
@@ -1257,6 +1446,16 @@ def boot() -> None:
         # config or health output.
         os.environ["API_SERVER_KEY"] = hook_token
     BOOT.update(render_config.render())
+    BOOT["agent_run_ledger"] = (
+        agent_run_ledger_readiness()
+        if hook_token
+        else {
+            "ready": False,
+            "schema_version": None,
+            "storage": "durable_sqlite",
+            "error": "hook not configured",
+        }
+    )
     for key, value in BOOT.items():
         logger.info("config %s: %s", key, value)
     active_provider = BOOT.get("model_provider") or ""
@@ -1409,6 +1608,7 @@ def activation_readiness() -> dict[str, Any]:
     k2 = BOOT.get("k2_agent_readiness") or {}
     plugin = BOOT.get("k2_context_plugin") or {}
     external_dispatch = BOOT.get("external_dispatch") or {}
+    admission_ledger = BOOT.get("agent_run_ledger") or {}
     slack_auth = BOOT.get("slack_auth") or {}
     model_routes = BOOT.get("model_route_readiness") or []
     primary_route_ready = any(
@@ -1417,16 +1617,19 @@ def activation_readiness() -> dict[str, Any]:
         if isinstance(route, Mapping)
     )
     checks = {
-        "agent_ref_is_cleo": BOOT.get("agent_ref") == "agent:cleo",
-        "runtime_lane_is_hermes": BOOT.get("runtime_lane") == "hermes",
+        "agent_ref_matches": BOOT.get("agent_ref") == "agent:cleo",
+        "runtime_lane_matches": BOOT.get("runtime_lane") == "hermes",
         "config_written": BOOT.get("written") is True,
         "hook_token_configured": len(_hook_token()) >= 16,
-        "hook_surface_configured": external_dispatch.get("configured") is True,
-        "hermes_cli_present": gateway.get("cli_present") is True,
-        "slack_adapter_available": gateway.get("slack_adapter_available") is True,
+        "hook_surface_configured": (
+            external_dispatch.get("configured") is True
+            and admission_ledger.get("ready") is True
+        ),
+        "runtime_cli_present": gateway.get("cli_present") is True,
+        "channel_adapter_available": gateway.get("slack_adapter_available") is True,
         "mcp_sdk_available": gateway.get("mcp_sdk_available") is True,
-        "slack_auth_ok": slack_auth.get("auth_ok") is True,
-        "slack_scopes_ready": (
+        "channel_auth_ok": slack_auth.get("auth_ok") is True,
+        "channel_scopes_ready": (
             slack_auth.get("scopes_known") is True
             and not bool(slack_auth.get("missing_core_scopes"))
         ),
@@ -1447,6 +1650,7 @@ def activation_readiness() -> dict[str, Any]:
     }
     return {
         "ready": all(checks.values()),
+        "contractVersion": ACTIVATION_CONTRACT_VERSION,
         "stage": "pre_activation",
         "agentRef": BOOT.get("agent_ref") or "",
         "checks": checks,
@@ -1475,6 +1679,9 @@ def external_dispatch_readiness() -> dict[str, Any]:
     )
     checks = {
         "hook_token_configured": len(_hook_token()) >= 16,
+        "admission_ledger_ready": (
+            (BOOT.get("agent_run_ledger") or {}).get("ready") is True
+        ),
         "gateway_running": gateway.get("running") is True,
         "slack_adapter_available": gateway.get("slack_adapter_available") is True,
         "slack_socket_connected": gateway.get("slack_socket_connected") is True,
@@ -1536,13 +1743,15 @@ def agent_hook(
         )
     try:
         response = dispatch_agent_hook(payload)
+    except agent_run_ledger.AdmissionConflict as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except Exception as exc:
-        logger.error("agent hook dispatch failed: %s", exc)
+        logger.error("agent hook admission failed: %s", exc)
         return JSONResponse(
-            {"ok": False, "error": "Hermes could not accept the agent run"},
-            status_code=502,
+            {"ok": False, "error": "durable agent-run admission unavailable"},
+            status_code=503,
         )
     return JSONResponse(response, status_code=202)
 
@@ -1554,7 +1763,14 @@ def agent_hook_run(
 ) -> JSONResponse:
     if not _hook_authorized(authorization):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    status, response = read_agent_hook_run(run_id)
+    try:
+        status, response = read_agent_hook_run(run_id)
+    except Exception as exc:
+        logger.error("agent hook status ledger failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "runId": run_id, "error": "run status unavailable"},
+            status_code=503,
+        )
     return JSONResponse(response, status_code=status)
 
 
@@ -1628,6 +1844,7 @@ def health() -> dict[str, Any]:
     )
     external_hook_bad = k2_required and (
         (BOOT.get("external_dispatch") or {}).get("configured") is not True
+        or (BOOT.get("agent_run_ledger") or {}).get("ready") is not True
     )
 
     if not GATEWAY_ENABLED:

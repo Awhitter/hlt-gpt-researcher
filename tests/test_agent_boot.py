@@ -44,6 +44,9 @@ def _load(module_name: str, path: Path):
 
 render_config = _load("hlt_agent_render_config", SERVICE_DIR / "render_config.py")
 grounding = _load("hlt_agent_grounding", SERVICE_DIR / "grounding.py")
+agent_run_ledger = _load(
+    "hlt_agent_run_ledger", SERVICE_DIR / "agent_run_ledger.py"
+)
 
 FULL_ENV = {
     "OPENROUTER_API_KEY": "sk-or-secret",
@@ -617,11 +620,12 @@ def _load_health_gateway():
 
     saved = {
         name: sys.modules.get(name)
-        for name in ("grounding", "render_config", "cron_seed")
+        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger")
     }
     sys.modules["grounding"] = grounding
     sys.modules["render_config"] = render_config
     sys.modules["cron_seed"] = _cron_seed()
+    sys.modules["agent_run_ledger"] = agent_run_ledger
     try:
         return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
     finally:
@@ -735,11 +739,12 @@ def _load_health_gateway():
 
     saved = {
         name: sys.modules.get(name)
-        for name in ("grounding", "render_config", "cron_seed")
+        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger")
     }
     sys.modules["grounding"] = grounding
     sys.modules["render_config"] = render_config
     sys.modules["cron_seed"] = _cron_seed()
+    sys.modules["agent_run_ledger"] = agent_run_ledger
     try:
         return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
     finally:
@@ -1559,28 +1564,33 @@ def test_mission_context_outage_fails_open_without_inventing_blocks(monkeypatch)
     assert "do not claim K2 returned" in result["context"]
 
 
-def _hook_payload():
+K2_RUN_ID = "11111111-1111-4111-8111-111111111111"
+WRAPPER_RUN_ID = "run_11111111111141118111111111111111"
+
+
+def _hook_payload(*, message="Produce the Nursing Mastery funnel brief."):
     return {
-        "message": "Produce the Nursing Mastery funnel brief.",
+        "message": message,
         "agentId": "cleo",
         "deliver": False,
         "wakeMode": "now",
         "name": "Katailyst2",
-        "sessionKey": "hook:k2:run-123",
+        "sessionKey": f"hook:k2:{K2_RUN_ID}",
         "timeoutSeconds": 300,
         "metadata": {
             "katailyst_agent_ref": "agent:cleo",
-            "katailyst_run_id": "run-123",
+            "katailyst_run_id": K2_RUN_ID,
             "katailyst_org_id": "org-123",
         },
     }
 
 
-def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch):
+def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path):
     health_gateway = _load_health_gateway()
     calls = []
     scheduled = []
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
     health_gateway.BOOT.clear()
     health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
 
@@ -1603,17 +1613,27 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch):
     assert response.status_code == 202
     assert body == {
         "ok": True,
-        "runId": "run_" + "a" * 32,
+        "runId": WRAPPER_RUN_ID,
         "status": "queued",
-        "statusUrl": "/hooks/agent/runs/run_" + "a" * 32,
+        "terminal": False,
+        "admissionStatus": "provider_bound",
+        "statusUrl": f"/hooks/agent/runs/{WRAPPER_RUN_ID}",
     }
     assert calls[0][0] == "/v1/runs"
     assert calls[0][1]["token"] == "a-secure-shared-hook-token"
-    assert calls[0][1]["session_key"] == "hook:k2:run-123"
-    assert calls[0][1]["payload"]["session_id"] == "hook:k2:run-123"
+    assert calls[0][1]["session_key"] == f"hook:k2:{K2_RUN_ID}"
+    assert calls[0][1]["payload"]["session_id"] == f"hook:k2:{K2_RUN_ID}"
     assert scheduled == [
         ("run_" + "a" * 32, "a-secure-shared-hook-token", 300)
     ]
+
+    # An exact replay returns the same wrapper receipt and never POSTs Hermes.
+    replay = health_gateway.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert replay.status_code == 202
+    assert json.loads(replay.body) == body
+    assert len(calls) == 1
 
 
 def test_agent_hook_is_authenticated_and_requires_the_canonical_pack(monkeypatch):
@@ -1632,6 +1652,251 @@ def test_agent_hook_is_authenticated_and_requires_the_canonical_pack(monkeypatch
     assert "runtime pack" in json.loads(inactive.body)["error"]
 
 
+def test_agent_hook_rejects_a_session_that_does_not_match_the_k2_run(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    payload = _hook_payload()
+    payload["sessionKey"] = "hook:k2:22222222-2222-4222-8222-222222222222"
+
+    response = health_gateway.agent_hook(
+        payload, authorization="Bearer a-secure-shared-hook-token"
+    )
+
+    assert response.status_code == 400
+    assert "exactly match" in json.loads(response.body)["error"]
+
+
+def test_concurrent_exact_replays_cross_the_provider_boundary_once(
+    monkeypatch, tmp_path
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv(
+        "HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3")
+    )
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    provider_started = Event()
+    release_provider = Event()
+    calls = 0
+    calls_lock = Lock()
+
+    def slow_provider(*args, **kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        provider_started.set()
+        assert release_provider.wait(timeout=3)
+        return 202, {"run_id": "run_" + "f" * 32, "status": "started"}
+
+    monkeypatch.setattr(health_gateway, "_hermes_api_json", slow_provider)
+    monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)
+
+    def post():
+        return health_gateway.agent_hook(
+            _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(post)
+        assert provider_started.wait(timeout=3)
+        replay = pool.submit(post).result(timeout=3)
+        replay_body = json.loads(replay.body)
+        release_provider.set()
+        first_body = json.loads(first.result(timeout=3).body)
+
+    assert calls == 1
+    assert replay_body["runId"] == WRAPPER_RUN_ID
+    assert replay_body["admissionStatus"] == "dispatching"
+    assert replay_body["terminal"] is False
+    assert first_body["runId"] == WRAPPER_RUN_ID
+    assert first_body["admissionStatus"] == "provider_bound"
+
+
+def test_ambiguous_provider_admission_survives_restart_without_redispatch(
+    monkeypatch, tmp_path
+):
+    ledger_path = tmp_path / "agent-runs.sqlite3"
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
+    first = _load_health_gateway()
+    first.BOOT.clear()
+    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    provider_calls = []
+
+    def response_lost(*args, **kwargs):
+        provider_calls.append((args, kwargs))
+        raise TimeoutError("connection closed after request body")
+
+    monkeypatch.setattr(first, "_hermes_api_json", response_lost)
+    accepted = first.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    body = json.loads(accepted.body)
+
+    assert accepted.status_code == 202
+    assert body == {
+        "ok": True,
+        "runId": WRAPPER_RUN_ID,
+        "status": "unknown",
+        "terminal": False,
+        "admissionStatus": "dispatching",
+        "statusUrl": f"/hooks/agent/runs/{WRAPPER_RUN_ID}",
+        "recovery": {
+            "code": "provider_admission_ambiguous",
+            "required": True,
+        },
+        "error": "provider admission response unavailable: TimeoutError: connection closed after request body",
+    }
+    assert len(provider_calls) == 1
+
+    # A fresh wrapper module simulates process restart. The durable dispatching
+    # row wins over any temptation to retry the provider POST.
+    restarted = _load_health_gateway()
+    restarted.BOOT.clear()
+    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    monkeypatch.setattr(
+        restarted,
+        "_hermes_api_json",
+        lambda *args, **kwargs: pytest.fail("ambiguous admission was redispatched"),
+    )
+    replay = restarted.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    status = restarted.agent_hook_run(
+        WRAPPER_RUN_ID, authorization="Bearer a-secure-shared-hook-token"
+    )
+
+    assert replay.status_code == 202
+    assert json.loads(replay.body) == body
+    assert status.status_code == 200
+    assert json.loads(status.body) == body
+
+
+def test_crash_after_provider_acceptance_keeps_the_dispatch_ambiguous(
+    monkeypatch, tmp_path
+):
+    ledger_path = tmp_path / "agent-runs.sqlite3"
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
+    first = _load_health_gateway()
+    first.BOOT.clear()
+    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    provider_calls = []
+
+    def accepted_by_provider(*args, **kwargs):
+        provider_calls.append((args, kwargs))
+        return 202, {"run_id": "run_" + "a" * 32, "status": "started"}
+
+    monkeypatch.setattr(first, "_hermes_api_json", accepted_by_provider)
+    store = first.get_agent_run_ledger()
+    monkeypatch.setattr(
+        store,
+        "bind_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("simulated process loss before provider binding commit")
+        ),
+    )
+
+    lost = first.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert lost.status_code == 503
+    assert len(provider_calls) == 1
+
+    restarted = _load_health_gateway()
+    restarted.BOOT.clear()
+    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    monkeypatch.setattr(
+        restarted,
+        "_hermes_api_json",
+        lambda *args, **kwargs: pytest.fail("accepted provider run was duplicated"),
+    )
+    replay = restarted.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    body = json.loads(replay.body)
+
+    assert replay.status_code == 202
+    assert body["runId"] == WRAPPER_RUN_ID
+    assert body["status"] == "unknown"
+    assert body["terminal"] is False
+    assert body["admissionStatus"] == "dispatching"
+
+
+def test_queued_admission_can_resume_safely_after_restart(monkeypatch, tmp_path):
+    ledger_path = tmp_path / "agent-runs.sqlite3"
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
+    first = _load_health_gateway()
+    first.BOOT.clear()
+    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    normalized = first._validate_hook_payload(_hook_payload())
+    first.get_agent_run_ledger().admit(
+        k2_run_id=normalized["k2_run_id"],
+        session_key=normalized["session_key"],
+        org_id=normalized["org_id"],
+        agent_ref=normalized["agent_ref"],
+        fingerprint=first._hook_admission_fingerprint(normalized),
+    )
+
+    restarted = _load_health_gateway()
+    restarted.BOOT.clear()
+    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    provider_calls = []
+
+    def fake_provider(*args, **kwargs):
+        provider_calls.append((args, kwargs))
+        return 202, {"run_id": "run_" + "c" * 32, "status": "started"}
+
+    monkeypatch.setattr(restarted, "_hermes_api_json", fake_provider)
+    monkeypatch.setattr(restarted, "_schedule_run_timeout", lambda *args: None)
+    response = restarted.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+
+    assert response.status_code == 202
+    assert json.loads(response.body)["admissionStatus"] == "provider_bound"
+    assert len(provider_calls) == 1
+
+
+def test_replay_with_changed_semantics_is_a_conflict(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv(
+        "HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3")
+    )
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    provider_calls = []
+    monkeypatch.setattr(
+        health_gateway,
+        "_hermes_api_json",
+        lambda *args, **kwargs: (
+            provider_calls.append((args, kwargs))
+            or (202, {"run_id": "run_" + "d" * 32, "status": "started"})
+        ),
+    )
+    monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)
+
+    original = health_gateway.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    changed = health_gateway.agent_hook(
+        _hook_payload(message="A different mission under the same run id."),
+        authorization="Bearer a-secure-shared-hook-token",
+    )
+
+    assert original.status_code == 202
+    assert changed.status_code == 409
+    assert len(provider_calls) == 1
+
+
 @pytest.mark.parametrize(
     ("hermes_status", "expected"),
     [
@@ -1643,14 +1908,22 @@ def test_agent_hook_is_authenticated_and_requires_the_canonical_pack(monkeypatch
         ("cancelled", {"ok": False, "status": "cancelled", "terminal": True}),
     ],
 )
-def test_agent_hook_poll_preserves_terminal_truth(monkeypatch, hermes_status, expected):
+def test_agent_hook_poll_preserves_terminal_truth(
+    monkeypatch, tmp_path, hermes_status, expected
+):
     health_gateway = _load_health_gateway()
     run_id = "run_" + "b" * 32
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
-    monkeypatch.setattr(
-        health_gateway,
-        "_hermes_api_json",
-        lambda *args, **kwargs: (
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    calls = []
+
+    def fake_hermes(path, **kwargs):
+        calls.append((path, kwargs))
+        if path == "/v1/runs":
+            return 202, {"run_id": run_id, "status": "started"}
+        return (
             200,
             {
                 "run_id": run_id,
@@ -1659,19 +1932,90 @@ def test_agent_hook_poll_preserves_terminal_truth(monkeypatch, hermes_status, ex
                 "error": "provider failed" if hermes_status == "failed" else "",
                 "usage": {"total_tokens": 42},
             },
-        ),
+        )
+
+    monkeypatch.setattr(
+        health_gateway,
+        "_hermes_api_json",
+        fake_hermes,
     )
+    monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)
+
+    admitted = health_gateway.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert admitted.status_code == 202
 
     response = health_gateway.agent_hook_run(
-        run_id, authorization="Bearer a-secure-shared-hook-token"
+        WRAPPER_RUN_ID, authorization="Bearer a-secure-shared-hook-token"
     )
     body = json.loads(response.body)
 
     assert response.status_code == 200
     assert {key: body[key] for key in expected} == expected
+    assert body["runId"] == WRAPPER_RUN_ID
     if expected["terminal"]:
         assert body["output"] == "finished artifact"
         assert body["usage"] == {"total_tokens": 42}
+
+
+def test_terminal_receipt_is_redacted_bounded_and_survives_restart(
+    monkeypatch, tmp_path
+):
+    ledger_path = tmp_path / "agent-runs.sqlite3"
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
+    first = _load_health_gateway()
+    first.BOOT.clear()
+    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    provider_run_id = "run_" + "e" * 32
+    secret = "sk-or-v1-" + "s" * 80
+    provider_calls = []
+
+    def fake_provider(path, **kwargs):
+        provider_calls.append((path, kwargs))
+        if path == "/v1/runs":
+            return 202, {"run_id": provider_run_id, "status": "started"}
+        return 200, {
+            "run_id": provider_run_id,
+            "status": "completed",
+            "output": f"artifact {secret} " + "x" * 60_000,
+            "error": f"access_token={secret}",
+            "usage": {"total_tokens": 42, "access_token": secret},
+        }
+
+    monkeypatch.setattr(first, "_hermes_api_json", fake_provider)
+    monkeypatch.setattr(first, "_schedule_run_timeout", lambda *args: None)
+    assert first.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    ).status_code == 202
+    terminal = first.agent_hook_run(
+        WRAPPER_RUN_ID, authorization="Bearer a-secure-shared-hook-token"
+    )
+    body = json.loads(terminal.body)
+
+    assert terminal.status_code == 200
+    assert body["terminal"] is True
+    assert body["status"] == "completed"
+    assert secret not in json.dumps(body)
+    assert len(body["output"]) <= agent_run_ledger.MAX_OUTPUT_CHARS
+    assert body["output"].endswith("[truncated by Cleo host]")
+    assert body["usage"] == {"total_tokens": 42, "access_token": "[redacted]"}
+
+    restarted = _load_health_gateway()
+    restarted.BOOT.clear()
+    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    monkeypatch.setattr(
+        restarted,
+        "_hermes_api_json",
+        lambda *args, **kwargs: pytest.fail("terminal receipt queried Hermes again"),
+    )
+    durable = restarted.agent_hook_run(
+        WRAPPER_RUN_ID, authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert durable.status_code == 200
+    assert json.loads(durable.body) == body
+    assert len(provider_calls) == 2
 
 
 def _preactivation_boot_state():
@@ -1689,6 +2033,7 @@ def _preactivation_boot_state():
         ],
         "web_search_readiness": {"available": True},
         "external_dispatch": {"configured": True},
+        "agent_run_ledger": {"ready": True, "schema_version": 1},
         "slack_auth": {
             "auth_ok": True,
             "scopes_known": True,
@@ -1707,6 +2052,30 @@ def _preactivation_boot_state():
             "contract_status": "preactivation",
         },
     }
+
+
+ACTIVATION_CHECK_KEYS = {
+    "agent_ref_matches",
+    "runtime_lane_matches",
+    "config_written",
+    "hook_token_configured",
+    "hook_surface_configured",
+    "runtime_cli_present",
+    "channel_adapter_available",
+    "mcp_sdk_available",
+    "channel_auth_ok",
+    "channel_scopes_ready",
+    "primary_model_route_ready",
+    "web_search_ready",
+    "k2_server_is_canonical",
+    "k2_runtime_pack_tool_listed",
+    "k2_well_tool_listed",
+    "k2_runtime_pack_callable",
+    "k2_agent_bound_token",
+    "k2_identity_matches",
+    "k2_host_profile_compatible",
+    "k2_context_plugin_ready",
+}
 
 
 def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch):
@@ -1735,8 +2104,10 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     assert unauthorized.status_code == 401
     assert response.status_code == 200
     assert body["ready"] is True
+    assert body["contractVersion"] == "agent_host_activation_readiness.v1"
     assert body["stage"] == "pre_activation"
     assert body["agentRef"] == "agent:cleo"
+    assert set(body["checks"]) == ACTIVATION_CHECK_KEYS
     assert all(body["checks"].values())
     assert "k2_runtime_pack_applied" not in body["checks"]
     assert "gateway_running" not in body["checks"]
@@ -1747,6 +2118,16 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     )
     assert missing_hook.status_code == 503
     assert json.loads(missing_hook.body)["checks"]["hook_surface_configured"] is False
+
+    health_gateway.BOOT["external_dispatch"]["configured"] = True
+    health_gateway.BOOT["agent_run_ledger"]["ready"] = False
+    missing_ledger = health_gateway.activationz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert missing_ledger.status_code == 503
+    assert (
+        json.loads(missing_ledger.body)["checks"]["hook_surface_configured"] is False
+    )
 
 
 def test_post_activation_readyz_requires_real_run_and_well_surfaces(monkeypatch):

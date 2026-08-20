@@ -147,30 +147,39 @@ the runtime-pack and well tools, an agent-bound `agent:cleo` pack, the
 pack digest, and an actual well call. A legacy v1 bridge, broad/misbound token,
 inactive pack, or unavailable well is named separately.
 
-K2 activation has two stages. `GET /activationz` uses the hook bearer and proves
-the hosted body, credentials, dependencies, exact token-bound Cleo pack and
-host compatibility without requiring Cleo to already be online. K2 can then
-activate the agent; the bounded watcher repeats `agents.runtime_pack` with
-`requireActive:true`, installs it, proves the well and starts Hermes. `GET
-/readyz` is the stricter post-activation receipt: canonical pack applied, one-
-turn context door callable, Slack socket live, primary model ready and the
-Hermes run API reachable.
+K2 activation has two stages. Authenticated `GET /activationz` returns the
+versioned `agent_host_activation_readiness.v1` contract and its exact 20
+non-circular checks: hosted body, durable admission ledger, credentials,
+dependencies, exact token-bound Cleo pack and host compatibility, without
+requiring Cleo to already be online. K2 can then activate the agent; the bounded
+watcher repeats `agents.runtime_pack` with `requireActive:true`, installs it,
+proves the well and starts Hermes. `GET /readyz` is the stricter post-activation
+receipt: canonical pack applied, one-turn context door callable, Slack socket
+live, primary model ready, durable ledger ready and the Hermes run API reachable.
 
 ## K2 hosted-agent contract
 
 All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
 
-- `POST /hooks/agent` accepts K2's existing Cleo envelope and returns HTTP 202
-  with `{ok, runId, status:"queued", statusUrl}`. Acceptance is not completion.
-- `GET /hooks/agent/runs/{runId}` returns the native Hermes run state plus
-  `terminal`. Only `completed`, `failed` and `cancelled` are terminal; output
-  and usage appear only after the real run ends.
+- Before `POST /hooks/agent`, K2 persists the deterministic wrapper id
+  `run_<katailyst_run_id UUID without hyphens>` and its same-origin status URL.
+- `POST /hooks/agent` durably admits the exact K2 run/session before calling
+  Hermes, then returns HTTP 202 with that wrapper `{runId, statusUrl}`. Exact
+  retries return the same receipt and never create a second provider run.
+- `GET /hooks/agent/runs/{runId}` reads the durable wrapper ledger and, once
+  bound, the native Hermes run. Only `completed`, `failed` and `cancelled` are
+  terminal; `waiting_for_approval` stays nonterminal. Terminal output and usage
+  are bounded, secret-redacted, and persisted across wrapper restarts.
 - The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
   not synthesize a second agent loop, does not post into Slack, and retains
   Hermes' normal model, tools, session and `pre_llm_call` behavior.
 
-K2 must poll `statusUrl` and terminalize its run from that receipt. Treating the
-initial 202 as completed is a control-plane bug, not a successful Cleo run.
+The ledger moves monotonically through `queued -> dispatching ->
+provider_bound -> terminal`. A restart before `dispatching` can safely resume;
+a lost response after that boundary is surfaced as nonterminal `unknown` with
+`provider_admission_ambiguous` and is never automatically redispatched. K2 must
+poll `statusUrl` and terminalize its run from that receipt. Treating the initial
+202 as completed is a control-plane bug, not a successful Cleo run.
 
 Slack uses Hermes' single-message edit stream. The answer progressively updates
 in place, the ephemeral Assistant status shows the current useful action, and
