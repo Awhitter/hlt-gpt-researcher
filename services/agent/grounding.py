@@ -23,10 +23,12 @@ written once. Two agents disagreeing about canon is a bug, not a feature.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,77 @@ GROUNDING_SRC = Path(__file__).resolve().parent / "grounding"
 PLUGIN_SRC = Path(__file__).resolve().parent / "hermes_plugins"
 AGENT_IDS = ("cleo", "brian")
 DEFAULT_AGENT = "cleo"
+SLACK_AGENT_LEAD_PARTICIPANT_REFS = frozenset(
+    {"agent:victoria", "agent:lila", "agent:julius", "agent:cleo"}
+)
+SLACK_AGENT_LEAD_NONPARTICIPANT_REFS = frozenset({"agent:brian"})
+
+
+def _slack_agent_lead_readiness(
+    agent: str, env: Mapping[str, str]
+) -> dict[str, Any]:
+    """Read the self-contained plugin roster without importing Hermes."""
+    selected_agent_ref = f"agent:{agent}"
+    local_agent_ref = str(env.get("HLT_AGENT_REF") or selected_agent_ref).strip().lower()
+    required = local_agent_ref not in SLACK_AGENT_LEAD_NONPARTICIPANT_REFS
+    source = PLUGIN_SRC / "hlt_k2_context" / "slack_agent_lead.py"
+    module_name = "hlt_slack_agent_lead_boot_readiness"
+    spec = importlib.util.spec_from_file_location(module_name, source)
+    if spec is None or spec.loader is None:
+        return {
+            "roster_ready": False,
+            "local_agent_ready": not required and local_agent_ref == selected_agent_ref,
+            "required": required,
+            "local_agent_ref": local_agent_ref,
+            "error": "lead selector module is not loadable",
+            "storage": "durable_sqlite",
+        }
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        roster = module.load_fallback_roster()
+    except Exception as exc:  # noqa: BLE001 - boot reports all plugin load failures
+        return {
+            "roster_ready": False,
+            "local_agent_ready": not required and local_agent_ref == selected_agent_ref,
+            "required": required,
+            "local_agent_ref": local_agent_ref,
+            "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+            "storage": "durable_sqlite",
+        }
+    finally:
+        sys.modules.pop(module_name, None)
+    contract_matches = (
+        module.ROSTER_PARTICIPANT_REFS == SLACK_AGENT_LEAD_PARTICIPANT_REFS
+        and module.ROSTER_NONPARTICIPANT_REFS
+        == SLACK_AGENT_LEAD_NONPARTICIPANT_REFS
+    )
+    identity_matches = local_agent_ref == selected_agent_ref
+    readiness_error = roster.error
+    if not readiness_error and not contract_matches:
+        readiness_error = "participant contract mismatch"
+    if not readiness_error and not identity_matches:
+        readiness_error = "configured local agent does not match selected persona"
+    return {
+        "roster_ready": roster.ready and contract_matches,
+        "local_agent_ready": (
+            (not required and identity_matches)
+            or (
+                identity_matches
+                and required
+                and roster.ready
+                and contract_matches
+                and local_agent_ref in roster.by_agent_ref
+            )
+        ),
+        "required": required,
+        "local_agent_ref": local_agent_ref,
+        "roster_sha256": roster.sha256,
+        "source": roster.source,
+        "error": readiness_error,
+        "storage": "durable_sqlite",
+    }
 
 
 def resolve_agent(env: Any = None) -> str:
@@ -94,6 +167,7 @@ def install(
         "skills_installed": [],
         "plugins_installed": [],
     }
+    summary["slack_agent_lead"] = _slack_agent_lead_readiness(agent, env)
 
     # --- identity ---------------------------------------------------------
     soul_src = GROUNDING_SRC / agent / "SOUL.md"

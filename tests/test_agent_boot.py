@@ -1430,6 +1430,43 @@ def test_grounding_installs_the_mission_context_plugin(tmp_path):
     assert (plugin_dir / "plugin.yaml").is_file()
     assert (plugin_dir / "__init__.py").is_file()
     assert (plugin_dir / "runtime_context.py").is_file()
+    assert (plugin_dir / "slack_agent_lead.py").is_file()
+    assert (plugin_dir / "slack_lead_ledger.py").is_file()
+    assert summary["slack_agent_lead"] == {
+        "roster_ready": True,
+        "local_agent_ready": True,
+        "required": True,
+        "local_agent_ref": "agent:cleo",
+        "roster_sha256": (
+            "b6dc04388d03d378bfffe1d89be428ea1c8394a9e0e54230091d22e3b9777ec5"
+        ),
+        "source": "generated_fallback_future_katailyst2_projection",
+        "error": "",
+        "storage": "durable_sqlite",
+    }
+
+
+def test_nonparticipant_brian_keeps_gateway_readiness_without_joining_election(
+    tmp_path,
+):
+    summary = grounding.install(agent="brian", home=tmp_path, env={})
+
+    assert summary["slack_agent_lead"]["required"] is False
+    assert summary["slack_agent_lead"]["local_agent_ready"] is True
+    assert summary["slack_agent_lead"]["local_agent_ref"] == "agent:brian"
+
+
+def test_misbound_runtime_agent_ref_fails_lead_readiness(tmp_path):
+    summary = grounding.install(
+        agent="cleo",
+        home=tmp_path,
+        env={"HLT_AGENT_REF": "agent:clep"},
+    )
+
+    assert summary["slack_agent_lead"]["required"] is True
+    assert summary["slack_agent_lead"]["local_agent_ready"] is False
+    assert summary["slack_agent_lead"]["local_agent_ref"] == "agent:clep"
+    assert "does not match" in summary["slack_agent_lead"]["error"]
 
 
 def test_mission_context_hook_skips_small_talk_and_draws_once(monkeypatch):
@@ -2040,6 +2077,11 @@ def _preactivation_boot_state():
             "missing_core_scopes": [],
         },
         "k2_context_plugin": {"installed": True, "enabled": True},
+        "slack_agent_lead": {
+            "roster_ready": True,
+            "local_agent_ready": True,
+            "required": True,
+        },
         "k2_agent_readiness": {
             "server_matches_katailyst2": True,
             "runtime_pack_tool_listed": True,
@@ -2075,6 +2117,7 @@ ACTIVATION_CHECK_KEYS = {
     "k2_identity_matches",
     "k2_host_profile_compatible",
     "k2_context_plugin_ready",
+    "slack_agent_lead_ready",
 }
 
 
@@ -2127,6 +2170,23 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     assert missing_ledger.status_code == 503
     assert (
         json.loads(missing_ledger.body)["checks"]["hook_surface_configured"] is False
+    )
+
+    health_gateway.BOOT["agent_run_ledger"]["ready"] = True
+    health_gateway.BOOT["slack_agent_lead"] = {
+        "roster_ready": True,
+        "local_agent_ready": False,
+        "required": False,
+    }
+    misbound_nonparticipant = health_gateway.activationz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert misbound_nonparticipant.status_code == 503
+    assert (
+        json.loads(misbound_nonparticipant.body)["checks"][
+            "slack_agent_lead_ready"
+        ]
+        is False
     )
 
 
@@ -2207,6 +2267,11 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
         {
             "agent_ref": "agent:cleo",
             "k2_context_plugin": {"installed": True, "enabled": True},
+            "slack_agent_lead": {
+                "roster_ready": True,
+                "local_agent_ready": True,
+                "required": True,
+            },
         }
     )
 
@@ -2217,6 +2282,43 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
     ]
     assert health_gateway.BOOT["runtime_pack_applied"] is True
     assert health_gateway.BOOT["gateway_start_allowed"] is True
+
+
+def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": False,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+        },
+    )
+    state = _preactivation_boot_state()
+    state["runtime_pack_applied"] = True
+    state["k2_agent_readiness"].update(
+        {
+            "mounted": True,
+            "bearer_present": True,
+            "transport_ok": True,
+            "well_callable": True,
+        }
+    )
+    state["slack_agent_lead"] = {
+        "roster_ready": False,
+        "local_agent_ready": False,
+        "required": True,
+    }
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == "gateway_slack_agent_lead_unready"
+    assert "fail closed before typing or model dispatch" in payload["note"]
 
 
 @pytest.mark.parametrize(

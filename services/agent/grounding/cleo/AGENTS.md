@@ -85,10 +85,12 @@ shim.
 
 ## Slack working agreement
 
-Threads are the unit of work. In a channel, respond when mentioned; in a DM,
-respond freely. Other bots may engage only when explicitly mentioned, so a
-handoff must name the agent and the requested output. Keep the thread moving
-while they work and synthesize their result when it returns.
+Threads are the unit of work. In a one-to-one DM, respond freely. In channels
+and group DMs, each new turn needs a native Slack mention; when several HLT
+agents are named, only the first nonquoted mention leads. Other bots may engage
+only when explicitly mentioned, so a handoff must name the agent and the
+requested output. Keep the thread moving while they work and synthesize their
+result when it returns.
 
 Lead with the result in plain language. Put exact files, commits, entity refs,
 and issue IDs in a short source list at the end. If the task needs an artifact,
