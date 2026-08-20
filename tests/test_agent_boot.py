@@ -276,14 +276,9 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     hint = config["agent"]["environment_hint"]
     soul = (SERVICE_DIR / "grounding" / "cleo" / "SOUL.md").read_text(encoding="utf-8")
 
-    assert render_config.agent_ref({"AGENT_ID": "cleo"}) == "agent:cleo@v1"
-    assert "agent:cleo@v1" in hint
-    # Was `registry_agent_context` until 2026-08-20. That verb is deprecated in K2, which names
-    # katailyst.well as the replacement, and this caller could never reach it anyway: hermes mounts
-    # K2 with no X-Katailyst-Toolset header, so it lands on the `team` lane, where the verb is not
-    # registered — hence the live Slack failure "Tool registry_agent_context not found". The verb
-    # also takes a required `query`, never the `intent`/`surface_context`/`runtime_lane` the
-    # grounding used to name, so fixing only the lane would have swapped one error for another.
+    assert render_config.agent_ref({"AGENT_ID": "cleo"}) == "agent:cleo"
+    assert render_config.runtime_lane({"AGENT_ID": "cleo"}) == "hermes"
+    assert "agent:cleo" in hint
     assert "katailyst_well" in hint
     assert "registry_agent_context" not in hint
     assert "full K2 catalog" in soul
@@ -299,7 +294,8 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
         },
         home=tmp_path,
     )
-    assert summary["agent_ref"] == "agent:cleo@v1"
+    assert summary["agent_ref"] == "agent:cleo"
+    assert summary["runtime_lane"] == "hermes"
     assert summary["deploy_commit"] == "abc123"
     assert summary["hermes_upstream_ref"] == "upstream123"
 
@@ -979,7 +975,7 @@ def test_a_positively_broken_configured_fallback_is_visible(monkeypatch):
     assert "openai-codex/gpt-5.6-sol" in payload["note"]
 
 
-def test_k2_readiness_proves_the_bound_cleo_contract(monkeypatch):
+def test_k2_readiness_calls_the_current_well_schema_and_finds_cleo(monkeypatch):
     health_gateway = _load_health_gateway()
     calls = []
     responses = iter(
@@ -994,7 +990,7 @@ def test_k2_readiness_proves_the_bound_cleo_contract(monkeypatch):
                     "result": {
                         "tools": [
                             {"name": "registry_search"},
-                            {"name": "registry_agent_context"},
+                            {"name": "katailyst_well"},
                         ]
                     }
                 },
@@ -1005,8 +1001,30 @@ def test_k2_readiness_proves_the_bound_cleo_contract(monkeypatch):
                 {
                     "result": {
                         "structuredContent": {
-                            "currentAgentContractStatus": "loaded",
-                            "currentAgentContract": {"agentRef": "agent:cleo@v4"},
+                            "mission": "Load agent:cleo",
+                            "dives": [
+                                {
+                                    "facet": "agent: cleo runtime pack",
+                                    "abstained": False,
+                                    "blocks": [
+                                        {
+                                            "ref": "cleo",
+                                            "type": "agent",
+                                            "typedRef": "agent:cleo",
+                                            "name": "Cleo",
+                                            "oneLiner": "Nursing Mastery's product-owner facilitator.",
+                                            "score": 0.99,
+                                            "matchReason": "exact agent identity",
+                                            "priorityTier": 1,
+                                        }
+                                    ],
+                                }
+                            ],
+                            "gaps": [],
+                            "next": "Compose freely.",
+                            "howThisWorks": "Discovery returns candidate blocks.",
+                            "degraded": False,
+                            "timings": {"totalMs": 218},
                         }
                     }
                 },
@@ -1023,22 +1041,28 @@ def test_k2_readiness_proves_the_bound_cleo_contract(monkeypatch):
     monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
 
     result = health_gateway.k2_agent_readiness(
-        "https://katailyst2.vercel.app/mcp", "k2-secret", "agent:cleo@v1"
+        "https://katailyst2.vercel.app/mcp",
+        "k2-secret",
+        "agent:cleo",
+        "hermes",
     )
 
     assert result["transport_ok"] is True
     assert result["server_repo"] == "katailyst2"
     assert result["server_matches_katailyst2"] is True
-    assert result["agent_context_tool_listed"] is True
+    assert result["well_tool_listed"] is True
+    assert result["well_callable"] is True
+    assert result["agent_block_found"] is True
+    assert result["runtime_lane"] == "hermes"
     assert result["contract_status"] == "loaded"
-    assert result["resolved_agent_ref"] == "agent:cleo@v4"
+    assert result["resolved_agent_ref"] == "agent:cleo"
     assert result["identity_matches"] is True
     assert calls[-1][2]["params"]["arguments"] == {
-        "query": "Cleo runtime identity readiness",
-        "limit": 1,
-        "graphDepth": 1,
-        "agentRef": "agent:cleo@v1",
-        "includeSpecialists": False,
+        "mission": "Load the current runtime pack and useful capabilities for agent:cleo.",
+        "facets": ["agent:cleo runtime pack"],
+        "budget": 12,
+        "thoughts": False,
+        "traverse": False,
     }
 
 
@@ -1052,7 +1076,7 @@ def test_k2_readiness_does_not_confuse_a_healthy_mount_with_a_missing_agent(monk
                 {"x-katailyst-repo": "katailyst2"},
             ),
             (
-                {"result": {"tools": [{"name": "registry.agent_context"}]}},
+                {"result": {"tools": [{"name": "katailyst.well"}]}},
                 "session-1",
                 {},
             ),
@@ -1060,8 +1084,24 @@ def test_k2_readiness_does_not_confuse_a_healthy_mount_with_a_missing_agent(monk
                 {
                     "result": {
                         "structuredContent": {
-                            "currentAgentContractStatus": "not_found",
-                            "currentAgentContract": None,
+                            "mission": "Load agent:cleo",
+                            "dives": [
+                                {
+                                    "facet": "agent: cleo runtime pack",
+                                    "abstained": False,
+                                    "blocks": [
+                                        {
+                                            "ref": "agent_runtime_pack.v1",
+                                            "type": "schema",
+                                            "typedRef": "schema:agent_runtime_pack.v1",
+                                        }
+                                    ],
+                                }
+                            ],
+                            "gaps": [],
+                            "next": "Compose freely.",
+                            "degraded": False,
+                            "timings": {"totalMs": 180},
                         }
                     }
                 },
@@ -1075,13 +1115,56 @@ def test_k2_readiness_does_not_confuse_a_healthy_mount_with_a_missing_agent(monk
     )
 
     result = health_gateway.k2_agent_readiness(
-        "https://katailyst2.vercel.app/mcp", "k2-secret", "agent:cleo@v1"
+        "https://katailyst2.vercel.app/mcp", "k2-secret", "agent:cleo"
     )
 
     assert result["transport_ok"] is True
-    assert result["agent_context_tool_listed"] is True
+    assert result["well_tool_listed"] is True
+    assert result["well_callable"] is True
+    assert result["agent_block_found"] is False
     assert result["contract_status"] == "not_found"
     assert result["identity_matches"] is False
+
+
+def test_k2_readiness_separates_a_listed_well_from_a_callable_well(monkeypatch):
+    health_gateway = _load_health_gateway()
+    responses = iter(
+        [
+            (
+                {"result": {}},
+                "session-1",
+                {"x-katailyst-repo": "katailyst2"},
+            ),
+            (
+                {"result": {"tools": [{"name": "katailyst.well"}]}},
+                "session-1",
+                {},
+            ),
+            (
+                {
+                    "result": {
+                        "isError": True,
+                        "content": [{"type": "text", "text": "backend unavailable"}],
+                    }
+                },
+                "session-1",
+                {},
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        health_gateway, "_mcp_post", lambda *args, **kwargs: next(responses)
+    )
+
+    result = health_gateway.k2_agent_readiness(
+        "https://katailyst2.vercel.app/mcp", "k2-secret", "agent:cleo"
+    )
+
+    assert result["transport_ok"] is True
+    assert result["well_tool_listed"] is True
+    assert result["well_callable"] is False
+    assert result["agent_block_found"] is False
+    assert result["contract_status"] == "unavailable"
 
 
 def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypatch):
@@ -1095,7 +1178,7 @@ def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypa
     monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
 
     result = health_gateway.k2_agent_readiness(
-        "https://www.katailyst.com/mcp", "legacy-secret", "agent:cleo@v1"
+        "https://www.katailyst.com/mcp", "legacy-secret", "agent:cleo"
     )
 
     assert len(calls) == 1
@@ -1114,7 +1197,8 @@ def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypa
                 "bearer_present": False,
                 "transport_ok": None,
                 "server_matches_katailyst2": None,
-                "agent_context_tool_listed": False,
+                "well_tool_listed": False,
+                "well_callable": False,
                 "contract_status": "not_mounted",
                 "identity_matches": None,
             },
@@ -1126,7 +1210,8 @@ def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypa
                 "bearer_present": True,
                 "transport_ok": True,
                 "server_matches_katailyst2": False,
-                "agent_context_tool_listed": False,
+                "well_tool_listed": False,
+                "well_callable": False,
                 "contract_status": "wrong_server",
                 "identity_matches": None,
                 "server_repo": "katailyst",
@@ -1139,7 +1224,21 @@ def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypa
                 "bearer_present": True,
                 "transport_ok": True,
                 "server_matches_katailyst2": True,
-                "agent_context_tool_listed": True,
+                "well_tool_listed": True,
+                "well_callable": False,
+                "contract_status": "unavailable",
+                "identity_matches": None,
+            },
+            "gateway_k2_unreachable",
+        ),
+        (
+            {
+                "mounted": True,
+                "bearer_present": True,
+                "transport_ok": True,
+                "server_matches_katailyst2": True,
+                "well_tool_listed": True,
+                "well_callable": True,
                 "contract_status": "not_found",
                 "identity_matches": False,
             },
@@ -1162,7 +1261,8 @@ def test_health_names_the_exact_k2_readiness_seam(monkeypatch, readiness, expect
     health_gateway.BOOT.clear()
     health_gateway.BOOT.update(
         {
-            "agent_ref": "agent:cleo@v1",
+            "agent_ref": "agent:cleo",
+            "runtime_lane": "hermes",
             "model_provider": "xai-oauth",
             "subscription_auth": {"logged_in": True},
             "k2_agent_readiness": readiness,

@@ -54,8 +54,11 @@ Start substantial tasks with:
 
 `katailyst_well(mission=<the real ask, in the user's own words>)`
 
-It returns registry blocks per search angle, judged by you — an off-target block in the tail is
-normal. Your identity is already in this briefing, so nothing needs to fetch it.
+It returns candidate registry blocks for Cleo to judge, not a mandatory route.
+An off-target block in the tail is normal. Your identity comes from the bound
+runtime pack, not from the wishing-well response.
+Her durable registry identity is `agent:cleo`, and this host's runtime lane is
+`hermes`; neither is an invented argument to the wishing-well call.
 
 Then use the returned capabilities selectively:
 

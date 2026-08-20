@@ -66,7 +66,13 @@ DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
 # hosted persona load them at task time instead of copying them into prompts.
-AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo@v1"}
+AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo"}
+
+# Runtime identity is host metadata, not an argument to K2 discovery tools.
+# Keeping it explicit in health output lets an operator prove that the canonical
+# Cleo entity is running in the intended Hermes body without teaching the model
+# a made-up ``runtimeLane`` parameter.
+AGENT_RUNTIME_LANES: dict[str, str] = {"cleo": "hermes", "brian": "hermes"}
 
 # THE most important setting in this file.
 #
@@ -291,6 +297,11 @@ def agent_ref(env: Mapping[str, str]) -> str | None:
     return AGENT_REFS.get(agent_id)
 
 
+def runtime_lane(env: Mapping[str, str]) -> str:
+    agent_id = (_clean(env, "AGENT_ID") or "cleo").lower()
+    return AGENT_RUNTIME_LANES.get(agent_id, "hermes")
+
+
 def build_mcp_servers(env: Mapping[str, str]) -> dict[str, Any]:
     """Mount only the servers whose URL is actually configured.
 
@@ -452,10 +463,12 @@ def build_config(
 ) -> dict[str, Any]:
     servers = build_mcp_servers(env)
     registry_ref = agent_ref(env)
+    host_runtime_lane = runtime_lane(env)
     runtime_hint = (
         "You run as a hosted Slack bot on Render without direct shell, file "
         "writes, or browser control. Reach the estate and hosted artifact tools "
-        "through MCP and K2. Long work is fine; show one useful progress update."
+        f"through MCP and K2. Your runtime lane is {host_runtime_lane}. Long work "
+        "is fine; show one useful progress update."
     )
     if registry_ref:
         runtime_hint += (
@@ -641,6 +654,7 @@ def render(
         ],
         "max_tokens": config["model"]["max_tokens"],
         "agent_ref": agent_ref(env) or "",
+        "runtime_lane": runtime_lane(env),
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
         "hermes_upstream_ref": _clean(env, "HERMES_UPSTREAM_REF") or "",
         "openrouter_key_present": bool(_clean(env, "OPENROUTER_API_KEY")),

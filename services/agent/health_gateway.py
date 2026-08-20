@@ -437,18 +437,56 @@ def _mcp_tool_data(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _well_agent_ref(data: Mapping[str, Any], expected_agent_ref: str) -> str:
+    """Return the exact agent block from the current wishing-well shape.
+
+    ``katailyst.well`` returns ``dives[].blocks[]``. Agent blocks carry the
+    canonical ``typedRef`` (for example ``agent:cleo``); the separate ``type``
+    and ``ref`` fields are accepted as a conservative fallback for older K2
+    renderers. Never infer an identity from names or approximate search scores.
+    """
+    expected_bare = expected_agent_ref.split("@", 1)[0]
+    dives = data.get("dives")
+    if not isinstance(dives, list):
+        return ""
+    for dive in dives:
+        if not isinstance(dive, Mapping):
+            continue
+        blocks = dive.get("blocks")
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if not isinstance(block, Mapping):
+                continue
+            typed_ref = str(block.get("typedRef") or "")
+            if not typed_ref:
+                block_type = str(block.get("type") or "")
+                block_ref = str(block.get("ref") or "")
+                if block_type and block_ref:
+                    typed_ref = (
+                        block_ref
+                        if block_ref.startswith(f"{block_type}:")
+                        else f"{block_type}:{block_ref}"
+                    )
+            if typed_ref.split("@", 1)[0] == expected_bare:
+                return typed_ref
+    return ""
+
+
 def k2_agent_readiness(
     url: str,
     token: str,
     expected_agent_ref: str,
+    runtime_lane: str = "hermes",
     timeout: float = 8.0,
 ) -> dict[str, Any]:
-    """Prove that K2 is reachable AND exposes Cleo's actual agent contract.
+    """Prove the current K2 team-lane door can discover Cleo's agent block.
 
     A configured URL, token, MCP SDK and even a healthy ``tools/list`` do not
     prove ``agent:cleo`` exists. This uses the same bearer and endpoint Hermes
-    receives, then asks the listed ``registry.agent_context`` tool for the
-    runtime ref. Only the compact status/ref escape into health output.
+    receives, then calls the listed ``katailyst.well`` tool with its current
+    schema and an exact agent facet. Runtime lane is host metadata only; it is
+    deliberately not sent as a made-up K2 argument.
     """
     started = time.monotonic()
     result: dict[str, Any] = {
@@ -458,8 +496,11 @@ def k2_agent_readiness(
         "server_repo": "",
         "server_matches_katailyst2": None,
         "visible_tools": None,
-        "agent_context_tool_listed": False,
+        "well_tool_listed": False,
+        "well_callable": False,
+        "agent_block_found": False,
         "requested_agent_ref": expected_agent_ref,
+        "runtime_lane": runtime_lane,
         "contract_status": "not_checked",
         "resolved_agent_ref": "",
         "identity_matches": None,
@@ -517,14 +558,10 @@ def k2_agent_readiness(
         ]
         result["visible_tools"] = len(names)
         tool_name = next(
-            (
-                name
-                for name in names
-                if name in {"registry.agent_context", "registry_agent_context"}
-            ),
+            (name for name in names if name in {"katailyst.well", "katailyst_well"}),
             "",
         )
-        result["agent_context_tool_listed"] = bool(tool_name)
+        result["well_tool_listed"] = bool(tool_name)
         if not tool_name:
             result["contract_status"] = "tool_not_listed"
             return result
@@ -537,34 +574,34 @@ def k2_agent_readiness(
             {
                 "name": tool_name,
                 "arguments": {
-                    "query": "Cleo runtime identity readiness",
-                    "limit": 1,
-                    "graphDepth": 1,
-                    "agentRef": expected_agent_ref,
-                    "includeSpecialists": False,
+                    "mission": (
+                        f"Load the current runtime pack and useful capabilities for "
+                        f"{expected_agent_ref}."
+                    ),
+                    "facets": [f"{expected_agent_ref} runtime pack"],
+                    "budget": 12,
+                    "thoughts": False,
+                    "traverse": False,
                 },
             },
             session_id,
         )
         tool_result = called.get("result") or {}
         if called.get("error") or tool_result.get("isError"):
-            raise RuntimeError(str(called.get("error") or "agent_context returned isError"))
+            raise RuntimeError(str(called.get("error") or "katailyst.well returned isError"))
+        result["well_callable"] = True
         data = _mcp_tool_data(tool_result)
-        contract = data.get("currentAgentContract")
-        contract_status = str(data.get("currentAgentContractStatus") or "unknown")
-        resolved_ref = (
-            str(contract.get("agentRef") or "") if isinstance(contract, dict) else ""
-        )
+        resolved_ref = _well_agent_ref(data, expected_agent_ref)
         requested_bare = expected_agent_ref.split("@", 1)[0]
         resolved_bare = resolved_ref.split("@", 1)[0]
-        result["contract_status"] = contract_status
+        result["agent_block_found"] = bool(resolved_ref)
+        result["contract_status"] = "loaded" if resolved_ref else "not_found"
         result["resolved_agent_ref"] = resolved_ref
-        result["identity_matches"] = (
-            contract_status == "loaded" and requested_bare == resolved_bare
-        )
+        result["identity_matches"] = bool(resolved_ref) and requested_bare == resolved_bare
         return result
     except Exception as exc:
-        result["transport_ok"] = False
+        if result["transport_ok"] is None:
+            result["transport_ok"] = False
         result["contract_status"] = "unavailable"
         result["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         return result
@@ -836,6 +873,7 @@ def boot() -> None:
         os.getenv("KATAILYST2_MCP_URL", "").strip(),
         os.getenv("KATAILYST2_MCP_TOKEN", "").strip(),
         str(BOOT.get("agent_ref") or ""),
+        str(BOOT.get("runtime_lane") or "hermes"),
     )
     BOOT["k2_agent_readiness"] = k2_readiness
     logger.info("config k2_agent_readiness: %s", k2_readiness)
@@ -939,7 +977,8 @@ def health() -> dict[str, Any]:
         not k2_readiness.get("mounted")
         or not k2_readiness.get("bearer_present")
         or k2_readiness.get("transport_ok") is False
-        or not k2_readiness.get("agent_context_tool_listed")
+        or not k2_readiness.get("well_tool_listed")
+        or not k2_readiness.get("well_callable")
     )
     k2_contract_bad = k2_required and (
         k2_readiness.get("contract_status") != "loaded"
@@ -1057,9 +1096,9 @@ def health() -> dict[str, Any]:
         )
     elif mode == "gateway_k2_contract_missing":
         payload["note"] = (
-            f"Katailyst2 is reachable, but {BOOT.get('agent_ref') or 'Cleo'} did "
-            "not resolve to its current agent contract. Cleo can still search K2, "
-            "but her identity, doctrine and proclivities are not being loaded. "
+            f"Katailyst2's wishing well is callable, but the exact agent facet did "
+            f"not return {BOOT.get('agent_ref') or 'agent:cleo'}. Cleo can still "
+            "search K2, but this deploy has not proved her canonical agent block. "
             "Read config.k2_agent_readiness.contract_status and resolved_agent_ref."
         )
     elif mode == "gateway_model_fallback_degraded":

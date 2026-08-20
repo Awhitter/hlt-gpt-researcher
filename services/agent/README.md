@@ -76,9 +76,10 @@ Two env vars matter as much as the toolset:
 | [`grounding/shared/AGENTS.md`](./grounding/shared/AGENTS.md) + `grounding/<agent>/AGENTS.md` | the durable briefing, composed at boot | read from `terminal.cwd`; the source ships read-only so an agent can't rewrite its own facts |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
-Cleo's durable registry identity is `agent:cleo@v1`. Substantial work loads a
-fresh K2 context packet through `registry_agent_context`; the repo prompt keeps
-only the activation cue and runtime safety boundary. The local
+Cleo's durable registry identity is the unversioned `agent:cleo`; K2 owns the
+current revision. This hosted body reports `runtime_lane: hermes`. Substantial
+work opens the current team-lane `katailyst_well` door with the real mission;
+the repo prompt keeps only that activation cue and runtime safety boundary. The local
 `facilitate-product-work` skill is likewise a small shim to the current K2
 skill, not a fork of the workflow.
 
@@ -131,11 +132,12 @@ answered — including a fallback. Cleo caps one generated provider reply at
 maximum; this does not reduce the model's readable context or tool loop.
 
 `/health.config.k2_agent_readiness` is deliberately stricter than
-`mcp_mounted`. It verifies that the endpoint identifies itself as
-`x-katailyst-repo: katailyst2`, lists the agent-context tool, calls it with the
-same bearer Hermes receives, and confirms the token-bound contract resolves to
-`agent:cleo` (the revision may advance). A mounted legacy v1 bridge or a healthy
-K2 server with no Cleo contract is degraded, not silently called ready.
+`mcp_mounted`. It reports the mount, bearer, and `runtime_lane` separately;
+verifies that the endpoint identifies itself as `x-katailyst-repo: katailyst2`;
+lists and calls the current team-lane `katailyst.well` tool with its real
+`mission`/`facets` schema; and confirms the exact `agent:cleo` block is
+discoverable. A mounted legacy v1 bridge, an uncallable wishing well, or a
+healthy K2 server with no Cleo block is degraded, not silently called ready.
 
 Slack uses Hermes' single-message edit stream. The answer progressively updates
 in place, the ephemeral Assistant status shows the current useful action, and
@@ -205,7 +207,7 @@ Read the answer, not the status code — the service intentionally stays up (HTT
 | `gateway_down` | Requested but not running. `status: degraded`, and `gateway.stopped_reason` / `last_exit_code` say what happened. |
 | `gateway_k2_unreachable` | The canonical Cleo K2 route is absent, unauthenticated, or not callable. |
 | `gateway_k2_wrong_server` | The endpoint answered but did not identify itself as Katailyst2 (usually the legacy v1 bridge). |
-| `gateway_k2_contract_missing` | K2 is live, but the same bearer did not resolve the `agent:cleo` contract. |
+| `gateway_k2_contract_missing` | K2's wishing well is live, but the exact-facet probe did not return `agent:cleo`. |
 | `gateway_web_search_degraded` | The selected web backend is missing its credential or installed SDK. |
 | `gateway_model_fallback_degraded` | Primary can answer, but at least one configured recovery route is positively unavailable. |
 
