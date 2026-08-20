@@ -36,8 +36,9 @@ reports the reversible retirement state of the old recurring briefs.
 3. asks canonical Katailyst2 for the bearer-bound `agent:cleo` runtime pack,
    installs that pack into Hermes' real prompt files only when it is active,
    and proves the independent mission-time wishing well,
-4. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
-5. serves operator health plus authenticated K2 activation/dispatch routes on
+4. selects one addressed HLT Slack agent before Hermes can type or call a model,
+5. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
+6. serves operator health plus authenticated K2 activation/dispatch routes on
    `$PORT`.
 
 The supervisor exists for a specific reason: Hermes reaches Slack over **Socket
@@ -78,7 +79,7 @@ Two env vars matter as much as the toolset:
 |---|---|---|
 | Katailyst2 `agents.runtime_pack` for `agent:cleo` | active identity, doctrine, proclivities, bindings and policies | canonical brain, resolved for `paperclip_hermes` with the agent-bound token |
 | [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) + bundled AGENTS files | reviewed snapshot | used only during a declared K2 service/transport outage, never for a missing agent or bad token |
-| `hlt-k2-context` Hermes plugin | one bounded `katailyst.well` draw for each substantive turn | ephemeral user-message context; never persisted into the transcript or memory |
+| `hlt-k2-context` Hermes plugin | choose one Slack lead, then draw one bounded `katailyst.well` packet for each substantive turn | lead decisions are private local receipts; mission context is ephemeral and never persisted into transcript or memory |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
 Cleo's durable registry identity is the unversioned `agent:cleo`; K2 owns the
@@ -148,7 +149,7 @@ pack digest, and an actual well call. A legacy v1 bridge, broad/misbound token,
 inactive pack, or unavailable well is named separately.
 
 K2 activation has two stages. Authenticated `GET /activationz` returns the
-versioned `agent_host_activation_readiness.v1` contract and its exact 20
+versioned `agent_host_activation_readiness.v1` contract and its exact 21
 non-circular checks: hosted body, durable admission ledger, credentials,
 dependencies, exact token-bound Cleo pack and host compatibility, without
 requiring Cleo to already be online. K2 can then activate the agent; the bounded
@@ -185,6 +186,21 @@ Slack uses Hermes' single-message edit stream. The answer progressively updates
 in place, the ephemeral Assistant status shows the current useful action, and
 per-tool/interim commentary bubbles stay off. The model returns one final answer
 instead of using a Slack send tool to duplicate its own response.
+
+One-to-one DMs belong to the agent the teammate opened. Channels and group DMs
+require a fresh native Slack mention; the first recognized, nonquoted mention
+among Victoria, Lila, Julius, and Cleo is the only agent allowed to dispatch.
+Later mentions stay silent, edits never reopen the choice, and a bot-to-bot
+handoff works only when a recognized peer explicitly mentions its target. A
+hash-pinned local roster is the bounded v1 fallback until K2 publishes a typed
+roster projection. Every decision is written privately to
+`$HERMES_HOME/slack-agent-lead.sqlite3` as
+`slack_agent_lead_decision.v1`; retries and restarts hit the durable tombstone
+before typing or model work, and no message text is recorded.
+Native slash and message-form control commands keep their local Hermes session
+semantics; they already address one installed app and do not enter arbitration.
+Nonparticipant personas in this image, such as Brian, remain outside this
+four-agent Slack election.
 
 `/health.config.hermes_upstream_ref` exposes the immutable Hermes runtime SHA
 baked into the image. The image build also asserts that `codegraph.context`

@@ -1414,8 +1414,15 @@ def _try_k2_activation_once() -> bool:
     if not _install_active_k2_pack(active):
         return False
     plugin = BOOT.get("k2_context_plugin") or {}
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_lead_ready = slack_lead.get("local_agent_ready") is True and (
+        slack_lead.get("required") is not True
+        or slack_lead.get("roster_ready") is True
+    )
     BOOT["gateway_start_allowed"] = (
-        plugin.get("installed") is True and plugin.get("enabled") is True
+        plugin.get("installed") is True
+        and plugin.get("enabled") is True
+        and slack_lead_ready
     )
     return BOOT["gateway_start_allowed"]
 
@@ -1523,14 +1530,20 @@ def boot() -> None:
         "installed": plugin_installed,
         "enabled": plugin_enabled,
         "hook": "pre_llm_call",
+        "hooks": ["pre_gateway_dispatch", "pre_llm_call"],
     }
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_lead_ready = slack_lead.get("local_agent_ready") is True and (
+        slack_lead.get("required") is not True
+        or slack_lead.get("roster_ready") is True
+    )
     brain_ready = (
         not BOOT.get("agent_ref")
         or BOOT.get("runtime_pack_applied") is True
         or k2_readiness.get("outage_declared") is True
     )
     BOOT["gateway_start_allowed"] = bool(
-        brain_ready and plugin_installed and plugin_enabled
+        brain_ready and plugin_installed and plugin_enabled and slack_lead_ready
     )
     BOOT["k2_agent_readiness"] = k2_readiness
     logger.info("config k2_agent_readiness: %s", k2_readiness)
@@ -1607,6 +1620,7 @@ def activation_readiness() -> dict[str, Any]:
     gateway = supervisor.snapshot()
     k2 = BOOT.get("k2_agent_readiness") or {}
     plugin = BOOT.get("k2_context_plugin") or {}
+    slack_lead = BOOT.get("slack_agent_lead") or {}
     external_dispatch = BOOT.get("external_dispatch") or {}
     admission_ledger = BOOT.get("agent_run_ledger") or {}
     slack_auth = BOOT.get("slack_auth") or {}
@@ -1647,6 +1661,11 @@ def activation_readiness() -> dict[str, Any]:
         "k2_context_plugin_ready": (
             plugin.get("installed") is True and plugin.get("enabled") is True
         ),
+        "slack_agent_lead_ready": slack_lead.get("local_agent_ready") is True
+        and (
+            slack_lead.get("required") is not True
+            or slack_lead.get("roster_ready") is True
+        ),
     }
     return {
         "ready": all(checks.values()),
@@ -1661,6 +1680,7 @@ def external_dispatch_readiness() -> dict[str, Any]:
     gateway = supervisor.snapshot()
     k2 = BOOT.get("k2_agent_readiness") or {}
     plugin = BOOT.get("k2_context_plugin") or {}
+    slack_lead = BOOT.get("slack_agent_lead") or {}
     slack_auth = BOOT.get("slack_auth") or {}
     model_routes = BOOT.get("model_route_readiness") or []
     primary_route_ready = any(
@@ -1694,6 +1714,11 @@ def external_dispatch_readiness() -> dict[str, Any]:
         "k2_well_callable": k2.get("well_callable") is True,
         "k2_context_plugin_ready": (
             plugin.get("installed") is True and plugin.get("enabled") is True
+        ),
+        "slack_agent_lead_ready": slack_lead.get("local_agent_ready") is True
+        and (
+            slack_lead.get("required") is not True
+            or slack_lead.get("roster_ready") is True
         ),
         "hermes_run_api_reachable": api.get("reachable") is True,
     }
@@ -1842,6 +1867,14 @@ def health() -> dict[str, Any]:
     k2_plugin_bad = k2_required and (
         plugin.get("installed") is not True or plugin.get("enabled") is not True
     )
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_lead_bad = k2_required and (
+        slack_lead.get("local_agent_ready") is not True
+        or (
+            slack_lead.get("required") is True
+            and slack_lead.get("roster_ready") is not True
+        )
+    )
     external_hook_bad = k2_required and (
         (BOOT.get("external_dispatch") or {}).get("configured") is not True
         or (BOOT.get("agent_run_ledger") or {}).get("ready") is not True
@@ -1885,6 +1918,8 @@ def health() -> dict[str, Any]:
         status, mode = "degraded", "gateway_slack_auth_failed"
     elif gateway["running"] and gateway["slack_adapter_available"] and slack_scopes_bad:
         status, mode = "degraded", "gateway_slack_scopes_missing"
+    elif slack_lead_bad:
+        status, mode = "degraded", "gateway_slack_agent_lead_unready"
     elif (
         gateway["running"]
         and gateway["slack_adapter_available"]
@@ -1991,6 +2026,12 @@ def health() -> dict[str, Any]:
             "The canonical K2 pack is present, but Hermes did not install and "
             "enable the hlt-k2-context pre_llm_call hook. A model turn would not "
             "receive its one bounded task-specific K2 draw."
+        )
+    elif mode == "gateway_slack_agent_lead_unready":
+        payload["note"] = (
+            "The private Slack lead selector is not ready, so shared messages "
+            "fail closed before typing or model dispatch. Read "
+            "config.slack_agent_lead for the roster or local-identity mismatch."
         )
     elif mode == "gateway_external_dispatch_unavailable":
         payload["note"] = (
