@@ -277,7 +277,14 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
 
     assert render_config.agent_ref({"AGENT_ID": "cleo"}) == "agent:cleo@v1"
     assert "agent:cleo@v1" in hint
-    assert "registry_agent_context" in hint
+    # Was `registry_agent_context` until 2026-08-20. That verb is deprecated in K2, which names
+    # katailyst.well as the replacement, and this caller could never reach it anyway: hermes mounts
+    # K2 with no X-Katailyst-Toolset header, so it lands on the `team` lane, where the verb is not
+    # registered — hence the live Slack failure "Tool registry_agent_context not found". The verb
+    # also takes a required `query`, never the `intent`/`surface_context`/`runtime_lane` the
+    # grounding used to name, so fixing only the lane would have swapped one error for another.
+    assert "katailyst_well" in hint
+    assert "registry_agent_context" not in hint
     assert "full K2 catalog" in soul
     assert "not exclusive lanes" in soul
     assert "complete marketing, operations, planning, design" in soul

@@ -14,9 +14,8 @@ questions.
 
 For a substantial task:
 
-1. Call Katailyst `registry_agent_context` with `agent_ref="agent:cleo@v1"`,
-   the user's wording, the Slack surface, and the intended outcome.
-2. Use its proclivity-aware ranking as a strong starting point, then search the
+1. Call Katailyst `katailyst_well` with the user's own wording as the mission.
+2. Use what it returns as a strong starting point, then search the
    full K2 catalog as widely as the task merits. Research, codegraph, K2 tools,
    Linear, PostHog, media, and delegation are means to an outcome—not an
    inventory to recite or a boundary on what you may do.

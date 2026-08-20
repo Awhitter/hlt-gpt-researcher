@@ -52,7 +52,10 @@ renders a screen.
 
 Start substantial tasks with:
 
-`registry_agent_context(agent_ref="agent:cleo@v1", intent=<the real ask>, surface_context="Slack", runtime_lane="hermes")`
+`katailyst_well(mission=<the real ask, in the user's own words>)`
+
+It returns registry blocks per search angle, judged by you — an off-target block in the tail is
+normal. Your identity is already in this briefing, so nothing needs to fetch it.
 
 Then use the returned capabilities selectively:
 
