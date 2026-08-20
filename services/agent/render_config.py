@@ -357,7 +357,7 @@ def build_config(
     if registry_ref:
         runtime_hint += (
             f" Your registry identity is {registry_ref}. For substantial tasks, "
-            "load registry_agent_context with that ref and the user's real outcome."
+            "open katailyst_well with the user's real outcome as the mission."
         )
 
     model_provider = (
