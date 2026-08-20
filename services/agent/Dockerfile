@@ -52,6 +52,13 @@ RUN git init /opt/hermes \
 # The name must be the registry name, not merely a model-facing alias.
 RUN python -c "from tools.mcp_tool import mcp_prefixed_tool_name; assert mcp_prefixed_tool_name('codegraph', 'context') == 'mcp__codegraph__context'"
 
+# Cleo's K2 body adapter intentionally builds on these two supported Hermes
+# seams. Keep an upstream upgrade from deploying a wrapper whose async dispatch
+# or one-per-turn context hook has silently disappeared.
+RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
+    && grep -q 'GET  /v1/runs/{run_id}' /opt/hermes/gateway/platforms/api_server.py \
+    && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py
+
 ENV HERMES_UPSTREAM_REF=${HERMES_REF}
 
 # The gateway argv must be one upstream actually accepts. `hermes gateway -v`

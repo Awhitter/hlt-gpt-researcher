@@ -14,6 +14,7 @@ The security posture here is deliberate and is the reason this file is long.
 These agents are reachable by a whole Slack workspace AND read untrusted web pages.
 Those two facts together make the upstream defaults unsafe: see SLACK_TOOLSETS.
 """
+
 from __future__ import annotations
 
 import json
@@ -293,6 +294,9 @@ def fallback_providers(
 
 
 def agent_ref(env: Mapping[str, str]) -> str | None:
+    configured = _clean(env, "HLT_AGENT_REF")
+    if configured:
+        return configured
     agent_id = (_clean(env, "AGENT_ID") or "cleo").lower()
     return AGENT_REFS.get(agent_id)
 
@@ -434,7 +438,20 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
     home = build_home_channel(env)
     if home:
         slack["home_channel"] = home
-    return {"slack": slack}
+    platforms: dict[str, Any] = {"slack": slack}
+    if _clean(env, "OPENCLAW_HQ_HOOK_TOKEN"):
+        # K2's existing external-run adapter speaks the OpenClaw hook envelope.
+        # Keep the public compatibility route on this wrapper and dispatch it
+        # over loopback into Hermes' native run lifecycle. The API server is
+        # never exposed on Render's public interface.
+        platforms["api_server"] = {
+            "enabled": True,
+            "extra": {
+                "host": "127.0.0.1",
+                "port": 8642,
+            },
+        }
+    return platforms
 
 
 def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
@@ -472,8 +489,9 @@ def build_config(
     )
     if registry_ref:
         runtime_hint += (
-            f" Your registry identity is {registry_ref}. For substantial tasks, "
-            "open katailyst_well with the user's real outcome as the mission."
+            f" Your registry identity is {registry_ref}. The host injects one "
+            "Katailyst2 wishing-well draw for each substantive turn; judge its "
+            "candidates freely and do not repeat the draw unless the user asks."
         )
 
     model_provider = (
@@ -482,7 +500,9 @@ def build_config(
     model_name = _clean(env, "HERMES_MODEL")
     if not model_name and model_provider == "openrouter":
         model_name = _clean(env, "OPENROUTER_MODEL")
-    model_name = model_name or PROVIDER_DEFAULT_MODELS.get(model_provider) or DEFAULT_MODEL
+    model_name = (
+        model_name or PROVIDER_DEFAULT_MODELS.get(model_provider) or DEFAULT_MODEL
+    )
 
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
@@ -509,6 +529,14 @@ def build_config(
             "reasoning_effort": "high",
             "environment_hint": runtime_hint,
         },
+        # Both the identity file and the composed runtime doctrine are allowed
+        # a useful slice of a modern long-context model. Upstream otherwise
+        # falls back to 20k when model metadata is not resolved at prompt build.
+        "context_file_max_chars": 50_000,
+        # Bound externally-triggered runs separately from Slack work. This is
+        # the exact path the pinned API adapter reads; placing the cap in the
+        # platform's `extra` mapping looks plausible but is ignored upstream.
+        "gateway": {"api_server": {"max_concurrent_runs": 2}},
         # Slack has no native draft API, but Hermes' edit transport is a true
         # single-message stream: one post is progressively updated and the
         # last update gets the final Block Kit rendering.
@@ -573,7 +601,14 @@ def build_config(
         },
         # The top-level `toolsets` key is deprecated and ignored upstream; this
         # per-platform map is the one that is actually read.
-        "platform_toolsets": {"slack": slack_toolsets(servers)},
+        "platform_toolsets": {
+            "slack": slack_toolsets(servers),
+            **(
+                {"api_server": slack_toolsets(servers)}
+                if _clean(env, "OPENCLAW_HQ_HOOK_TOKEN")
+                else {}
+            ),
+        },
         # Per-surface prompt guidance. Top-level key, NOT under `platforms` —
         # a third Slack namespace, and putting it in the wrong one is silently
         # ignored like every other misplaced Slack key in this file.
@@ -602,6 +637,10 @@ def build_config(
         # The curator archives unused skills after 90 days. Ours are shipped in
         # the image and are meant to persist.
         "curator": {"prune_builtins": False},
+        # A user plugin is the pinned runtime's supported turn-context seam.
+        # It performs one bounded K2 wishing-well draw before the model loop;
+        # no Hermes fork and no Slack transport interception are involved.
+        "plugins": {"enabled": ["hlt-k2-context"]},
     }
 
     fallback = fallback_providers(
@@ -696,6 +735,17 @@ def render(
             .get("slack", {})
             .get("live_status"),
         },
+        "k2_context_plugin": {
+            "enabled": "hlt-k2-context" in config.get("plugins", {}).get("enabled", []),
+        },
+        "external_dispatch": {
+            "configured": bool(_clean(env, "OPENCLAW_HQ_HOOK_TOKEN")),
+            "public_path": "/hooks/agent",
+            "status_path": "/hooks/agent/runs/{runId}",
+            "activation_path": "/activationz",
+            "readiness_path": "/readyz",
+            "hermes_loopback": "http://127.0.0.1:8642/v1/runs",
+        },
         "mcp_mounted": sorted(servers),
         "mcp_unconfigured": [n for n, _, _ in MCP_TARGETS if n not in servers],
         "mcp_without_token": sorted(
@@ -707,6 +757,11 @@ def render(
 
     if path.exists() and _existing_is_operator_owned(path):
         summary["preserved_operator_config"] = True
+        # The values above describe the config we intended to write. Once an
+        # operator-owned file wins, they are no longer proof of what Hermes
+        # will load, so readiness must fail closed rather than assume them.
+        summary["k2_context_plugin"]["enabled"] = False
+        summary["external_dispatch"]["configured"] = False
         return summary
 
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")

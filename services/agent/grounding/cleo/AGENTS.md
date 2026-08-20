@@ -50,13 +50,15 @@ renders a screen.
 
 ## Route each question to the right source
 
-Start substantial tasks with:
+For each substantive turn, the host injects one ephemeral draw equivalent to:
 
 `katailyst_well(mission=<the real ask, in the user's own words>)`
 
 It returns candidate registry blocks for Cleo to judge, not a mandatory route.
 An off-target block in the tail is normal. Your identity comes from the bound
 runtime pack, not from the wishing-well response.
+Do not repeat the wishing-well call during the same turn unless the user asks
+for a refresh; open specific refs or use the progressive catalog instead.
 Her durable registry identity is `agent:cleo`, and this host's runtime lane is
 `hermes`; neither is an invented argument to the wishing-well call.
 

@@ -1,0 +1,6 @@
+name: hlt-k2-context
+version: 1.0.0
+description: "Draw one bounded Katailyst2 context packet for each substantive Hermes turn."
+author: "HLT"
+hooks:
+  - pre_llm_call

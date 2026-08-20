@@ -29,12 +29,16 @@ reports the reversible retirement state of the old recurring briefs.
 
 `health_gateway.py` is the main process. It:
 
-1. installs the agent's `SOUL.md` and composes `AGENTS.md` from
-   `grounding/shared` + `grounding/<agent>` ([`grounding.py`](./grounding.py)),
+1. installs the reviewed bundled `SOUL.md`/`AGENTS.md` outage fallback and the
+   `hlt-k2-context` Hermes plugin ([`grounding.py`](./grounding.py)),
 2. renders `$HERMES_HOME/config.yaml` from the environment
    ([`render_config.py`](./render_config.py)),
-3. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
-4. serves `/health` on `$PORT`.
+3. asks canonical Katailyst2 for the bearer-bound `agent:cleo` runtime pack,
+   installs that pack into Hermes' real prompt files only when it is active,
+   and proves the independent mission-time wishing well,
+4. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
+5. serves operator health plus authenticated K2 activation/dispatch routes on
+   `$PORT`.
 
 The supervisor exists for a specific reason: Hermes reaches Slack over **Socket
 Mode**, an outbound WebSocket. It never binds a port. Render runs this as a *web
@@ -72,16 +76,18 @@ Two env vars matter as much as the toolset:
 
 | Slot | Content | Why there |
 |---|---|---|
-| [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) | compact identity, initiative, coordination, recovery | loaded from `$HERMES_HOME` every session |
-| [`grounding/shared/AGENTS.md`](./grounding/shared/AGENTS.md) + `grounding/<agent>/AGENTS.md` | the durable briefing, composed at boot | read from `terminal.cwd`; the source ships read-only so an agent can't rewrite its own facts |
+| Katailyst2 `agents.runtime_pack` for `agent:cleo` | active identity, doctrine, proclivities, bindings and policies | canonical brain, resolved for `paperclip_hermes` with the agent-bound token |
+| [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) + bundled AGENTS files | reviewed snapshot | used only during a declared K2 service/transport outage, never for a missing agent or bad token |
+| `hlt-k2-context` Hermes plugin | one bounded `katailyst.well` draw for each substantive turn | ephemeral user-message context; never persisted into the transcript or memory |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
 Cleo's durable registry identity is the unversioned `agent:cleo`; K2 owns the
-current revision. This hosted body reports `runtime_lane: hermes`. Substantial
-work opens the current team-lane `katailyst_well` door with the real mission;
-the repo prompt keeps only that activation cue and runtime safety boundary. The local
-`facilitate-product-work` skill is likewise a small shim to the current K2
-skill, not a fork of the workflow.
+current revision. This hosted body reports `runtime_lane: hermes`. At boot it
+discovers either MCP dialect (`agents.runtime_pack`/`agents_runtime_pack` and
+`katailyst.well`/`katailyst_well`) from `tools/list`; the model-facing Hermes
+names are separately prefixed `mcp__katailyst2__...`. Mounting the MCP is not
+identity proof, so the runtime-pack call deliberately omits `agentRef`: only an
+agent-bound token can return Cleo.
 
 Company facts do **not** go in `MEMORY.md`: it is capped, frozen per session,
 agent-mutable, and the background reviewer edits it.
@@ -117,6 +123,9 @@ leave your file alone and say so in `/health`.
 | `CODEGRAPH_MCP_URL` / `CODEGRAPH_MCP_TOKEN` | Estate code graph |
 | `KATAILYST2_MCP_URL` / `KATAILYST2_MCP_TOKEN` | Registry |
 | `LINEAR_MCP_URL` / `LINEAR_MCP_TOKEN` | Roadmap (optional) |
+| `HLT_AGENT_REF` | Canonical unversioned identity; `agent:cleo` |
+| `OPENCLAW_HQ_HOOK_TOKEN` | Shared strong bearer for K2's hosted-agent hook and Hermes' loopback run API |
+| `K2_ACTIVATION_POLL_SECONDS` | Optional offline-to-active polling interval, bounded to 5–300 seconds (default 10) |
 | `HERMES_HOME` | Persistent disk path (default `/data/hermes`) |
 
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
@@ -132,12 +141,36 @@ answered — including a fallback. Cleo caps one generated provider reply at
 maximum; this does not reduce the model's readable context or tool loop.
 
 `/health.config.k2_agent_readiness` is deliberately stricter than
-`mcp_mounted`. It reports the mount, bearer, and `runtime_lane` separately;
-verifies that the endpoint identifies itself as `x-katailyst-repo: katailyst2`;
-lists and calls the current team-lane `katailyst.well` tool with its real
-`mission`/`facets` schema; and confirms the exact `agent:cleo` block is
-discoverable. A mounted legacy v1 bridge, an uncallable wishing well, or a
-healthy K2 server with no Cleo block is degraded, not silently called ready.
+`mcp_mounted`. It verifies the `x-katailyst-repo: katailyst2` response header,
+the runtime-pack and well tools, an agent-bound `agent:cleo` pack, the
+`paperclip_hermes` compatibility decision, active/online state, the applied
+pack digest, and an actual well call. A legacy v1 bridge, broad/misbound token,
+inactive pack, or unavailable well is named separately.
+
+K2 activation has two stages. `GET /activationz` uses the hook bearer and proves
+the hosted body, credentials, dependencies, exact token-bound Cleo pack and
+host compatibility without requiring Cleo to already be online. K2 can then
+activate the agent; the bounded watcher repeats `agents.runtime_pack` with
+`requireActive:true`, installs it, proves the well and starts Hermes. `GET
+/readyz` is the stricter post-activation receipt: canonical pack applied, one-
+turn context door callable, Slack socket live, primary model ready and the
+Hermes run API reachable.
+
+## K2 hosted-agent contract
+
+All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
+
+- `POST /hooks/agent` accepts K2's existing Cleo envelope and returns HTTP 202
+  with `{ok, runId, status:"queued", statusUrl}`. Acceptance is not completion.
+- `GET /hooks/agent/runs/{runId}` returns the native Hermes run state plus
+  `terminal`. Only `completed`, `failed` and `cancelled` are terminal; output
+  and usage appear only after the real run ends.
+- The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
+  not synthesize a second agent loop, does not post into Slack, and retains
+  Hermes' normal model, tools, session and `pre_llm_call` behavior.
+
+K2 must poll `statusUrl` and terminalize its run from that receipt. Treating the
+initial 202 as completed is a control-plane bug, not a successful Cleo run.
 
 Slack uses Hermes' single-message edit stream. The answer progressively updates
 in place, the ephemeral Assistant status shows the current useful action, and
@@ -205,9 +238,12 @@ Read the answer, not the status code — the service intentionally stays up (HTT
 | `readiness_gateway` | Gateway not requested. Expected before step 4. |
 | `gateway` | The agent is running. `gateway.uptime_seconds` climbs. |
 | `gateway_down` | Requested but not running. `status: degraded`, and `gateway.stopped_reason` / `last_exit_code` say what happened. |
-| `gateway_k2_unreachable` | The canonical Cleo K2 route is absent, unauthenticated, or not callable. |
+| `gateway_k2_brain_unavailable` | The active, bearer-bound Cleo runtime pack was not applied. |
 | `gateway_k2_wrong_server` | The endpoint answered but did not identify itself as Katailyst2 (usually the legacy v1 bridge). |
-| `gateway_k2_contract_missing` | K2's wishing well is live, but the exact-facet probe did not return `agent:cleo`. |
+| `gateway_k2_outage_fallback` | K2 declared a service/transport outage, so the reviewed bundled snapshot is running visibly degraded. |
+| `gateway_k2_context_unavailable` | The canonical brain is active but the mission-time wishing well is unavailable. |
+| `gateway_k2_context_plugin_missing` | The pack is active but Hermes did not load the one-turn K2 hook. |
+| `gateway_external_dispatch_unavailable` | Slack can run, but the K2 hook bearer/run bridge is not configured. |
 | `gateway_web_search_degraded` | The selected web backend is missing its credential or installed SDK. |
 | `gateway_model_fallback_degraded` | Primary can answer, but at least one configured recovery route is positively unavailable. |
 
