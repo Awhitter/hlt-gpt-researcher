@@ -2555,9 +2555,12 @@ def test_slack_gets_its_own_prompt_guidance():
     hint = config["platform_hints"]["slack"]["append"]
 
     assert "most people did not build the system" in hint
-    # Evidence goes at the end; scattering ids mid-sentence made her answers
-    # read like machine-room tours.
-    assert "sources you actually opened at the end" in hint
+    # Owner ruling 2026-08-21: the "Sources:" footer read as noise in the exec
+    # thread — and its extra trailing line is what broke the byte-equality
+    # duplicate guard, double-posting the final answer. Provenance is now at
+    # most one inline parenthetical where a claim would be doubted.
+    assert "No 'Sources:' footer" in hint
+    assert "at the end" not in hint
     assert "return the answer or artifact" in hint
 
 

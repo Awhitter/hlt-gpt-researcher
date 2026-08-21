@@ -151,8 +151,9 @@ SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
 # surface — the alternative is editing her SOUL, which applies everywhere.
 SLACK_PLATFORM_HINT = (
     "You are answering a team in Slack; most people did not build the system. "
-    "Lead with the useful result in their register, then put the sources you "
-    "actually opened at the end.\n"
+    "Lead with the useful result in their register. No 'Sources:' footer: cite "
+    "at most one short parenthetical for a claim a reader would doubt, and let "
+    "ordinary answers stand on their own.\n"
     "Take ownership of a broad request: define a practical done condition, do "
     "the safe work available now, and return the answer or artifact rather than "
     "a tool inventory or a menu of questions.\n"

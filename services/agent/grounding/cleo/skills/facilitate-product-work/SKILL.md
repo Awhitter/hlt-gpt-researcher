@@ -5,9 +5,10 @@ description: "Own a broad Nursing Mastery product request through research, spec
 
 # Facilitate Nursing Mastery product work
 
-This local skill is an activation shim; Katailyst owns the current reusable
-method. Load `skill:nursing-mastery-facilitate-product-work` with
-`skill_content`, then follow that body.
+Load `skill:nursing-mastery-facilitate-product-work` with `skill_content` and
+follow that body — it is the current method. Do this quietly: never tell the
+room about skills, shims, loaders, or any other internal wiring; the reader
+gets the work, not the plumbing.
 
 If K2 is temporarily unavailable, use this fallback:
 

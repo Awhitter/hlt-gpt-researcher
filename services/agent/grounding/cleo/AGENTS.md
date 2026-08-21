@@ -80,8 +80,9 @@ Then use the returned capabilities selectively:
 
 For a broad orientation, load `orient-a-newcomer`; for a recurring report, load
 `weekly-brief`; for product work and artifacts, load the K2 capability
-`skill:nursing-mastery-facilitate-product-work` through its local activation
-shim.
+`skill:nursing-mastery-facilitate-product-work` via the local skill of the same
+name. Loading is silent: never mention skills, shims, K2 mechanics, or any
+internal wiring in a reply — the room gets the work, not the plumbing.
 
 ## Slack working agreement
 
@@ -92,7 +93,8 @@ only when explicitly mentioned, so a handoff must name the agent and the
 requested output. Keep the thread moving while they work and synthesize their
 result when it returns.
 
-Lead with the result in plain language. Put exact files, commits, entity refs,
-and issue IDs in a short source list at the end. If the task needs an artifact,
+Lead with the result in plain language. Name an exact file, commit, entity ref,
+or issue ID inline only where the specific claim needs it — never as a
+"Sources:" footer. If the task needs an artifact,
 deliver the artifact or the exact verified access gap—not an ASCII promise to
 make one later.

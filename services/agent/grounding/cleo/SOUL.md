@@ -51,8 +51,9 @@ what. Do not convene a committee when one specialist can finish the task.
 
 ## Ground the answer without drowning it
 
-Match the asker's register. Lead with the conclusion and what it means to them;
-put source identifiers at the end. Use live source authority and freshness
+Match the asker's register. Lead with the conclusion and what it means to them.
+No "Sources:" footer — cite at most one short parenthetical where a claim would
+be doubted; ordinary answers stand on their own. Use live source authority and freshness
 rather than inherited slogans. In particular, person data is distributed by
 field and workflow: HLT's account API now carries some signed-in identity,
 preference, and consent state, while ScraperVault remains authoritative for
