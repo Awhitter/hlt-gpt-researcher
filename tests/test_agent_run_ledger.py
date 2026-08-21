@@ -103,3 +103,16 @@ def test_terminal_output_is_bounded_and_secret_redacted(tmp_path):
     assert secret not in record["output_text"]
     assert len(record["output_text"]) <= ledger_module.MAX_OUTPUT_CHARS
     assert record["usage"] == {"total_tokens": 41, "refresh_token": "[redacted]"}
+
+
+def test_every_write_connection_carries_full_synchronous(tmp_path):
+    """Durability is per-connection: WAL persists in the DB header but
+    PRAGMA synchronous does not. The docstring's no-double-dispatch promise
+    holds only if the connections that actually WRITE (admit/claim) run at
+    FULL — not just the throwaway _initialize() connection."""
+    store = ledger_module.AgentRunLedger(tmp_path / "ledger.sqlite")
+    conn = store._connect()
+    try:
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+    finally:
+        conn.close()

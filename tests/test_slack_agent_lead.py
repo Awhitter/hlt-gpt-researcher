@@ -612,3 +612,27 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     assert "skip before adapter processing" in patch
     assert "_hermes_pre_gateway_dispatch_done" in patch
     assert "_hermes_sender_is_bot" in patch
+
+
+def test_single_line_fence_does_not_swallow_the_mention_after_it(lead):
+    """A self-closing fence line (```df -h```) must not flip the fence
+    tracker: with an odd toggle every later line reads as fenced and the
+    mention after it is silently dropped — the turn suppresses as
+    shared_surface_requires_fresh_mention with a durable tombstone."""
+    raw = _raw("```df -h```\n<@U0AHLTX283E> what does this mean?")
+
+    victoria = _decision(lead, raw, local="agent:victoria")
+
+    assert victoria.action == "allow"
+    assert victoria.selected_agent_ref == "agent:victoria"
+
+
+def test_multiline_fences_still_hide_their_contents(lead):
+    raw = _raw("```\n<@U0BM3ULM210> quoted inside code\n```\n<@U0AHLTX283E> real ask")
+
+    victoria = _decision(lead, raw, local="agent:victoria")
+    cleo = _decision(lead, raw, local="agent:cleo")
+
+    assert victoria.action == "allow"
+    assert cleo.action == "suppress"
+    assert cleo.recognized_mentions == ("agent:victoria",)

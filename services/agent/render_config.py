@@ -53,16 +53,24 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
 # id from the provider's current catalog; provider-only strings are not a valid
 # Hermes fallback contract and are intentionally never emitted.
 #
-# xAI stays primary because the owner already pays for SuperGrok. Codex is the
-# first recovery route because its ChatGPT subscription is also already paid
-# for. OpenRouter is the independent paid safety net: one broad frontier model,
-# then two inexpensive long-context/tool-capable routes.
+# xAI stays primary because the owner already pays for SuperGrok. When an
+# XAI_API_KEY is configured, the SAME model over the plain api-key provider is
+# the first recovery route — the OAuth token is a six-hour credential that has
+# already expired unnoticed once (2026-08-18, 68 hours dark), and a key rung
+# means an auth failure degrades billing, never the model. Codex follows (its
+# ChatGPT subscription is also already paid for), then OpenRouter as the
+# independent paid safety net.
 DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
     {"provider": "openai-codex", "model": "gpt-5.6-sol"},
     {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
     {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813"},
 )
+# Hermes' plain `xai` provider reads XAI_API_KEY from env (auth.py
+# ProviderConfig). Emitting the route without the key would burn a failover
+# hop on a rung that cannot authenticate, so it joins only when the key is
+# actually present on the service.
+XAI_API_KEY_FALLBACK: dict[str, str] = {"provider": "xai", "model": DEFAULT_MODEL}
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
@@ -260,6 +268,8 @@ def fallback_providers(
     """
     raw = _clean(env, "HERMES_FALLBACK_PROVIDERS")
     default_values = [dict(route) for route in DEFAULT_FALLBACK_PROVIDERS]
+    if _clean(env, "XAI_API_KEY"):
+        default_values.insert(0, dict(XAI_API_KEY_FALLBACK))
     values: list[object]
     explicitly_disabled = False
     if raw is None:

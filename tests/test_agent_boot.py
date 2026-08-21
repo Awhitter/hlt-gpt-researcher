@@ -3101,3 +3101,41 @@ def test_structure_prefers_a_deterministic_artifact_without_banning_media():
     assert "prefer a deterministic prototype or diagram tool" in hint
     assert "use image generation for imagery" in hint
     assert "text diagram is a fallback" in hint
+
+
+def test_failed_readiness_never_publishes_the_runtime_pack():
+    """GET /health is unauthenticated and returns BOOT wholesale. The probe
+    carries the full runtime pack (system prompt + doctrine) internally, and
+    before the _publish_k2_readiness choke point a well failure after the
+    pack read published all of it to any caller. Every publish must strip."""
+    hg = _load_health_gateway()
+    readiness = {
+        "contract_status": "outage",
+        "_runtime_pack": {"system_prompt": "SECRET DOCTRINE"},
+    }
+
+    published = hg._publish_k2_readiness(readiness)
+
+    assert "_runtime_pack" not in published
+    assert "_runtime_pack" not in hg.BOOT["k2_agent_readiness"]
+    assert hg.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
+
+
+def test_xai_api_key_joins_recovery_first_only_when_present():
+    """The OAuth token is a six-hour credential that has already expired
+    unnoticed once. With XAI_API_KEY on the service, the same grok model over
+    the plain api-key provider recovers FIRST — an auth failure degrades
+    billing, never the model. Without the key the route must not appear:
+    it would burn a failover hop on a rung that cannot authenticate."""
+    with_key = render_config.fallback_providers(
+        {**FULL_ENV, "XAI_API_KEY": "xai-test"},
+        primary_provider="xai-oauth",
+        primary_model="grok-4.6",
+    )
+    without_key = render_config.fallback_providers(
+        FULL_ENV, primary_provider="xai-oauth", primary_model="grok-4.6"
+    )
+
+    assert with_key[0] == {"provider": "xai", "model": "grok-4.6"}
+    assert with_key[1]["provider"] == "openai-codex"
+    assert all(route["provider"] != "xai" for route in without_key)

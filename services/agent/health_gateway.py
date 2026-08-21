@@ -1366,11 +1366,26 @@ def _probe_k2_boot_contract(
     )
 
 
+def _publish_k2_readiness(k2_readiness: dict[str, Any]) -> dict[str, Any]:
+    """The ONLY door onto BOOT["k2_agent_readiness"].
+
+    The probe carries the full runtime pack (system prompt, doctrine, reference
+    bodies) under `_runtime_pack` so a later step can install it. BOOT is
+    published verbatim by the unauthenticated GET /health, so the pack must be
+    stripped on EVERY publish — including the failure statuses, where nothing
+    else would have popped it. Assigning BOOT["k2_agent_readiness"] anywhere
+    else reopens the leak.
+    """
+    k2_readiness.pop("_runtime_pack", None)
+    BOOT["k2_agent_readiness"] = k2_readiness
+    return k2_readiness
+
+
 def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
     """Install one positively active pack and publish its safe boot receipt."""
     runtime_pack = k2_readiness.pop("_runtime_pack", None)
     if runtime_pack is None:
-        BOOT["k2_agent_readiness"] = k2_readiness
+        _publish_k2_readiness(k2_readiness)
         return False
     pack_install = grounding.install_runtime_pack(
         runtime_pack,
@@ -1384,9 +1399,9 @@ def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
             pack_install.get("runtime_pack_error") or "runtime pack install failed"
         )[:240]
         k2_readiness["outage_declared"] = False
-        BOOT["k2_agent_readiness"] = k2_readiness
+        _publish_k2_readiness(k2_readiness)
         return False
-    BOOT["k2_agent_readiness"] = k2_readiness
+    _publish_k2_readiness(k2_readiness)
     return True
 
 
@@ -1404,12 +1419,12 @@ def _try_k2_activation_once() -> bool:
         require_active=False,
         probe_well=False,
     )
-    BOOT["k2_agent_readiness"] = preactivation
+    _publish_k2_readiness(preactivation)
     if preactivation.get("activation_ready") is not True:
         return False
     active = _probe_k2_boot_contract(require_active=True, probe_well=True)
     if active.get("contract_status") != "loaded":
-        BOOT["k2_agent_readiness"] = active
+        _publish_k2_readiness(active)
         return False
     if not _install_active_k2_pack(active):
         return False
@@ -1545,7 +1560,7 @@ def boot() -> None:
     BOOT["gateway_start_allowed"] = bool(
         brain_ready and plugin_installed and plugin_enabled and slack_lead_ready
     )
-    BOOT["k2_agent_readiness"] = k2_readiness
+    _publish_k2_readiness(k2_readiness)
     logger.info("config k2_agent_readiness: %s", k2_readiness)
     if BOOT.get("agent_ref") and k2_readiness["contract_status"] != "loaded":
         logger.error(

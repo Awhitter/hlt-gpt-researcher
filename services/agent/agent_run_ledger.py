@@ -154,12 +154,17 @@ class AgentRunLedger:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=8000")
         conn.execute("PRAGMA foreign_keys=ON")
+        # synchronous is per-connection (WAL mode persists in the header;
+        # this does not). Without it here, every real write ran at the
+        # build's default — potentially NORMAL, where a host crash right
+        # after claim_dispatch can lose the commit and replay a dispatch,
+        # the exact double-send this ledger exists to prevent.
+        conn.execute("PRAGMA synchronous=FULL")
         return conn
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=FULL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS agent_run_admissions (

@@ -134,7 +134,11 @@ def _mentions_from_text(text: str, known_ids: set[str]) -> list[str]:
     for line in str(text or "").splitlines() or [str(text or "")]:
         stripped = line.lstrip()
         if stripped.startswith("```"):
-            in_fence = not in_fence
+            # A line that both opens and closes its fence (```df -h```) must
+            # not flip the tracker: one such line would otherwise mark every
+            # later line as fenced and silently swallow the mention after it.
+            if not (len(stripped) > 3 and stripped.rstrip().endswith("```")):
+                in_fence = not in_fence
             continue
         if in_fence or stripped.startswith(">"):
             continue
