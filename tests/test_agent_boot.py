@@ -464,18 +464,26 @@ def test_slack_uses_one_edited_stream_without_permanent_progress_bubbles(tmp_pat
     }
     assert config["platforms"]["slack"]["typing_indicator"] is True
     assert slack_display["streaming"] is True
-    assert slack_display["live_status"] == "full"
     assert slack_display["tool_progress"] == "off"
     assert slack_display["interim_assistant_messages"] is False
     assert slack_display["show_reasoning"] is False
-    assert slack_display["show_commentary"] is False
+
+    # Placement is the contract here. `show_commentary` is read by agent_init
+    # from the TOP-LEVEL display section only — a per-platform copy is silently
+    # ignored, which would let Codex-failover narration return. And Hermes has
+    # no `live_status` display key at all; asserting its absence keeps the
+    # config from carrying keys that read as configured while doing nothing.
+    assert config["display"]["show_commentary"] is False
+    assert "show_commentary" not in slack_display
+    assert "live_status" not in slack_display
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
     assert summary["slack_presentation"] == {
         "one_message_stream": True,
         "transport": "edit",
         "tool_progress": "off",
-        "live_status": "full",
+        "assistant_status": True,
+        "show_commentary": False,
     }
 
 

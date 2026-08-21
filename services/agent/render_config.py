@@ -548,19 +548,22 @@ def build_config(
             "cursor": " ▉",
         },
         "display": {
+            # Codex-backed models narrate phase=commentary through a separate
+            # agent-level gate (agent_init reads this from the TOP-LEVEL display
+            # section only — a per-platform copy is silently ignored). Without
+            # this, narration returns the moment the ladder fails over to Codex.
+            "show_commentary": False,
             "platforms": {
                 "slack": {
                     "streaming": True,
                     # The ephemeral Assistant status line carries the useful
                     # current action. Progress/commentary bubbles would leave a
                     # permanent transcript of the process instead of the work.
-                    "live_status": "full",
                     "tool_progress": "off",
                     "interim_assistant_messages": False,
                     "long_running_notifications": False,
                     "busy_ack_detail": False,
                     "show_reasoning": False,
-                    "show_commentary": False,
                 }
             }
         },
@@ -730,10 +733,17 @@ def render(
             .get("platforms", {})
             .get("slack", {})
             .get("tool_progress"),
-            "live_status": config.get("display", {})
-            .get("platforms", {})
-            .get("slack", {})
-            .get("live_status"),
+            # The ephemeral Assistant status line ("is digging through the
+            # estate…") — the only live-status surface Hermes actually has.
+            # An earlier revision reported a `live_status` display key here,
+            # but no such key exists in Hermes' display config; it read as
+            # configured while configuring nothing.
+            "assistant_status": bool(
+                config.get("platforms", {}).get("slack", {}).get("typing_indicator")
+            ),
+            # Codex phase=commentary narration gate — read by agent_init from
+            # the TOP-LEVEL display section only.
+            "show_commentary": config.get("display", {}).get("show_commentary"),
         },
         "k2_context_plugin": {
             "enabled": "hlt-k2-context" in config.get("plugins", {}).get("enabled", []),
