@@ -73,6 +73,10 @@ services:
         value: /data/hermes
       - key: OPENROUTER_API_KEY
         sync: false
+      # First-class web research backend. The Docker image bakes Hermes'
+      # matching Firecrawl extra because lazy dependency installs are disabled.
+      - key: FIRECRAWL_API_KEY
+        sync: false
       - key: GPTR_MCP_URL
         sync: false
       - key: GPTR_MCP_TOKEN
@@ -101,6 +105,18 @@ services:
       # Which persona boots: cleo | brian. Defaults to cleo.
       - key: AGENT_ID
         sync: false
+      # Canonical K2 identity for this body. Unversioned on purpose: K2 owns
+      # the active revision and agents.runtime_pack returns that exact version.
+      - key: HLT_AGENT_REF
+        value: agent:cleo
+      # Shared bearer for K2's external-run adapter and Hermes' loopback run
+      # API. The public wrapper never exposes the loopback listener or token.
+      - key: OPENCLAW_HQ_HOOK_TOKEN
+        sync: false
+      # Exactly-once K2 admission ledger. This is on the existing persistent
+      # Render disk; never place it in the container's ephemeral /tmp layer.
+      - key: HLT_AGENT_RUN_LEDGER_PATH
+        value: /data/hermes/agent-runs.sqlite3
       # Slack user IDs allowed to run privileged slash commands (/model, /cron,
       # /yolo). REQUIRED before going live: with no admin list, Hermes disables
       # slash gating entirely and every workspace member can run every command.
@@ -142,9 +158,11 @@ services:
       # xAI OAuth; set openrouter only for an intentional paid fallback/cutover.
       - key: HERMES_INFERENCE_PROVIDER
         sync: false
-      # Optional model override; defaults to grok-4.5 on xAI OAuth.
+      # Optional model override; defaults to grok-4.6 on xAI OAuth.
       - key: HERMES_MODEL
         sync: false
-      # Comma-separated provider fallbacks for 429/503/overload.
+      # Optional JSON list or comma-separated provider:model route override.
+      # Unset uses Codex GPT-5.6 Sol, then Kimi K3, Qwen 3.8 Max and the latest
+      # DeepSeek V4 Pro on OpenRouter.
       - key: HERMES_FALLBACK_PROVIDERS
         sync: false

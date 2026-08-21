@@ -20,6 +20,9 @@ WORKDIR /app
 #                "not actually available to me in this session" and she was right.
 #   tts-premium  the ElevenLabs client for text_to_speech
 #   fal          the FAL client for image_generate
+#   firecrawl    the SDK behind the configured Firecrawl web-search provider;
+#                lazy installs are disabled in config, so a key without this
+#                extra leaves web search selected and impossible to run
 #
 # Each is asserted below, so a missing extra is a red build rather than a
 # silent capability hole. Render keeps the last
@@ -30,23 +33,39 @@ WORKDIR /app
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
 ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10
+COPY hermes_patches /tmp/hermes-patches
 RUN git init /opt/hermes \
     && git -C /opt/hermes remote add origin \
       https://github.com/NousResearch/hermes-agent.git \
     && git -C /opt/hermes fetch --depth=1 origin "${HERMES_REF}" \
     && git -C /opt/hermes checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
-    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal]" \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
+    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
     && { python -c "import mcp" || { echo "mcp extra missing after install"; exit 1; }; } \
     && { python -c "import elevenlabs" || { echo "tts-premium extra missing after install"; exit 1; }; } \
-    && { python -c "import fal_client" || { echo "fal extra missing after install"; exit 1; }; }
+    && { python -c "import fal_client" || { echo "fal extra missing after install"; exit 1; }; } \
+    && { python -c "from firecrawl import Firecrawl" || { echo "firecrawl extra missing after install"; exit 1; }; }
 
 # Regression for the exact Slack failure Alec saw:
 # `Model generated invalid tool call: mcp__codegraph__context`.
 # The name must be the registry name, not merely a model-facing alias.
 RUN python -c "from tools.mcp_tool import mcp_prefixed_tool_name; assert mcp_prefixed_tool_name('codegraph', 'context') == 'mcp__codegraph__context'"
+
+# Cleo's K2 body adapter intentionally builds on these two supported Hermes
+# seams. Keep an upstream upgrade from deploying a wrapper whose async dispatch
+# or one-per-turn context hook has silently disappeared.
+RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
+    && grep -q 'GET  /v1/runs/{run_id}' /opt/hermes/gateway/platforms/api_server.py \
+    && grep -q '"pre_gateway_dispatch"' /opt/hermes/hermes_cli/plugins.py \
+    && grep -q 'skip before adapter processing' /opt/hermes/gateway/platforms/base.py \
+    && grep -q '_hermes_pre_gateway_dispatch_done' /opt/hermes/gateway/run.py \
+    && grep -q 'pre_gateway_dispatch skip' /opt/hermes/gateway/run.py \
+    && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py \
+    && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes
 
 ENV HERMES_UPSTREAM_REF=${HERMES_REF}
 

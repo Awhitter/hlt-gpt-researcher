@@ -1,0 +1,7 @@
+name: hlt-k2-context
+version: 1.1.0
+description: "Choose one Slack lead before dispatch, then draw one bounded Katailyst2 context packet."
+author: "HLT"
+hooks:
+  - pre_gateway_dispatch
+  - pre_llm_call

@@ -48,6 +48,8 @@ jobs:
         run: |
           pytest -q \
             tests/test_agent_boot.py \
+            tests/test_agent_run_ledger.py \
+            tests/test_slack_agent_lead.py \
             tests/test_codegraph_auth.py \
             tests/test_mcp_store_prune.py \
             tests/test_hlt_suggestions.py \

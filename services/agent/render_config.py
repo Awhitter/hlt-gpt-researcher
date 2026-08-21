@@ -14,11 +14,14 @@ The security posture here is deliberate and is the reason this file is long.
 These agents are reachable by a whole Slack workspace AND read untrusted web pages.
 Those two facts together make the upstream defaults unsafe: see SLACK_TOOLSETS.
 """
+
 from __future__ import annotations
 
+import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -41,13 +44,44 @@ DEFAULT_MODEL = "grok-4.6"
 DEFAULT_MAX_TOKENS = 32_768
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "xai-oauth": DEFAULT_MODEL,
-    "openrouter": "anthropic/claude-sonnet-5",
+    "openai-codex": "gpt-5.6-sol",
+    "openrouter": "moonshotai/kimi-k3",
 }
+
+# Recovery order, not a second policy engine. Hermes walks this list only when
+# the active route fails after its bounded retry. Every entry is a real model
+# id from the provider's current catalog; provider-only strings are not a valid
+# Hermes fallback contract and are intentionally never emitted.
+#
+# xAI stays primary because the owner already pays for SuperGrok. When an
+# XAI_API_KEY is configured, the SAME model over the plain api-key provider is
+# the first recovery route — the OAuth token is a six-hour credential that has
+# already expired unnoticed once (2026-08-18, 68 hours dark), and a key rung
+# means an auth failure degrades billing, never the model. Codex follows (its
+# ChatGPT subscription is also already paid for), then OpenRouter as the
+# independent paid safety net.
+DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
+    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+    {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
+    {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
+    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813"},
+)
+# Hermes' plain `xai` provider reads XAI_API_KEY from env (auth.py
+# ProviderConfig). Emitting the route without the key would burn a failover
+# hop on a rung that cannot authenticate, so it joins only when the key is
+# actually present on the service.
+XAI_API_KEY_FALLBACK: dict[str, str] = {"provider": "xai", "model": DEFAULT_MODEL}
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
 # hosted persona load them at task time instead of copying them into prompts.
-AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo@v1"}
+AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo"}
+
+# Runtime identity is host metadata, not an argument to K2 discovery tools.
+# Keeping it explicit in health output lets an operator prove that the canonical
+# Cleo entity is running in the intended Hermes body without teaching the model
+# a made-up ``runtimeLane`` parameter.
+AGENT_RUNTIME_LANES: dict[str, str] = {"cleo": "hermes", "brian": "hermes"}
 
 # THE most important setting in this file.
 #
@@ -125,8 +159,9 @@ SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
 # surface — the alternative is editing her SOUL, which applies everywhere.
 SLACK_PLATFORM_HINT = (
     "You are answering a team in Slack; most people did not build the system. "
-    "Lead with the useful result in their register, then put the sources you "
-    "actually opened at the end.\n"
+    "Lead with the useful result in their register. No 'Sources:' footer: cite "
+    "at most one short parenthetical for a claim a reader would doubt, and let "
+    "ordinary answers stand on their own.\n"
     "Take ownership of a broad request: define a practical done condition, do "
     "the safe work available now, and return the answer or artifact rather than "
     "a tool inventory or a menu of questions.\n"
@@ -138,7 +173,11 @@ SLACK_PLATFORM_HINT = (
     "For exact interface text or labeled structure, prefer a deterministic "
     "prototype or diagram tool; use image generation for imagery. A text diagram "
     "is a fallback, not the requested high-fidelity mockup.\n"
-    "Keep ordinary replies concise. Long work is fine when the outcome needs it."
+    "Slack already shows your live work status and progressively edits one answer. "
+    "Do not narrate each tool call as a separate message, do not use a send-message "
+    "tool to deliver the answer you are currently composing, and return exactly one "
+    "final answer. Keep ordinary replies concise; long work is fine when the outcome "
+    "needs it."
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
@@ -188,9 +227,94 @@ def _csv(env: Mapping[str, str], key: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _fallback_entry(value: object) -> dict[str, str] | None:
+    """Normalize one operator-supplied fallback without guessing a model.
+
+    Hermes' pinned contract is a list of objects with BOTH ``provider`` and
+    ``model``. The old renderer emitted provider-name strings, which Hermes
+    quietly filtered out. We accept a JSON object or the concise
+    ``provider:model`` form, and retain provider-only input only for providers
+    whose default model is explicitly pinned above.
+    """
+    if isinstance(value, dict):
+        provider = str(value.get("provider") or "").strip().lower()
+        model = str(value.get("model") or "").strip()
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if ":" in raw:
+            provider, model = raw.split(":", 1)
+            provider, model = provider.strip().lower(), model.strip()
+        else:
+            provider = raw.lower()
+            model = PROVIDER_DEFAULT_MODELS.get(provider, "")
+    else:
+        return None
+    if not provider or not model:
+        return None
+    return {"provider": provider, "model": model}
+
+
+def fallback_providers(
+    env: Mapping[str, str], *, primary_provider: str, primary_model: str
+) -> list[dict[str, str]]:
+    """Return the exact ordered route objects the pinned Hermes runtime reads.
+
+    ``HERMES_FALLBACK_PROVIDERS`` may be either JSON or a comma-separated list
+    of ``provider:model`` entries. Unset means the HLT recovery chain above.
+    Invalid entries are skipped, duplicates collapse, and the primary route is
+    removed so recovery never loops back to the backend that just failed.
+    """
+    raw = _clean(env, "HERMES_FALLBACK_PROVIDERS")
+    default_values = [dict(route) for route in DEFAULT_FALLBACK_PROVIDERS]
+    if _clean(env, "XAI_API_KEY"):
+        default_values.insert(0, dict(XAI_API_KEY_FALLBACK))
+    values: list[object]
+    explicitly_disabled = False
+    if raw is None:
+        values = default_values
+    elif raw.startswith(("[", "{")):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            values = default_values
+        else:
+            explicitly_disabled = isinstance(decoded, list) and not decoded
+            values = decoded if isinstance(decoded, list) else [decoded]
+    else:
+        values = [part.strip() for part in raw.split(",") if part.strip()]
+
+    primary = (primary_provider.strip().lower(), primary_model.strip().lower())
+    seen: set[tuple[str, str]] = set()
+    routes: list[dict[str, str]] = []
+    for value in values:
+        route = _fallback_entry(value)
+        if route is None:
+            continue
+        identity = (route["provider"].lower(), route["model"].lower())
+        if identity == primary or identity in seen:
+            continue
+        seen.add(identity)
+        routes.append(route)
+    if raw is not None and not routes and not explicitly_disabled:
+        return fallback_providers(
+            {}, primary_provider=primary_provider, primary_model=primary_model
+        )
+    return routes
+
+
 def agent_ref(env: Mapping[str, str]) -> str | None:
+    configured = _clean(env, "HLT_AGENT_REF")
+    if configured:
+        return configured
     agent_id = (_clean(env, "AGENT_ID") or "cleo").lower()
     return AGENT_REFS.get(agent_id)
+
+
+def runtime_lane(env: Mapping[str, str]) -> str:
+    agent_id = (_clean(env, "AGENT_ID") or "cleo").lower()
+    return AGENT_RUNTIME_LANES.get(agent_id, "hermes")
 
 
 def build_mcp_servers(env: Mapping[str, str]) -> dict[str, Any]:
@@ -314,9 +438,9 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
         extra["group_allow_admin_from"] = list(admins)
 
     slack: dict[str, Any] = {
-        # Upstream's default uses Slack's assistant status API, which
-        # disables the compose box while the agent thinks.
-        "typing_indicator": False,
+        # Slack's Assistant status line is ephemeral. Keep it on so a long
+        # research turn feels alive without adding one progress post per tool.
+        "typing_indicator": True,
         # Default posts "♻️ Gateway online" into the workspace on every
         # redeploy. Operator noise for end users.
         "gateway_restart_notification": False,
@@ -325,7 +449,20 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
     home = build_home_channel(env)
     if home:
         slack["home_channel"] = home
-    return {"slack": slack}
+    platforms: dict[str, Any] = {"slack": slack}
+    if _clean(env, "OPENCLAW_HQ_HOOK_TOKEN"):
+        # K2's existing external-run adapter speaks the OpenClaw hook envelope.
+        # Keep the public compatibility route on this wrapper and dispatch it
+        # over loopback into Hermes' native run lifecycle. The API server is
+        # never exposed on Render's public interface.
+        platforms["api_server"] = {
+            "enabled": True,
+            "extra": {
+                "host": "127.0.0.1",
+                "port": 8642,
+            },
+        }
+    return platforms
 
 
 def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
@@ -354,15 +491,18 @@ def build_config(
 ) -> dict[str, Any]:
     servers = build_mcp_servers(env)
     registry_ref = agent_ref(env)
+    host_runtime_lane = runtime_lane(env)
     runtime_hint = (
         "You run as a hosted Slack bot on Render without direct shell, file "
         "writes, or browser control. Reach the estate and hosted artifact tools "
-        "through MCP and K2. Long work is fine; show one useful progress update."
+        f"through MCP and K2. Your runtime lane is {host_runtime_lane}. Long work "
+        "is fine; show one useful progress update."
     )
     if registry_ref:
         runtime_hint += (
-            f" Your registry identity is {registry_ref}. For substantial tasks, "
-            "open katailyst_well with the user's real outcome as the mission."
+            f" Your registry identity is {registry_ref}. The host injects one "
+            "Katailyst2 wishing-well draw for each substantive turn; judge its "
+            "candidates freely and do not repeat the draw unless the user asks."
         )
 
     model_provider = (
@@ -371,7 +511,9 @@ def build_config(
     model_name = _clean(env, "HERMES_MODEL")
     if not model_name and model_provider == "openrouter":
         model_name = _clean(env, "OPENROUTER_MODEL")
-    model_name = model_name or PROVIDER_DEFAULT_MODELS.get(model_provider) or DEFAULT_MODEL
+    model_name = (
+        model_name or PROVIDER_DEFAULT_MODELS.get(model_provider) or DEFAULT_MODEL
+    )
 
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
@@ -392,7 +534,49 @@ def build_config(
             "gateway_notify_interval": 900,
             # Fast failover to the fallback provider rather than slow retries.
             "api_max_retries": 1,
+            # High is the pinned Hermes recommendation for Codex-backed Slack:
+            # xhigh can consume the turn in hidden thought without visible text.
+            # The chosen xAI/OpenAI/OpenRouter routes all support high.
+            "reasoning_effort": "high",
             "environment_hint": runtime_hint,
+        },
+        # Both the identity file and the composed runtime doctrine are allowed
+        # a useful slice of a modern long-context model. Upstream otherwise
+        # falls back to 20k when model metadata is not resolved at prompt build.
+        "context_file_max_chars": 50_000,
+        # Bound externally-triggered runs separately from Slack work. This is
+        # the exact path the pinned API adapter reads; placing the cap in the
+        # platform's `extra` mapping looks plausible but is ignored upstream.
+        "gateway": {"api_server": {"max_concurrent_runs": 2}},
+        # Slack has no native draft API, but Hermes' edit transport is a true
+        # single-message stream: one post is progressively updated and the
+        # last update gets the final Block Kit rendering.
+        "streaming": {
+            "enabled": True,
+            "transport": "edit",
+            "edit_interval": 1.0,
+            "buffer_threshold": 40,
+            "cursor": " ▉",
+        },
+        "display": {
+            # Codex-backed models narrate phase=commentary through a separate
+            # agent-level gate (agent_init reads this from the TOP-LEVEL display
+            # section only — a per-platform copy is silently ignored). Without
+            # this, narration returns the moment the ladder fails over to Codex.
+            "show_commentary": False,
+            "platforms": {
+                "slack": {
+                    "streaming": True,
+                    # The ephemeral Assistant status line carries the useful
+                    # current action. Progress/commentary bubbles would leave a
+                    # permanent transcript of the process instead of the work.
+                    "tool_progress": "off",
+                    "interim_assistant_messages": False,
+                    "long_running_notifications": False,
+                    "busy_ack_detail": False,
+                    "show_reasoning": False,
+                }
+            }
         },
         # Project-context discovery reads AGENTS.md from here.
         "terminal": {"cwd": grounding_dir},
@@ -431,7 +615,14 @@ def build_config(
         },
         # The top-level `toolsets` key is deprecated and ignored upstream; this
         # per-platform map is the one that is actually read.
-        "platform_toolsets": {"slack": slack_toolsets(servers)},
+        "platform_toolsets": {
+            "slack": slack_toolsets(servers),
+            **(
+                {"api_server": slack_toolsets(servers)}
+                if _clean(env, "OPENCLAW_HQ_HOOK_TOKEN")
+                else {}
+            ),
+        },
         # Per-surface prompt guidance. Top-level key, NOT under `platforms` —
         # a third Slack namespace, and putting it in the wrong one is silently
         # ignored like every other misplaced Slack key in this file.
@@ -460,9 +651,15 @@ def build_config(
         # The curator archives unused skills after 90 days. Ours are shipped in
         # the image and are meant to persist.
         "curator": {"prune_builtins": False},
+        # A user plugin is the pinned runtime's supported turn-context seam.
+        # It performs one bounded K2 wishing-well draw before the model loop;
+        # no Hermes fork and no Slack transport interception are involved.
+        "plugins": {"enabled": ["hlt-k2-context"]},
     }
 
-    fallback = _csv(env, "HERMES_FALLBACK_PROVIDERS")
+    fallback = fallback_providers(
+        env, primary_provider=model_provider, primary_model=model_name
+    )
     if fallback:
         config["fallback_providers"] = fallback
 
@@ -495,11 +692,28 @@ def render(
         "config_path": str(path),
         "model": config["model"]["default"],
         "model_provider": config["model"]["provider"],
+        "configured_model_route": [
+            {
+                "provider": config["model"]["provider"],
+                "model": config["model"]["default"],
+                "role": "primary",
+            },
+            *[
+                {**route, "role": f"fallback-{index}"}
+                for index, route in enumerate(
+                    config.get("fallback_providers", []), start=1
+                )
+            ],
+        ],
         "max_tokens": config["model"]["max_tokens"],
         "agent_ref": agent_ref(env) or "",
+        "runtime_lane": runtime_lane(env),
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
         "hermes_upstream_ref": _clean(env, "HERMES_UPSTREAM_REF") or "",
         "openrouter_key_present": bool(_clean(env, "OPENROUTER_API_KEY")),
+        "web_search_backend": config.get("tools", {})
+        .get("web_search", {})
+        .get("provider", ""),
         # What Hermes was ACTUALLY handed, mcp-* grants included — not the
         # static tuple. Reporting the tuple hid the fact that four mounted MCP
         # servers had none of their tools granted.
@@ -523,6 +737,36 @@ def render(
         # The cron briefs deliver here; reported so /health shows an unset
         # home channel rather than leaving the briefs quietly unseeded.
         "home_channel_id": (build_home_channel(env) or {}).get("chat_id", ""),
+        "slack_presentation": {
+            "one_message_stream": bool(config.get("streaming", {}).get("enabled")),
+            "transport": config.get("streaming", {}).get("transport"),
+            "tool_progress": config.get("display", {})
+            .get("platforms", {})
+            .get("slack", {})
+            .get("tool_progress"),
+            # The ephemeral Assistant status line ("is digging through the
+            # estate…") — the only live-status surface Hermes actually has.
+            # An earlier revision reported a `live_status` display key here,
+            # but no such key exists in Hermes' display config; it read as
+            # configured while configuring nothing.
+            "assistant_status": bool(
+                config.get("platforms", {}).get("slack", {}).get("typing_indicator")
+            ),
+            # Codex phase=commentary narration gate — read by agent_init from
+            # the TOP-LEVEL display section only.
+            "show_commentary": config.get("display", {}).get("show_commentary"),
+        },
+        "k2_context_plugin": {
+            "enabled": "hlt-k2-context" in config.get("plugins", {}).get("enabled", []),
+        },
+        "external_dispatch": {
+            "configured": bool(_clean(env, "OPENCLAW_HQ_HOOK_TOKEN")),
+            "public_path": "/hooks/agent",
+            "status_path": "/hooks/agent/runs/{runId}",
+            "activation_path": "/activationz",
+            "readiness_path": "/readyz",
+            "hermes_loopback": "http://127.0.0.1:8642/v1/runs",
+        },
         "mcp_mounted": sorted(servers),
         "mcp_unconfigured": [n for n, _, _ in MCP_TARGETS if n not in servers],
         "mcp_without_token": sorted(
@@ -534,6 +778,11 @@ def render(
 
     if path.exists() and _existing_is_operator_owned(path):
         summary["preserved_operator_config"] = True
+        # The values above describe the config we intended to write. Once an
+        # operator-owned file wins, they are no longer proof of what Hermes
+        # will load, so readiness must fail closed rather than assume them.
+        summary["k2_context_plugin"]["enabled"] = False
+        summary["external_dispatch"]["configured"] = False
         return summary
 
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")

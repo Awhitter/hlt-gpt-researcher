@@ -20,22 +20,26 @@ in Katailyst2 is the fleet orchestrator persona — a different thing — so nev
 call these agents Hermes in docs, Slack, or the registry. The Render service keeps the
 hostname `hlt-hermes` only because Render cannot rename a service in place.
 
-**Production readback (2026-08-07): live.** The Cleo gateway is connected, all
-five configured MCP servers are mounted and granted, image/audio backends are
-ready, and the recurring briefs are seeded. `/health` is the current authority;
-it now verifies the Slack token and reports the OAuth scopes Slack actually
-granted rather than repeating the desired manifest.
+Do not preserve a dated “live” claim here. `/health` is the current authority:
+it separates configured routes from observed provider success, verifies Slack's
+actual OAuth grant, proves the canonical Katailyst2 door and Cleo contract, and
+reports the reversible retirement state of the old recurring briefs.
 
 ## How the container is put together
 
 `health_gateway.py` is the main process. It:
 
-1. installs the agent's `SOUL.md` and composes `AGENTS.md` from
-   `grounding/shared` + `grounding/<agent>` ([`grounding.py`](./grounding.py)),
+1. installs the reviewed bundled `SOUL.md`/`AGENTS.md` outage fallback and the
+   `hlt-k2-context` Hermes plugin ([`grounding.py`](./grounding.py)),
 2. renders `$HERMES_HOME/config.yaml` from the environment
    ([`render_config.py`](./render_config.py)),
-3. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
-4. serves `/health` on `$PORT`.
+3. asks canonical Katailyst2 for the bearer-bound `agent:cleo` runtime pack,
+   installs that pack into Hermes' real prompt files only when it is active,
+   and proves the independent mission-time wishing well,
+4. selects one addressed HLT Slack agent before Hermes can type or call a model,
+5. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
+6. serves operator health plus authenticated K2 activation/dispatch routes on
+   `$PORT`.
 
 The supervisor exists for a specific reason: Hermes reaches Slack over **Socket
 Mode**, an outbound WebSocket. It never binds a port. Render runs this as a *web
@@ -73,15 +77,18 @@ Two env vars matter as much as the toolset:
 
 | Slot | Content | Why there |
 |---|---|---|
-| [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) | compact identity, initiative, coordination, recovery | loaded from `$HERMES_HOME` every session |
-| [`grounding/shared/AGENTS.md`](./grounding/shared/AGENTS.md) + `grounding/<agent>/AGENTS.md` | the durable briefing, composed at boot | read from `terminal.cwd`; the source ships read-only so an agent can't rewrite its own facts |
+| Katailyst2 `agents.runtime_pack` for `agent:cleo` | active identity, doctrine, proclivities, bindings and policies | canonical brain, resolved for `paperclip_hermes` with the agent-bound token |
+| [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) + bundled AGENTS files | reviewed snapshot | used only during a declared K2 service/transport outage, never for a missing agent or bad token |
+| `hlt-k2-context` Hermes plugin | choose one Slack lead, then draw one bounded `katailyst.well` packet for each substantive turn | lead decisions are private local receipts; mission context is ephemeral and never persisted into transcript or memory |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
-Cleo's durable registry identity is `agent:cleo@v1`. Substantial work loads a
-fresh K2 context packet through `registry_agent_context`; the repo prompt keeps
-only the activation cue and runtime safety boundary. The local
-`facilitate-product-work` skill is likewise a small shim to the current K2
-skill, not a fork of the workflow.
+Cleo's durable registry identity is the unversioned `agent:cleo`; K2 owns the
+current revision. This hosted body reports `runtime_lane: hermes`. At boot it
+discovers either MCP dialect (`agents.runtime_pack`/`agents_runtime_pack` and
+`katailyst.well`/`katailyst_well`) from `tools/list`; the model-facing Hermes
+names are separately prefixed `mcp__katailyst2__...`. Mounting the MCP is not
+identity proof, so the runtime-pack call deliberately omits `agentRef`: only an
+agent-bound token can return Cleo.
 
 Company facts do **not** go in `MEMORY.md`: it is capped, frozen per session,
 agent-mutable, and the background reviewer edits it.
@@ -100,30 +107,100 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| SuperGrok / Premium+ OAuth | Primary model credentials, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
-| `OPENROUTER_API_KEY` | Optional paid model fallback |
+| SuperGrok / Premium+ OAuth | Primary Grok 4.6 credentials, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
+| ChatGPT subscription OAuth | First recovery route, stored by `hermes auth add openai-codex` in the persistent Hermes auth store |
+| `OPENROUTER_API_KEY` | Independent Kimi/Qwen/DeepSeek recovery routes |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
 | `SLACK_ADMIN_USERS` | CSV Slack user IDs allowed privileged slash commands |
 | `SLACK_ALLOWED_CHANNELS` | CSV channel allowlist |
 | `HERMES_INFERENCE_PROVIDER` | Provider override; default `xai-oauth` |
-| `HERMES_MODEL` | Model override; default `grok-4.5` |
-| `HERMES_FALLBACK_PROVIDERS` | CSV provider fallbacks for 429/503 |
+| `HERMES_MODEL` | Model override; default `grok-4.6` |
+| `HERMES_FALLBACK_PROVIDERS` | Optional JSON route objects or CSV `provider:model` override; `[]` explicitly disables recovery |
+| `FIRECRAWL_API_KEY` | Selects Firecrawl for Hermes web search; the image bakes the matching SDK extra |
+| `WEB_SEARCH_BACKEND` | Explicit Hermes web backend override; keyless default is DDGS |
 | `GPTR_MCP_URL` / `GPTR_MCP_TOKEN` | Hosted researcher MCP |
 | `CODEGRAPH_MCP_URL` / `CODEGRAPH_MCP_TOKEN` | Estate code graph |
 | `KATAILYST2_MCP_URL` / `KATAILYST2_MCP_TOKEN` | Registry |
 | `LINEAR_MCP_URL` / `LINEAR_MCP_TOKEN` | Roadmap (optional) |
+| `HLT_AGENT_REF` | Canonical unversioned identity; `agent:cleo` |
+| `OPENCLAW_HQ_HOOK_TOKEN` | Shared strong bearer for K2's hosted-agent hook and Hermes' loopback run API |
+| `K2_ACTIVATION_POLL_SECONDS` | Optional offline-to-active polling interval, bounded to 5–300 seconds (default 10) |
 | `HERMES_HOME` | Persistent disk path (default `/data/hermes`) |
 
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
 
-`/health.config.model_provider`, `.model`, and `.max_tokens` expose the live
-inference route. Subscription providers also report a token-free
-`subscription_auth.logged_in` readback. Cleo caps one generated provider reply
-at 32,768 tokens so a small Slack artifact does not pre-authorize a model's
-128k maximum; this does not reduce the model's readable context or tool loop.
+`/health.config.configured_model_route` exposes the intended ordered route:
+Grok 4.6, Codex GPT-5.6 Sol, then the current Kimi K3, Qwen 3.8 Max, and
+DeepSeek V4 Pro OpenRouter routes. `model_route_readiness` checks each route's
+credential without exposing tokens. `gateway.observed_model_route` remains
+empty until a successful model call, then names the provider/model that really
+answered — including a fallback. Cleo caps one generated provider reply at
+32,768 tokens so a small Slack artifact does not pre-authorize a model's 128k
+maximum; this does not reduce the model's readable context or tool loop.
+
+`/health.config.k2_agent_readiness` is deliberately stricter than
+`mcp_mounted`. It verifies the `x-katailyst-repo: katailyst2` response header,
+the runtime-pack and well tools, an agent-bound `agent:cleo` pack, the
+`paperclip_hermes` compatibility decision, active/online state, the applied
+pack digest, and an actual well call. A legacy v1 bridge, broad/misbound token,
+inactive pack, or unavailable well is named separately.
+
+K2 activation has two stages. Authenticated `GET /activationz` returns the
+versioned `agent_host_activation_readiness.v1` contract and its exact 21
+non-circular checks: hosted body, durable admission ledger, credentials,
+dependencies, exact token-bound Cleo pack and host compatibility, without
+requiring Cleo to already be online. K2 can then activate the agent; the bounded
+watcher repeats `agents.runtime_pack` with `requireActive:true`, installs it,
+proves the well and starts Hermes. `GET /readyz` is the stricter post-activation
+receipt: canonical pack applied, one-turn context door callable, Slack socket
+live, primary model ready, durable ledger ready and the Hermes run API reachable.
+
+## K2 hosted-agent contract
+
+All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
+
+- Before `POST /hooks/agent`, K2 persists the deterministic wrapper id
+  `run_<katailyst_run_id UUID without hyphens>` and its same-origin status URL.
+- `POST /hooks/agent` durably admits the exact K2 run/session before calling
+  Hermes, then returns HTTP 202 with that wrapper `{runId, statusUrl}`. Exact
+  retries return the same receipt and never create a second provider run.
+- `GET /hooks/agent/runs/{runId}` reads the durable wrapper ledger and, once
+  bound, the native Hermes run. Only `completed`, `failed` and `cancelled` are
+  terminal; `waiting_for_approval` stays nonterminal. Terminal output and usage
+  are bounded, secret-redacted, and persisted across wrapper restarts.
+- The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
+  not synthesize a second agent loop, does not post into Slack, and retains
+  Hermes' normal model, tools, session and `pre_llm_call` behavior.
+
+The ledger moves monotonically through `queued -> dispatching ->
+provider_bound -> terminal`. A restart before `dispatching` can safely resume;
+a lost response after that boundary is surfaced as nonterminal `unknown` with
+`provider_admission_ambiguous` and is never automatically redispatched. K2 must
+poll `statusUrl` and terminalize its run from that receipt. Treating the initial
+202 as completed is a control-plane bug, not a successful Cleo run.
+
+Slack uses Hermes' single-message edit stream. The answer progressively updates
+in place, the ephemeral Assistant status shows the current useful action, and
+per-tool/interim commentary bubbles stay off. The model returns one final answer
+instead of using a Slack send tool to duplicate its own response.
+
+One-to-one DMs belong to the agent the teammate opened. Channels and group DMs
+require a fresh native Slack mention; the first recognized, nonquoted mention
+among Victoria, Lila, Julius, and Cleo is the only agent allowed to dispatch.
+Later mentions stay silent, edits never reopen the choice, and a bot-to-bot
+handoff works only when a recognized peer explicitly mentions its target. A
+hash-pinned local roster is the bounded v1 fallback until K2 publishes a typed
+roster projection. Every decision is written privately to
+`$HERMES_HOME/slack-agent-lead.sqlite3` as
+`slack_agent_lead_decision.v1`; retries and restarts hit the durable tombstone
+before typing or model work, and no message text is recorded.
+Native slash and message-form control commands keep their local Hermes session
+semantics; they already address one installed app and do not enter arbitration.
+Nonparticipant personas in this image, such as Brian, remain outside this
+four-agent Slack election.
 
 `/health.config.hermes_upstream_ref` exposes the immutable Hermes runtime SHA
 baked into the image. The image build also asserts that `codegraph.context`
@@ -157,18 +234,20 @@ Steps 1-3 need Alec's login. **Cleo's app already exists** — for her, skip to
 ### Connect the model subscription
 
 Cleo's primary model uses the owner's SuperGrok / Premium+ entitlement through
-Hermes' xAI device-code OAuth provider. From a Render shell run:
+Hermes' xAI device-code OAuth provider. Her first fallback uses ChatGPT
+subscription OAuth. From a Render shell run both:
 
 ```bash
 hermes auth add xai-oauth
+hermes auth add openai-codex
 ```
 
-Open the displayed xAI URL, approve the code, then verify
-`/health.config.subscription_auth.logged_in` is `true`. The refresh token stays
-in the service's persistent `HERMES_HOME`; it is never a Render environment
-variable or a Slack message. A successful login is not the final proof: run a
-real one-shot or Slack task because xAI can still deny inference to a
-subscription tier after issuing OAuth tokens.
+Open each displayed URL, approve its code, then verify both subscription routes
+under `/health.config.model_route_readiness`. Refresh tokens stay in the
+service's persistent `HERMES_HOME`; they are never Render environment variables
+or Slack messages. A successful login is not the final proof: run a real Slack
+task and read `gateway.observed_model_route`, because a provider can still deny
+inference after issuing OAuth tokens.
 
 ## Smoke
 
@@ -184,6 +263,14 @@ Read the answer, not the status code — the service intentionally stays up (HTT
 | `readiness_gateway` | Gateway not requested. Expected before step 4. |
 | `gateway` | The agent is running. `gateway.uptime_seconds` climbs. |
 | `gateway_down` | Requested but not running. `status: degraded`, and `gateway.stopped_reason` / `last_exit_code` say what happened. |
+| `gateway_k2_brain_unavailable` | The active, bearer-bound Cleo runtime pack was not applied. |
+| `gateway_k2_wrong_server` | The endpoint answered but did not identify itself as Katailyst2 (usually the legacy v1 bridge). |
+| `gateway_k2_outage_fallback` | K2 declared a service/transport outage, so the reviewed bundled snapshot is running visibly degraded. |
+| `gateway_k2_context_unavailable` | The canonical brain is active but the mission-time wishing well is unavailable. |
+| `gateway_k2_context_plugin_missing` | The pack is active but Hermes did not load the one-turn K2 hook. |
+| `gateway_external_dispatch_unavailable` | Slack can run, but the K2 hook bearer/run bridge is not configured. |
+| `gateway_web_search_degraded` | The selected web backend is missing its credential or installed SDK. |
+| `gateway_model_fallback_degraded` | Primary can answer, but at least one configured recovery route is positively unavailable. |
 
 Check `config.mcp_mounted` lists the configured servers,
 `config.mcp_without_token` is empty, `config.slack_auth.auth_ok` is true, and
@@ -206,7 +293,21 @@ can't, because the tool isn't loaded.
 | Answers but knows nothing about the estate | Check `config.mcp_mounted` and `config.mcp_without_token`. |
 | Anyone can run `/model` | `SLACK_ADMIN_USERS` is unset. |
 | `subscription_auth.logged_in: false` with provider `xai-oauth` | The SuperGrok OAuth grant is absent or expired; run `hermes auth add xai-oauth`. |
-| `openrouter_key_present: false` | The optional paid fallback is absent; it does not invalidate a ready subscription primary. |
+| Codex fallback unavailable | Run `hermes auth add openai-codex`, then prove it with a bounded canary rather than token presence alone. |
+| `openrouter_key_present: false` | Grok may still answer, but the independent OpenRouter recovery routes are unavailable and health is degraded. |
+
+## Retired recurring briefs
+
+Boot no longer creates the three legacy jobs `nm-monday-brief`,
+`nm-board-health`, and `nm-product-owner-work`. Before the gateway starts, it
+reads the durable Hermes cron store, writes the exact matching records once to
+`$HERMES_HOME/cron/retired/nm-legacy-briefs-before-retirement.json`, and pauses
+each job by ID. It never deletes jobs or run history. If the source record or
+recovery export is unreadable, it pauses nothing. To restore one intentionally:
+
+```bash
+hermes cron resume <job-id>
+```
 
 ## Repairing Cleo's scopes when `/health` names a gap
 

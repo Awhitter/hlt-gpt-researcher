@@ -1,0 +1,85 @@
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index 39de04861..554b247e2 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -5571,6 +5571,49 @@ class BasePlatformAdapter(ABC):
+         if not self._message_handler:
+             return
+ 
++        # Run gateway admission before installing a session guard or spawning
++        # _process_message_background. That background task starts the visible
++        # typing/status indicator before it calls the gateway runner, so leaving
++        # pre_gateway_dispatch solely in the runner causes a suppressed message
++        # to flicker first. The marker keeps the runner fallback from invoking
++        # the same hook twice; direct runner callers still use that fallback.
++        if not bool(getattr(event, "internal", False)):
++            try:
++                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
++
++                _hook_results = _invoke_hook(
++                    "pre_gateway_dispatch",
++                    event=event,
++                    gateway=getattr(self._message_handler, "__self__", None),
++                    session_store=getattr(self, "_session_store", None),
++                    adapter=self,
++                )
++            except Exception as _hook_exc:
++                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
++                _hook_results = []
++
++            for _result in _hook_results:
++                if not isinstance(_result, dict):
++                    continue
++                _action = _result.get("action")
++                if _action == "skip":
++                    logger.info(
++                        "pre_gateway_dispatch skip before adapter processing: "
++                        "reason=%s platform=%s chat=%s",
++                        _result.get("reason"),
++                        event.source.platform.value if event.source.platform else "unknown",
++                        event.source.chat_id or "unknown",
++                    )
++                    return
++                if _action == "rewrite":
++                    _new_text = _result.get("text")
++                    if isinstance(_new_text, str):
++                        event = dataclasses.replace(event, text=_new_text)
++                    break
++                if _action == "allow":
++                    break
++            setattr(event, "_hermes_pre_gateway_dispatch_done", True)
++
+         coerce_plaintext_gateway_command(event)
+ 
+         # Telegram topic recovery only applies to private DM topic lanes. Do
+diff --git a/gateway/run.py b/gateway/run.py
+index 125185aea..4b741f1d3 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -14540,7 +14540,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         #   {"action": "allow"}   /   None          -> normal dispatch
+         # Hook runs BEFORE auth so plugins can handle unauthorized senders
+         # (e.g. customer handover ingest) without triggering the pairing flow.
+-        if not is_internal:
++        if not is_internal and not getattr(
++            event, "_hermes_pre_gateway_dispatch_done", False
++        ):
+             try:
+                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+                 _hook_results = _invoke_hook(
+diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
+index dc4b94ead..baa7e62dc 100644
+--- a/plugins/platforms/slack/adapter.py
++++ b/plugins/platforms/slack/adapter.py
+@@ -5334,6 +5334,11 @@ class SlackAdapter(BasePlatformAdapter):
+                 chat_id=event.get("channel", ""),
+                 team_id=str(event.get("team") or event.get("team_id") or ""),
+             )
++        if sender_is_bot:
++            # Preserve the adapter's users.info result for pre-dispatch
++            # admission. Some bot posts have only a user id, with no bot_id,
++            # app_id, or subtype marker in Slack's raw event.
++            event["_hermes_sender_is_bot"] = True
+         if sender_is_bot:
+             allow_bots = self._slack_allow_bots()
+             if allow_bots == "none":

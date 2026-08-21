@@ -11,25 +11,32 @@ observed state (is the child alive? did the config get written? which tools is
 he allowed?) rather than from "an env var is set", so a green check means the
 agent is really up and really constrained.
 """
+
 from __future__ import annotations
 
+import hmac
 import importlib.util
+import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
 import threading
 import time
+import urllib.error
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import uvicorn
-from fastapi import FastAPI
-
+import agent_run_ledger
 import cron_seed
 import grounding
 import render_config
+import uvicorn
+from fastapi import FastAPI, Header
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO, format="[hlt-agent] %(levelname)s %(message)s")
 logger = logging.getLogger("hlt-agent")
@@ -61,6 +68,17 @@ SOCKET_DOWN_MARKERS = (
 # One dropped frame is normal; Slack rotates sockets and the adapter reconnects.
 # A run of failures with no successful connect between them is the stuck state.
 SOCKET_FAILURE_TOLERANCE = int(os.getenv("AGENT_SOCKET_FAILURE_TOLERANCE", "5"))
+
+# Emitted only after a provider call succeeds and reports usage. This is
+# stronger evidence than config or a pre-call "conversation turn" line: it
+# captures the route that actually answered, including a Hermes fallback.
+# Contract source: pinned Hermes ``agent/conversation_loop.py`` at
+# HERMES_UPSTREAM_REF. If upstream changes the formatter this intentionally
+# yields no observed route (missing proof) instead of guessing from a nearby
+# pre-call log; the parser test and exact-SHA canary make that drift visible.
+SUCCESSFUL_MODEL_ROUTE_RE = re.compile(
+    r"API call #\d+: model=(?P<model>\S+) provider=(?P<provider>\S+)\s"
+)
 
 # Give up after this many crashes so a bad config surfaces in /health instead
 # of hiding behind an endless restart loop.
@@ -100,6 +118,7 @@ def gateway_command(verbosity: str = GATEWAY_VERBOSITY) -> list[str]:
         cmd.append("-" + "v" * min(level, 3))
     return cmd
 
+
 app = FastAPI(title="HLT agent")
 
 
@@ -120,6 +139,10 @@ class GatewaySupervisor:
         self._socket_last_failure: str | None = None
         self._socket_last_failure_at: float | None = None
         self._socket_failures_since_connect = 0
+        self._observed_provider: str | None = None
+        self._observed_model: str | None = None
+        self._observed_route_at: float | None = None
+        self._supervision_started = False
 
     @property
     def cli_present(self) -> bool:
@@ -182,6 +205,18 @@ class GatewaySupervisor:
                     if self._socket_last_failure_at
                     else None
                 ),
+                "observed_model_route": (
+                    {
+                        "provider": self._observed_provider,
+                        "model": self._observed_model,
+                        "source": "successful_api_call",
+                        "seconds_ago": round(now - self._observed_route_at, 1),
+                    }
+                    if self._observed_provider
+                    and self._observed_model
+                    and self._observed_route_at
+                    else None
+                ),
             }
 
     def _socket_state(self) -> bool | None:
@@ -205,6 +240,12 @@ class GatewaySupervisor:
 
     def _note_gateway_line(self, line: str) -> None:
         """Update transport state from one line of the child's log stream."""
+        route = SUCCESSFUL_MODEL_ROUTE_RE.search(line)
+        if route:
+            with self._lock:
+                self._observed_model = route.group("model")
+                self._observed_provider = route.group("provider")
+                self._observed_route_at = time.time()
         if any(marker in line for marker in SOCKET_UP_MARKERS):
             with self._lock:
                 self._socket_connected_at = time.time()
@@ -232,14 +273,16 @@ class GatewaySupervisor:
                 print(line, end="", flush=True)
                 try:
                     self._note_gateway_line(line)
-                except Exception:  # noqa: BLE001 - a watcher must never kill the log stream
+                except Exception:
                     logger.exception("socket-state watcher failed on a log line")
-        except Exception:  # noqa: BLE001 - the child dying mid-read is the supervisor's business
+        except Exception:
             logger.exception("gateway log pump stopped")
 
     def start(self) -> None:
         if not GATEWAY_ENABLED:
-            logger.info("gateway disabled (AGENT_ENABLE_GATEWAY != 1) — serving health only")
+            logger.info(
+                "gateway disabled (AGENT_ENABLE_GATEWAY != 1) — serving health only"
+            )
             return
         if not self.cli_present:
             self._gave_up_reason = (
@@ -247,7 +290,20 @@ class GatewaySupervisor:
             )
             logger.error(self._gave_up_reason)
             return
-        threading.Thread(target=self._supervise, name="hermes-gateway", daemon=True).start()
+        with self._lock:
+            if self._supervision_started:
+                return
+            self._supervision_started = True
+            self._gave_up_reason = None
+        threading.Thread(
+            target=self._supervise, name="hermes-gateway", daemon=True
+        ).start()
+
+    def block_start(self, reason: str) -> None:
+        """Record a fail-closed boot gate without starting a crash loop."""
+        with self._lock:
+            self._gave_up_reason = reason
+        logger.error(reason)
 
     def _supervise(self) -> None:
         while not self._stop.is_set():
@@ -275,7 +331,10 @@ class GatewaySupervisor:
                 self._socket_failures_since_connect = 0
                 proc = self._proc
             threading.Thread(
-                target=self._pump_output, args=(proc,), name="hermes-gateway-logs", daemon=True
+                target=self._pump_output,
+                args=(proc,),
+                name="hermes-gateway-logs",
+                daemon=True,
             ).start()
 
             exit_code = proc.wait()
@@ -319,6 +378,22 @@ BOOT: dict[str, Any] = {}
 
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test"
+HERMES_API_BASE_URL = "http://127.0.0.1:8642"
+MAX_HOOK_MESSAGE_CHARS = 65_536
+MAX_HOOK_TIMEOUT_SECONDS = 900
+ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v1"
+_RUN_LEDGER_LOCK = threading.Lock()
+_RUN_LEDGER: agent_run_ledger.AgentRunLedger | None = None
+_RUN_LEDGER_PATH: Path | None = None
+
+# Use the protocol revision shipped in the same MCP SDK Hermes runs. A dated
+# literal here can keep a custom health probe green after the actual client has
+# moved to a different wire contract. The fallback matches pinned Hermes'
+# conservative streamable-HTTP fallback for older SDK builds.
+try:
+    from mcp.types import LATEST_PROTOCOL_VERSION as MCP_PROTOCOL_VERSION
+except (ImportError, AttributeError):  # pragma: no cover - current image has MCP
+    MCP_PROTOCOL_VERSION = "2025-03-26"
 
 # These are the scopes that make Cleo useful in the surfaces she promises:
 # channel mentions, private/group threads, user resolution, and visible file
@@ -337,6 +412,727 @@ CORE_SLACK_SCOPES = frozenset(
         "users:read",
     }
 )
+
+
+def _decode_mcp_response(raw: bytes) -> dict[str, Any]:
+    """Decode either JSON or the single-event SSE shape used by MCP HTTP."""
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return {}
+    if text.startswith("{"):
+        value = json.loads(text)
+        return value if isinstance(value, dict) else {}
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            value = json.loads(line[5:].strip())
+            if isinstance(value, dict):
+                return value
+    raise ValueError("MCP response contained neither JSON nor an SSE data event")
+
+
+def _mcp_post(
+    url: str,
+    token: str,
+    payload: dict[str, Any],
+    *,
+    session_id: str = "",
+    timeout: float = 8.0,
+) -> tuple[dict[str, Any], str, dict[str, str]]:
+    """One streamable-HTTP MCP request, returning only non-secret metadata."""
+    import urllib.request
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+        response_headers = {
+            key.lower(): value for key, value in response.headers.items()
+        }
+    return (
+        _decode_mcp_response(raw),
+        response_headers.get("mcp-session-id", session_id),
+        response_headers,
+    )
+
+
+def _mcp_tool_data(result: dict[str, Any]) -> dict[str, Any]:
+    """Project structured tool output from either MCP result representation."""
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    content = result.get("content")
+    if not isinstance(content, list):
+        return {}
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "text":
+            continue
+        try:
+            value = json.loads(str(item.get("text") or "{}"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+K2_RUNTIME_PACK_NAMES = ("agents.runtime_pack", "agents_runtime_pack")
+K2_WELL_NAMES = ("katailyst.well", "katailyst_well")
+K2_HERMES_HOST_PROFILE: dict[str, Any] = {
+    "version": "agent_host_profile.v1",
+    "profile": "paperclip_hermes",
+    "capabilities": ["conversational_shell", "mcp_client"],
+    "hostRef": "internal_system:hlt-hermes",
+}
+
+
+class K2ReadinessError(RuntimeError):
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _mcp_error_text(payload: Mapping[str, Any]) -> str:
+    error = payload.get("error")
+    if error:
+        return str(error)[:240]
+    result = payload.get("result")
+    result = result if isinstance(result, Mapping) else {}
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, Mapping) and item.get("type") == "text":
+                return str(item.get("text") or "")[:240]
+    return "Katailyst2 rejected the probe"
+
+
+def _raise_for_rpc_error(payload: Mapping[str, Any], *, operation: str) -> None:
+    result = payload.get("result")
+    result = result if isinstance(result, Mapping) else {}
+    if not payload.get("error") and result.get("isError") is not True:
+        return
+    message = _mcp_error_text(payload)
+    lowered = message.lower()
+    outage_markers = (
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "service unavailable",
+        "backend unavailable",
+        "connection pool",
+        "too many connections",
+        "overloaded",
+    )
+    kind = (
+        "outage"
+        if any(marker in lowered for marker in outage_markers)
+        else "contract_rejected"
+    )
+    raise K2ReadinessError(kind, f"{operation}: {message}")
+
+
+def _exception_kind(exc: Exception) -> str:
+    if isinstance(exc, K2ReadinessError):
+        return exc.kind
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in {408, 425, 429} or exc.code >= 500:
+            return "outage"
+        if exc.code in {401, 403}:
+            return "auth_failed"
+        return "contract_rejected"
+    if isinstance(exc, urllib.error.URLError):
+        return "outage"
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return "outage"
+    return "contract_rejected"
+
+
+def k2_agent_readiness(
+    url: str,
+    token: str,
+    expected_agent_ref: str,
+    runtime_lane: str = "hermes",
+    timeout: float = 8.0,
+    *,
+    require_active: bool = True,
+    probe_well: bool = True,
+) -> dict[str, Any]:
+    """Boot the canonical agent brain and prove the per-turn context door.
+
+    Identity comes only from ``agents.runtime_pack``. The call deliberately
+    omits ``agentRef``: returning Cleo's exact pack therefore proves the bearer
+    is agent-bound rather than merely able to read a public catalog. The well
+    is probed separately as task-time capability, never as identity.
+    """
+    started = time.monotonic()
+    result: dict[str, Any] = {
+        "mounted": bool(url),
+        "bearer_present": bool(token),
+        "transport_ok": None,
+        "server_repo": "",
+        "server_matches_katailyst2": None,
+        "visible_tools": None,
+        "runtime_pack_tool_listed": False,
+        "runtime_pack_callable": False,
+        "well_tool_listed": False,
+        "well_callable": False,
+        "agent_block_found": False,
+        "agent_bound_token": False,
+        "host_profile_compatible": False,
+        "runtime_pack_version": "",
+        "agent_version": None,
+        "activation_status": "",
+        "activation_online": None,
+        "activation_ready": False,
+        "shell_scopes": [],
+        "outage_declared": False,
+        "requested_agent_ref": expected_agent_ref,
+        "runtime_lane": runtime_lane,
+        "contract_status": "not_checked",
+        "resolved_agent_ref": "",
+        "identity_matches": None,
+        "latency_ms": None,
+        "error": "",
+    }
+    if not url:
+        result["contract_status"] = "not_mounted"
+        return result
+    if not token:
+        result["contract_status"] = "missing_bearer"
+        return result
+
+    request_id = 0
+
+    def rpc(method: str, params: dict[str, Any], session_id: str = ""):
+        nonlocal request_id
+        request_id += 1
+        return _mcp_post(
+            url,
+            token,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            session_id=session_id,
+            timeout=timeout,
+        )
+
+    try:
+        initialized, session_id, headers = rpc(
+            "initialize",
+            {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "hlt-cleo-readiness", "version": "1.0.0"},
+            },
+        )
+        _raise_for_rpc_error(initialized, operation="initialize")
+        result["transport_ok"] = True
+        result["server_repo"] = headers.get("x-katailyst-repo", "")
+        result["server_matches_katailyst2"] = (
+            result["server_repo"].strip().lower() == "katailyst2"
+        )
+        if result["server_matches_katailyst2"] is not True:
+            result["contract_status"] = "wrong_server"
+            return result
+
+        listed, session_id, _ = rpc("tools/list", {}, session_id)
+        _raise_for_rpc_error(listed, operation="tools/list")
+        tools = (listed.get("result") or {}).get("tools") or []
+        names = [
+            str(tool.get("name") or "") for tool in tools if isinstance(tool, dict)
+        ]
+        result["visible_tools"] = len(names)
+        pack_tool = next((name for name in names if name in K2_RUNTIME_PACK_NAMES), "")
+        well_tool = next((name for name in names if name in K2_WELL_NAMES), "")
+        result["runtime_pack_tool_listed"] = bool(pack_tool)
+        result["well_tool_listed"] = bool(well_tool)
+        if not pack_tool or not well_tool:
+            result["contract_status"] = "tool_surface_incomplete"
+            return result
+        if not expected_agent_ref:
+            result["contract_status"] = "not_requested"
+            return result
+
+        pack_call, _, _ = rpc(
+            "tools/call",
+            {
+                "name": pack_tool,
+                "arguments": {
+                    # Omission is the agent-binding proof. Passing agentRef here
+                    # would let an unbound broad token impersonate readiness.
+                    "hostProfile": dict(K2_HERMES_HOST_PROFILE),
+                    "requireActive": require_active,
+                },
+            },
+            session_id,
+        )
+        _raise_for_rpc_error(pack_call, operation="agents.runtime_pack")
+        pack_result = pack_call.get("result") or {}
+        pack_data = _mcp_tool_data(pack_result)
+        runtime_pack = pack_data.get("runtimePack")
+        if not isinstance(runtime_pack, Mapping):
+            raise K2ReadinessError(
+                "contract_rejected", "agents.runtime_pack returned no runtimePack"
+            )
+        resolved_ref = str(runtime_pack.get("agentRef") or "")
+        capability = runtime_pack.get("capability")
+        capability = capability if isinstance(capability, Mapping) else {}
+        activation = runtime_pack.get("activation")
+        activation = activation if isinstance(activation, Mapping) else {}
+        policies = runtime_pack.get("policies")
+        policies = policies if isinstance(policies, Mapping) else {}
+        shell_scopes = policies.get("shellScopes")
+        shell_scopes = shell_scopes if isinstance(shell_scopes, list) else []
+        identity_matches = resolved_ref == expected_agent_ref
+        host_compatible = capability.get("compatible") is True
+        token_scoped = "registry.read" in shell_scopes
+        active = (
+            activation.get("status") == "active" and activation.get("isOnline") is True
+        )
+        result.update(
+            {
+                "runtime_pack_callable": True,
+                "agent_bound_token": identity_matches and token_scoped,
+                "host_profile_compatible": host_compatible,
+                "runtime_pack_version": str(runtime_pack.get("version") or ""),
+                "agent_version": runtime_pack.get("agentVersion"),
+                "activation_status": str(activation.get("status") or ""),
+                "activation_online": activation.get("isOnline"),
+                "activation_ready": active,
+                "shell_scopes": [str(scope) for scope in shell_scopes],
+                "agent_block_found": identity_matches,
+                "resolved_agent_ref": resolved_ref,
+                "identity_matches": identity_matches,
+            }
+        )
+        if not identity_matches or not token_scoped or not host_compatible:
+            result["contract_status"] = "runtime_pack_invalid"
+            return result
+        if require_active and not active:
+            result["contract_status"] = "preactivation"
+            return result
+        if not active:
+            # This exact state is the pre-activation handshake. It proves the
+            # token is bound to Cleo and the pack resolves for Hermes without
+            # pretending the agent is already online.
+            result["contract_status"] = "preactivation"
+            return result
+        # Keep the canonical brain even if the independent task-context probe
+        # reports a transient outage below. A working pack must never be
+        # replaced by the bundled fallback merely because one well call failed.
+        result["_runtime_pack"] = dict(runtime_pack)
+
+        if not probe_well:
+            result["contract_status"] = "pack_loaded"
+            return result
+
+        well_call, _, _ = rpc(
+            "tools/call",
+            {
+                "name": well_tool,
+                "arguments": {
+                    "mission": "Show me one useful block for a Nursing Mastery product mission.",
+                    "facets": ["Nursing Mastery product work"],
+                    "budget": 1,
+                    "thoughts": False,
+                    "traverse": False,
+                },
+            },
+            session_id,
+        )
+        _raise_for_rpc_error(well_call, operation="katailyst.well")
+        result["well_callable"] = True
+        result["contract_status"] = "loaded"
+        return result
+    except Exception as exc:
+        if result["transport_ok"] is None:
+            result["transport_ok"] = False
+        kind = _exception_kind(exc)
+        result["contract_status"] = kind
+        result["outage_declared"] = kind == "outage"
+        result["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+        return result
+    finally:
+        result["latency_ms"] = round((time.monotonic() - started) * 1000)
+
+
+def _hook_token() -> str:
+    return os.getenv("OPENCLAW_HQ_HOOK_TOKEN", "").strip()
+
+
+def _hook_authorized(authorization: str | None) -> bool:
+    expected = _hook_token()
+    supplied = ""
+    if isinstance(authorization, str) and authorization.startswith("Bearer "):
+        supplied = authorization[7:].strip()
+    return bool(expected) and hmac.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8")
+    )
+
+
+def _agent_run_ledger_path() -> Path:
+    configured = os.getenv("HLT_AGENT_RUN_LEDGER_PATH", "").strip()
+    return (
+        Path(configured).expanduser()
+        if configured
+        else HERMES_HOME / "agent-runs.sqlite3"
+    )
+
+
+def get_agent_run_ledger() -> agent_run_ledger.AgentRunLedger:
+    global _RUN_LEDGER, _RUN_LEDGER_PATH
+    path = _agent_run_ledger_path()
+    with _RUN_LEDGER_LOCK:
+        if _RUN_LEDGER is None or _RUN_LEDGER_PATH != path:
+            _RUN_LEDGER = agent_run_ledger.AgentRunLedger(path)
+            _RUN_LEDGER_PATH = path
+        return _RUN_LEDGER
+
+
+def agent_run_ledger_readiness() -> dict[str, Any]:
+    try:
+        result = get_agent_run_ledger().probe()
+        return {
+            "ready": result.get("ready") is True,
+            "schema_version": result.get("schema_version"),
+            "storage": "durable_sqlite",
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "schema_version": None,
+            "storage": "durable_sqlite",
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+        }
+
+
+def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate K2's existing external-host envelope without widening it."""
+    message = str(payload.get("message") or "").strip()
+    if not message or len(message) > MAX_HOOK_MESSAGE_CHARS:
+        raise ValueError(f"message must be 1..{MAX_HOOK_MESSAGE_CHARS} characters")
+    agent_id = str(payload.get("agentId") or "").strip()
+    expected_ref = str(BOOT.get("agent_ref") or "agent:cleo")
+    if agent_id != expected_ref.removeprefix("agent:"):
+        raise ValueError("agentId does not match this runtime")
+    if payload.get("deliver") is not False:
+        raise ValueError("deliver must be false for a K2 internal run")
+    if payload.get("wakeMode") != "now":
+        raise ValueError("wakeMode must be now")
+    if payload.get("name") != "Katailyst2":
+        raise ValueError("name must be Katailyst2")
+    session_key = str(payload.get("sessionKey") or "").strip()
+    if not re.fullmatch(r"hook:k2:[A-Za-z0-9._:-]{1,200}", session_key):
+        raise ValueError("sessionKey must use the hook:k2:<run> namespace")
+    timeout_seconds = payload.get("timeoutSeconds", 300)
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
+        raise ValueError("timeoutSeconds must be an integer")
+    if not 1 <= timeout_seconds <= MAX_HOOK_TIMEOUT_SECONDS:
+        raise ValueError(f"timeoutSeconds must be 1..{MAX_HOOK_TIMEOUT_SECONDS}")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("metadata must be an object")
+    if metadata.get("katailyst_agent_ref") != expected_ref:
+        raise ValueError("metadata.katailyst_agent_ref does not match this runtime")
+    k2_run_id = str(metadata.get("katailyst_run_id") or "").strip()
+    if not k2_run_id:
+        raise ValueError("metadata.katailyst_run_id is required")
+    # This exact deterministic id is precomputed by K2 before POST and survives
+    # a lost response. Reject non-canonical ids instead of letting two spellings
+    # identify the same admission.
+    agent_run_ledger.wrapper_run_id(k2_run_id)
+    if session_key != f"hook:k2:{k2_run_id}":
+        raise ValueError("sessionKey must exactly match metadata.katailyst_run_id")
+    org_id = str(metadata.get("katailyst_org_id") or "").strip()
+    if not org_id:
+        raise ValueError("metadata.katailyst_org_id is required")
+    if len(org_id) > 200:
+        raise ValueError("metadata.katailyst_org_id is too long")
+    return {
+        "message": message,
+        "session_key": session_key,
+        "timeout_seconds": timeout_seconds,
+        "agent_ref": expected_ref,
+        "k2_run_id": k2_run_id,
+        "org_id": org_id,
+        "metadata": dict(metadata),
+    }
+
+
+def _hermes_api_json(
+    path: str,
+    *,
+    method: str = "GET",
+    token: str = "",
+    payload: Mapping[str, Any] | None = None,
+    session_key: str = "",
+    timeout: float = 6.0,
+) -> tuple[int, dict[str, Any]]:
+    import urllib.error
+    import urllib.request
+
+    headers = {"Accept": "application/json"}
+    body: bytes | None = None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if session_key:
+        headers["X-Hermes-Session-Key"] = session_key
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(dict(payload)).encode("utf-8")
+    request = urllib.request.Request(
+        f"{HERMES_API_BASE_URL}{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        status = int(exc.code)
+    try:
+        decoded = json.loads(raw.decode("utf-8", errors="replace")) if raw else {}
+    except json.JSONDecodeError:
+        decoded = {}
+    return status, decoded if isinstance(decoded, dict) else {}
+
+
+def hermes_api_readiness(timeout: float = 2.0) -> dict[str, Any]:
+    result = {"reachable": False, "status": None, "error": ""}
+    try:
+        status, payload = _hermes_api_json("/health", timeout=timeout)
+        result["status"] = status
+        result["reachable"] = status == 200 and payload.get("status") == "ok"
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+    return result
+
+
+def _schedule_run_timeout(run_id: str, token: str, timeout_seconds: int) -> None:
+    def stop() -> None:
+        try:
+            _hermes_api_json(
+                f"/v1/runs/{run_id}/stop",
+                method="POST",
+                token=token,
+                payload={},
+                timeout=4.0,
+            )
+        except Exception:
+            logger.warning("could not stop expired Hermes run %s", run_id)
+
+    timer = threading.Timer(timeout_seconds, stop)
+    timer.daemon = True
+    timer.start()
+
+
+def _provider_status(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "pending": "queued",
+        "accepted": "queued",
+        "started": "running",
+        "in_progress": "running",
+        "processing": "running",
+        "succeeded": "completed",
+        "success": "completed",
+        "canceled": "cancelled",
+        "aborted": "cancelled",
+    }
+    return aliases.get(normalized, normalized or "unknown")
+
+
+def _admission_receipt(record: Mapping[str, Any]) -> dict[str, Any]:
+    admission_status = str(record.get("admission_status") or "unknown")
+    provider_status = _provider_status(record.get("provider_status"))
+    if admission_status == "queued":
+        public_status = "queued"
+    elif admission_status == "dispatching":
+        public_status = "unknown"
+    else:
+        public_status = provider_status
+    terminal = admission_status == "terminal"
+    body: dict[str, Any] = {
+        "ok": public_status == "completed" if terminal else True,
+        "runId": str(record.get("wrapper_run_id") or ""),
+        "status": public_status,
+        "terminal": terminal,
+        "admissionStatus": admission_status,
+        "statusUrl": f"/hooks/agent/runs/{record.get('wrapper_run_id')}",
+    }
+    recovery_code = str(record.get("recovery_code") or "")
+    if admission_status == "dispatching" and not recovery_code:
+        recovery_code = "provider_admission_ambiguous"
+    if recovery_code and not terminal:
+        body["recovery"] = {
+            "code": recovery_code,
+            "required": True,
+        }
+    if terminal and record.get("output_text"):
+        body["output"] = str(record["output_text"])
+    if record.get("error_text") and (terminal or recovery_code):
+        body["error"] = str(record["error_text"])
+    if terminal and record.get("usage") is not None:
+        body["usage"] = record["usage"]
+    return body
+
+
+def _hook_admission_fingerprint(normalized: Mapping[str, Any]) -> str:
+    return agent_run_ledger.request_fingerprint(
+        {
+            "message": normalized["message"],
+            "sessionKey": normalized["session_key"],
+            "timeoutSeconds": normalized["timeout_seconds"],
+            "agentRef": normalized["agent_ref"],
+            "metadata": normalized["metadata"],
+        }
+    )
+
+
+def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Admit exactly once, then cross the provider boundary at most once."""
+    normalized = _validate_hook_payload(payload)
+    ledger = get_agent_run_ledger()
+    record, _created = ledger.admit(
+        k2_run_id=normalized["k2_run_id"],
+        session_key=normalized["session_key"],
+        org_id=normalized["org_id"],
+        agent_ref=normalized["agent_ref"],
+        fingerprint=_hook_admission_fingerprint(normalized),
+    )
+    wrapper_id = str(record["wrapper_run_id"])
+
+    # Only the process that atomically moves queued -> dispatching may call
+    # Hermes. A replay of dispatching is the crash-ambiguous state and must not
+    # speculate that a second POST is safe.
+    if record.get("admission_status") != "queued" or not ledger.claim_dispatch(
+        wrapper_id
+    ):
+        return _admission_receipt(ledger.get(wrapper_id) or record)
+
+    token = _hook_token()
+    try:
+        status, response = _hermes_api_json(
+            "/v1/runs",
+            method="POST",
+            token=token,
+            session_key=normalized["session_key"],
+            payload={
+                "input": normalized["message"],
+                "session_id": normalized["session_key"],
+                "instructions": (
+                    "This is a governed internal Katailyst2 mission for Cleo. "
+                    "Complete the work end to end, preserve evidence, and do not "
+                    "send the result to Slack unless the mission itself explicitly "
+                    "requests a governed external effect."
+                ),
+            },
+            timeout=8.0,
+        )
+    except Exception as exc:
+        ledger.mark_dispatch_ambiguous(
+            wrapper_id,
+            f"provider admission response unavailable: {type(exc).__name__}: {exc}",
+        )
+        return _admission_receipt(ledger.get(wrapper_id) or record)
+
+    provider_run_id = str(response.get("run_id") or "").strip()
+    if status == 202 and re.fullmatch(r"run_[a-f0-9]{32}", provider_run_id):
+        # This binding is the second durable fact. A crash before it leaves the
+        # admission in dispatching/unknown forever rather than dispatching twice.
+        ledger.bind_provider(wrapper_id, provider_run_id)
+        try:
+            _schedule_run_timeout(provider_run_id, token, normalized["timeout_seconds"])
+        except Exception as exc:
+            logger.warning(
+                "could not schedule timeout for provider run %s: %s",
+                provider_run_id,
+                exc,
+            )
+        return _admission_receipt(ledger.get(wrapper_id) or record)
+
+    error = response.get("error")
+    if isinstance(error, Mapping):
+        error = error.get("message") or error.get("code")
+    detail = f"Hermes admission HTTP {status}: {error or 'invalid response'}"
+    if 400 <= status < 500:
+        # A concrete client rejection is the one safe proof that Hermes did not
+        # accept this mission. Persist it as terminal so K2 can close the run.
+        ledger.mark_terminal(wrapper_id, "failed", error=detail)
+    else:
+        # A 2xx with a malformed id or any server-side response can have crossed
+        # the provider boundary. Never infer that retrying is safe.
+        ledger.mark_dispatch_ambiguous(wrapper_id, detail)
+    return _admission_receipt(ledger.get(wrapper_id) or record)
+
+
+def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
+    if not re.fullmatch(r"run_[a-f0-9]{32}", run_id):
+        return 400, {"ok": False, "error": "invalid runId"}
+    ledger = get_agent_run_ledger()
+    record = ledger.get(run_id)
+    if record is None:
+        return 404, {"ok": False, "runId": run_id, "error": "run not admitted"}
+    if record.get("admission_status") != "provider_bound":
+        return 200, _admission_receipt(record)
+
+    provider_run_id = str(record.get("provider_run_id") or "")
+    if not re.fullmatch(r"run_[a-f0-9]{32}", provider_run_id):
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_binding_invalid",
+            "durable admission has no valid native Hermes run id",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
+
+    try:
+        status, response = _hermes_api_json(
+            f"/v1/runs/{provider_run_id}", token=_hook_token(), timeout=6.0
+        )
+    except Exception as exc:
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_status_unavailable",
+            f"native Hermes status unavailable: {type(exc).__name__}: {exc}",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
+
+    returned_provider_id = str(response.get("run_id") or provider_run_id)
+    if status != 200 or returned_provider_id != provider_run_id:
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_status_unavailable",
+            f"native Hermes status HTTP {status} or mismatched provider id",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
+
+    provider_status = _provider_status(response.get("status"))
+    if provider_status in {"completed", "failed", "cancelled"}:
+        ledger.mark_terminal(
+            run_id,
+            provider_status,
+            output=response.get("output"),
+            error=response.get("error"),
+            usage=response.get("usage"),
+        )
+    elif provider_status in {"queued", "running", "waiting_for_approval"}:
+        ledger.note_provider_status(run_id, provider_status)
+    else:
+        ledger.note_provider_unknown(
+            run_id,
+            "provider_status_unknown",
+            f"native Hermes returned unsupported status {provider_status!r}",
+        )
+    return 200, _admission_receipt(ledger.get(run_id) or record)
 
 
 def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
@@ -391,6 +1187,8 @@ def subscription_auth_readiness(provider: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "provider": provider,
         "logged_in": None,
+        "rate_limited": False,
+        "reset_at": None,
         "last_refresh": None,
         "error": "",
     }
@@ -412,9 +1210,95 @@ def subscription_auth_readiness(provider: str) -> dict[str, Any]:
         return result
 
     result["logged_in"] = bool(status.get("logged_in"))
+    # Codex keeps a valid OAuth credential in the pool while its subscription
+    # quota is exhausted. That is correctly "logged in", but it is not an
+    # available recovery route. Copy only the non-secret cooldown fields;
+    # never expose the api_key returned by Hermes' status helper.
+    result["rate_limited"] = bool(status.get("rate_limited"))
+    result["reset_at"] = status.get("reset_at")
     result["last_refresh"] = status.get("last_refresh")
     result["error"] = str(status.get("error") or "")
     return result
+
+
+def model_route_readiness(
+    routes: list[dict[str, str]], env: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """Credential readback for every configured primary/fallback route."""
+    provider_state: dict[str, dict[str, Any]] = {}
+    for route in routes:
+        provider = str(route.get("provider") or "").strip().lower()
+        if not provider or provider in provider_state:
+            continue
+        if provider in {"xai-oauth", "openai-codex"}:
+            auth = subscription_auth_readiness(provider)
+            if auth.get("logged_in") is False or auth.get("rate_limited") is True:
+                available: bool | None = False
+            elif auth.get("logged_in") is True:
+                available = True
+            else:
+                available = None
+            provider_state[provider] = {
+                "available": available,
+                "credential": "subscription_oauth",
+                "detail": auth,
+            }
+        elif provider == "openrouter":
+            key = (env.get("OPENROUTER_API_KEY") or "").strip()
+            kind = openrouter_key_kind(key) if key else "missing"
+            if kind == "inference":
+                available: bool | None = True
+            elif kind in {"missing", "provisioning", "rejected"}:
+                available = False
+            else:
+                available = None
+            provider_state[provider] = {
+                "available": available,
+                "credential": "api_key",
+                "detail": {"kind": kind},
+            }
+        else:
+            provider_state[provider] = {
+                "available": None,
+                "credential": "unknown",
+                "detail": {},
+            }
+
+    return [
+        {
+            **route,
+            **provider_state.get(str(route.get("provider") or "").lower(), {}),
+        }
+        for route in routes
+    ]
+
+
+def web_search_readiness(backend: str, env: Mapping[str, str]) -> dict[str, Any]:
+    """Prove the selected Hermes web backend can load before the first turn."""
+    provider = backend.strip().lower()
+    if provider == "firecrawl":
+        credential_present = bool((env.get("FIRECRAWL_API_KEY") or "").strip())
+        sdk_available = importlib.util.find_spec("firecrawl") is not None
+        return {
+            "provider": provider,
+            "credential_present": credential_present,
+            "sdk_available": sdk_available,
+            "available": credential_present and sdk_available,
+        }
+    if provider == "ddgs":
+        sdk_available = importlib.util.find_spec("ddgs") is not None
+        return {
+            "provider": provider,
+            "credential_present": None,
+            "sdk_available": sdk_available,
+            "available": sdk_available,
+        }
+    return {
+        "provider": provider,
+        "credential_present": None,
+        "sdk_available": None,
+        "available": None,
+    }
 
 
 def slack_auth_readiness(token: str, timeout: float = 6.0) -> dict[str, Any]:
@@ -469,9 +1353,131 @@ def slack_auth_readiness(token: str, timeout: float = 6.0) -> dict[str, Any]:
     return result
 
 
+def _probe_k2_boot_contract(
+    *, require_active: bool, probe_well: bool
+) -> dict[str, Any]:
+    return k2_agent_readiness(
+        os.getenv("KATAILYST2_MCP_URL", "").strip(),
+        os.getenv("KATAILYST2_MCP_TOKEN", "").strip(),
+        str(BOOT.get("agent_ref") or ""),
+        str(BOOT.get("runtime_lane") or "hermes"),
+        require_active=require_active,
+        probe_well=probe_well,
+    )
+
+
+def _publish_k2_readiness(k2_readiness: dict[str, Any]) -> dict[str, Any]:
+    """The ONLY door onto BOOT["k2_agent_readiness"].
+
+    The probe carries the full runtime pack (system prompt, doctrine, reference
+    bodies) under `_runtime_pack` so a later step can install it. BOOT is
+    published verbatim by the unauthenticated GET /health, so the pack must be
+    stripped on EVERY publish — including the failure statuses, where nothing
+    else would have popped it. Assigning BOOT["k2_agent_readiness"] anywhere
+    else reopens the leak.
+    """
+    k2_readiness.pop("_runtime_pack", None)
+    BOOT["k2_agent_readiness"] = k2_readiness
+    return k2_readiness
+
+
+def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
+    """Install one positively active pack and publish its safe boot receipt."""
+    runtime_pack = k2_readiness.pop("_runtime_pack", None)
+    if runtime_pack is None:
+        _publish_k2_readiness(k2_readiness)
+        return False
+    pack_install = grounding.install_runtime_pack(
+        runtime_pack,
+        expected_agent_ref=str(BOOT.get("agent_ref") or ""),
+        home=os.getenv("HERMES_HOME", str(HERMES_HOME)),
+    )
+    BOOT.update(pack_install)
+    if pack_install.get("runtime_pack_applied") is not True:
+        k2_readiness["contract_status"] = "runtime_pack_apply_failed"
+        k2_readiness["error"] = str(
+            pack_install.get("runtime_pack_error") or "runtime pack install failed"
+        )[:240]
+        k2_readiness["outage_declared"] = False
+        _publish_k2_readiness(k2_readiness)
+        return False
+    _publish_k2_readiness(k2_readiness)
+    return True
+
+
+def _activation_poll_seconds() -> float:
+    try:
+        value = float(os.getenv("K2_ACTIVATION_POLL_SECONDS", "10"))
+    except (TypeError, ValueError):
+        value = 10.0
+    return min(300.0, max(5.0, value))
+
+
+def _try_k2_activation_once() -> bool:
+    """Promote one newly active K2 pack; return whether Hermes may start."""
+    preactivation = _probe_k2_boot_contract(
+        require_active=False,
+        probe_well=False,
+    )
+    _publish_k2_readiness(preactivation)
+    if preactivation.get("activation_ready") is not True:
+        return False
+    active = _probe_k2_boot_contract(require_active=True, probe_well=True)
+    if active.get("contract_status") != "loaded":
+        _publish_k2_readiness(active)
+        return False
+    if not _install_active_k2_pack(active):
+        return False
+    plugin = BOOT.get("k2_context_plugin") or {}
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_lead_ready = slack_lead.get("local_agent_ready") is True and (
+        slack_lead.get("required") is not True
+        or slack_lead.get("roster_ready") is True
+    )
+    BOOT["gateway_start_allowed"] = (
+        plugin.get("installed") is True
+        and plugin.get("enabled") is True
+        and slack_lead_ready
+    )
+    return BOOT["gateway_start_allowed"]
+
+
+def _watch_for_k2_activation() -> None:
+    """Bridge K2's offline-to-online transition without a manual redeploy.
+
+    The authenticated pre-activation probe lets K2 verify this hosted body
+    before it marks the agent online. Once that happens, this watcher repeats
+    the real ``requireActive:true`` read, installs the canonical pack, proves
+    the well, and only then starts Hermes. It never promotes from a health
+    response.
+    """
+    while not supervisor._stop.wait(_activation_poll_seconds()):
+        if _try_k2_activation_once():
+            logger.info("Katailyst2 activated Cleo; starting the Hermes gateway")
+            supervisor.start()
+            return
+
+
 def boot() -> None:
+    BOOT.clear()
     BOOT.update(grounding.install())
+    hook_token = os.getenv("OPENCLAW_HQ_HOOK_TOKEN", "").strip()
+    if hook_token:
+        # Hermes' loopback API uses the same credential as K2's public hook.
+        # Keep one secret and one rotation boundary; never write its value to
+        # config or health output.
+        os.environ["API_SERVER_KEY"] = hook_token
     BOOT.update(render_config.render())
+    BOOT["agent_run_ledger"] = (
+        agent_run_ledger_readiness()
+        if hook_token
+        else {
+            "ready": False,
+            "schema_version": None,
+            "storage": "durable_sqlite",
+            "error": "hook not configured",
+        }
+    )
     for key, value in BOOT.items():
         logger.info("config %s: %s", key, value)
     active_provider = BOOT.get("model_provider") or ""
@@ -486,7 +1492,9 @@ def boot() -> None:
                 active_provider,
             )
     elif active_provider == "openrouter" and not BOOT.get("openrouter_key_present"):
-        logger.warning("OPENROUTER_API_KEY is not set — the active provider has no credentials")
+        logger.warning(
+            "OPENROUTER_API_KEY is not set — the active provider has no credentials"
+        )
     elif active_provider == "openrouter":
         kind = openrouter_key_kind(os.getenv("OPENROUTER_API_KEY", ""))
         BOOT["openrouter_key_kind"] = kind
@@ -500,6 +1508,72 @@ def boot() -> None:
             )
         elif kind == "rejected":
             logger.error("OPENROUTER_API_KEY was rejected by OpenRouter")
+    configured_routes = BOOT.get("configured_model_route") or []
+    BOOT["model_route_readiness"] = model_route_readiness(configured_routes, os.environ)
+    logger.info("config model_route_readiness: %s", BOOT["model_route_readiness"])
+    BOOT["web_search_readiness"] = web_search_readiness(
+        str(BOOT.get("web_search_backend") or ""), os.environ
+    )
+    logger.info("config web_search_readiness: %s", BOOT["web_search_readiness"])
+
+    preactivation = _probe_k2_boot_contract(
+        require_active=False,
+        probe_well=False,
+    )
+    if preactivation.get("activation_ready") is True:
+        # The actual boot contract is deliberately repeated with
+        # requireActive:true. The preflight call above exists only to break the
+        # offline activation circle; it never authorizes an active runtime.
+        k2_readiness = _probe_k2_boot_contract(
+            require_active=True,
+            probe_well=True,
+        )
+    else:
+        k2_readiness = preactivation
+
+    if k2_readiness.get("contract_status") == "loaded":
+        _install_active_k2_pack(k2_readiness)
+    elif BOOT.get("agent_ref") and k2_readiness.get("outage_declared") is True:
+        BOOT["brain_source"] = "bundled_outage_fallback"
+        BOOT["bundled_fallback_reason"] = k2_readiness.get("error") or "K2 outage"
+
+    plugin_installed = "hlt_k2_context" in (BOOT.get("plugins_installed") or [])
+    plugin_enabled = (BOOT.get("k2_context_plugin") or {}).get(
+        "enabled"
+    ) is True and not BOOT.get("preserved_operator_config")
+    BOOT["k2_context_plugin"] = {
+        "installed": plugin_installed,
+        "enabled": plugin_enabled,
+        "hook": "pre_llm_call",
+        "hooks": ["pre_gateway_dispatch", "pre_llm_call"],
+    }
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_lead_ready = slack_lead.get("local_agent_ready") is True and (
+        slack_lead.get("required") is not True
+        or slack_lead.get("roster_ready") is True
+    )
+    brain_ready = (
+        not BOOT.get("agent_ref")
+        or BOOT.get("runtime_pack_applied") is True
+        or k2_readiness.get("outage_declared") is True
+    )
+    BOOT["gateway_start_allowed"] = bool(
+        brain_ready and plugin_installed and plugin_enabled and slack_lead_ready
+    )
+    _publish_k2_readiness(k2_readiness)
+    logger.info("config k2_agent_readiness: %s", k2_readiness)
+    if BOOT.get("agent_ref") and k2_readiness["contract_status"] != "loaded":
+        logger.error(
+            "Katailyst2 did not load %s (status=%s)",
+            BOOT.get("agent_ref") or "the configured agent",
+            k2_readiness["contract_status"],
+        )
+    elif k2_readiness.get("identity_matches") is False:
+        logger.error(
+            "Katailyst2 resolved %s instead of %s",
+            k2_readiness.get("resolved_agent_ref") or "no agent",
+            BOOT.get("agent_ref") or "the configured agent",
+        )
     slack_auth = slack_auth_readiness(os.getenv("SLACK_BOT_TOKEN", ""))
     BOOT["slack_auth"] = slack_auth
     logger.info("config slack_auth: %s", slack_auth)
@@ -519,10 +1593,14 @@ def boot() -> None:
             "every workspace member can run every command"
         )
     if GATEWAY_ENABLED and not BOOT.get("slack_channel_allowlist"):
-        logger.warning("SLACK_ALLOWED_CHANNELS is unset — the agent will answer in any channel")
+        logger.warning(
+            "SLACK_ALLOWED_CHANNELS is unset — the agent will answer in any channel"
+        )
 
-    # Seed the recurring briefs before the gateway starts, so the scheduler
-    # reads a complete record on its first pass rather than one boot later.
+    # The three old operator briefs produced status noise and stale autonomous
+    # conclusions. Preserve their exact records on disk, then pause rather than
+    # delete them. This runs before the gateway so the scheduler cannot claim a
+    # due brief between inventory and retirement.
     if GATEWAY_ENABLED:
         channel = BOOT.get("home_channel_id") or ""
         if channel:
@@ -533,22 +1611,207 @@ def boot() -> None:
             # to a chat id of "C0BN349TRU7|#cleo" and fail every week. Normalise
             # it here — the gateway child inherits this environment.
             os.environ["SLACK_HOME_CHANNEL"] = channel
-            BOOT["cron_briefs"] = cron_seed.seed(f"slack:{channel}")
-            BOOT["cron_smoke"] = cron_seed.seed_smoke(f"slack:{channel}")
-            logger.info(
-                "config cron_briefs: %s (smoke: %s)",
-                BOOT["cron_briefs"], BOOT["cron_smoke"],
-            )
-        else:
-            # Without a home channel a brief has nowhere to land, and a job
-            # created with a bad deliver target fails silently every week.
-            BOOT["cron_briefs"] = {"created": [], "existing": [], "failed": []}
-            logger.warning(
-                "SLACK_HOME_CHANNEL is unset — the recurring briefs were NOT "
-                "created, because there is no channel to deliver them to"
-            )
+        BOOT["cron_briefs"] = cron_seed.retire_stale_briefs()
+        BOOT["cron_smoke"] = "retired-with-recurring-briefs"
+        logger.info("config cron_briefs: %s", BOOT["cron_briefs"])
 
-    supervisor.start()
+    if GATEWAY_ENABLED and not BOOT["gateway_start_allowed"]:
+        supervisor.block_start(
+            "gateway start blocked: Cleo has neither an applied active K2 runtime "
+            "pack nor a declared K2 outage fallback with the mission-context plugin"
+        )
+        if BOOT.get("agent_ref") and k2_readiness.get("outage_declared") is not True:
+            threading.Thread(
+                target=_watch_for_k2_activation,
+                name="k2-activation-watcher",
+                daemon=True,
+            ).start()
+    else:
+        supervisor.start()
+
+
+def activation_readiness() -> dict[str, Any]:
+    """Pre-activation body proof; intentionally excludes circular online state."""
+    gateway = supervisor.snapshot()
+    k2 = BOOT.get("k2_agent_readiness") or {}
+    plugin = BOOT.get("k2_context_plugin") or {}
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    external_dispatch = BOOT.get("external_dispatch") or {}
+    admission_ledger = BOOT.get("agent_run_ledger") or {}
+    slack_auth = BOOT.get("slack_auth") or {}
+    model_routes = BOOT.get("model_route_readiness") or []
+    primary_route_ready = any(
+        route.get("role") == "primary" and route.get("available") is True
+        for route in model_routes
+        if isinstance(route, Mapping)
+    )
+    checks = {
+        "agent_ref_matches": BOOT.get("agent_ref") == "agent:cleo",
+        "runtime_lane_matches": BOOT.get("runtime_lane") == "hermes",
+        "config_written": BOOT.get("written") is True,
+        "hook_token_configured": len(_hook_token()) >= 16,
+        "hook_surface_configured": (
+            external_dispatch.get("configured") is True
+            and admission_ledger.get("ready") is True
+        ),
+        "runtime_cli_present": gateway.get("cli_present") is True,
+        "channel_adapter_available": gateway.get("slack_adapter_available") is True,
+        "mcp_sdk_available": gateway.get("mcp_sdk_available") is True,
+        "channel_auth_ok": slack_auth.get("auth_ok") is True,
+        "channel_scopes_ready": (
+            slack_auth.get("scopes_known") is True
+            and not bool(slack_auth.get("missing_core_scopes"))
+        ),
+        "primary_model_route_ready": primary_route_ready,
+        "web_search_ready": (
+            (BOOT.get("web_search_readiness") or {}).get("available") is True
+        ),
+        "k2_server_is_canonical": k2.get("server_matches_katailyst2") is True,
+        "k2_runtime_pack_tool_listed": k2.get("runtime_pack_tool_listed") is True,
+        "k2_well_tool_listed": k2.get("well_tool_listed") is True,
+        "k2_runtime_pack_callable": k2.get("runtime_pack_callable") is True,
+        "k2_agent_bound_token": k2.get("agent_bound_token") is True,
+        "k2_identity_matches": k2.get("identity_matches") is True,
+        "k2_host_profile_compatible": k2.get("host_profile_compatible") is True,
+        "k2_context_plugin_ready": (
+            plugin.get("installed") is True and plugin.get("enabled") is True
+        ),
+        "slack_agent_lead_ready": slack_lead.get("local_agent_ready") is True
+        and (
+            slack_lead.get("required") is not True
+            or slack_lead.get("roster_ready") is True
+        ),
+    }
+    return {
+        "ready": all(checks.values()),
+        "contractVersion": ACTIVATION_CONTRACT_VERSION,
+        "stage": "pre_activation",
+        "agentRef": BOOT.get("agent_ref") or "",
+        "checks": checks,
+    }
+
+
+def external_dispatch_readiness() -> dict[str, Any]:
+    gateway = supervisor.snapshot()
+    k2 = BOOT.get("k2_agent_readiness") or {}
+    plugin = BOOT.get("k2_context_plugin") or {}
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_auth = BOOT.get("slack_auth") or {}
+    model_routes = BOOT.get("model_route_readiness") or []
+    primary_route_ready = any(
+        route.get("role") == "primary" and route.get("available") is True
+        for route in model_routes
+        if isinstance(route, Mapping)
+    )
+    api = (
+        hermes_api_readiness()
+        if gateway.get("running")
+        else {
+            "reachable": False,
+            "status": None,
+            "error": "gateway is not running",
+        }
+    )
+    checks = {
+        "hook_token_configured": len(_hook_token()) >= 16,
+        "admission_ledger_ready": (
+            (BOOT.get("agent_run_ledger") or {}).get("ready") is True
+        ),
+        "gateway_running": gateway.get("running") is True,
+        "slack_adapter_available": gateway.get("slack_adapter_available") is True,
+        "slack_socket_connected": gateway.get("slack_socket_connected") is True,
+        "slack_auth_ok": slack_auth.get("auth_ok") is True,
+        "slack_scopes_ready": not bool(slack_auth.get("missing_core_scopes")),
+        "primary_model_route_ready": primary_route_ready,
+        "k2_runtime_pack_applied": BOOT.get("runtime_pack_applied") is True,
+        "k2_agent_bound_token": k2.get("agent_bound_token") is True,
+        "k2_runtime_pack_tool_callable": k2.get("runtime_pack_callable") is True,
+        "k2_well_callable": k2.get("well_callable") is True,
+        "k2_context_plugin_ready": (
+            plugin.get("installed") is True and plugin.get("enabled") is True
+        ),
+        "slack_agent_lead_ready": slack_lead.get("local_agent_ready") is True
+        and (
+            slack_lead.get("required") is not True
+            or slack_lead.get("roster_ready") is True
+        ),
+        "hermes_run_api_reachable": api.get("reachable") is True,
+    }
+    return {
+        "ready": all(checks.values()),
+        "agentRef": BOOT.get("agent_ref") or "",
+        "checks": checks,
+        "hermesApi": api,
+    }
+
+
+@app.get("/activationz")
+def activationz(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
+    if not _hook_authorized(authorization):
+        return JSONResponse({"ready": False, "error": "unauthorized"}, status_code=401)
+    readiness = activation_readiness()
+    return JSONResponse(readiness, status_code=200 if readiness["ready"] else 503)
+
+
+@app.get("/readyz")
+def readyz(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
+    if not _hook_authorized(authorization):
+        return JSONResponse({"ready": False, "error": "unauthorized"}, status_code=401)
+    readiness = external_dispatch_readiness()
+    return JSONResponse(readiness, status_code=200 if readiness["ready"] else 503)
+
+
+@app.post("/hooks/agent")
+def agent_hook(
+    payload: dict[str, Any],
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
+    if not _hook_token():
+        return JSONResponse(
+            {"ok": False, "error": "agent hook is not configured"}, status_code=503
+        )
+    if not _hook_authorized(authorization):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    if BOOT.get("runtime_pack_applied") is not True:
+        return JSONResponse(
+            {"ok": False, "error": "canonical Cleo runtime pack is not active"},
+            status_code=503,
+        )
+    try:
+        response = dispatch_agent_hook(payload)
+    except agent_run_ledger.AdmissionConflict as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.error("agent hook admission failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "error": "durable agent-run admission unavailable"},
+            status_code=503,
+        )
+    return JSONResponse(response, status_code=202)
+
+
+@app.get("/hooks/agent/runs/{run_id}")
+def agent_hook_run(
+    run_id: str,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
+    if not _hook_authorized(authorization):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        status, response = read_agent_hook_run(run_id)
+    except Exception as exc:
+        logger.error("agent hook status ledger failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "runId": run_id, "error": "run status unavailable"},
+            status_code=503,
+        )
+    return JSONResponse(response, status_code=status)
 
 
 @app.get("/health")
@@ -561,14 +1824,15 @@ def health() -> dict[str, Any]:
     # check could not reach OpenRouter, which is not evidence of anything.
     active_provider = BOOT.get("model_provider") or ""
     if active_provider in {"xai-oauth", "openai-codex"}:
+        active_subscription = BOOT.get("subscription_auth") or {}
         model_credentials_bad = (
-            (BOOT.get("subscription_auth") or {}).get("logged_in") is False
+            active_subscription.get("logged_in") is False
+            or active_subscription.get("rate_limited") is True
         )
     elif active_provider == "openrouter":
-        model_credentials_bad = (
-            not BOOT.get("openrouter_key_present")
-            or BOOT.get("openrouter_key_kind") in {"provisioning", "rejected"}
-        )
+        model_credentials_bad = not BOOT.get("openrouter_key_present") or BOOT.get(
+            "openrouter_key_kind"
+        ) in {"provisioning", "rejected"}
     else:
         model_credentials_bad = False
     # Mounted servers the agent cannot reach are worse than none: she reports
@@ -577,17 +1841,100 @@ def health() -> dict[str, Any]:
     slack_auth = BOOT.get("slack_auth") or {}
     slack_auth_bad = slack_auth.get("auth_ok") is False
     slack_scopes_bad = bool(slack_auth.get("missing_core_scopes"))
+    model_routes = BOOT.get("model_route_readiness") or []
+    fallback_routes_bad = any(
+        route.get("role", "").startswith("fallback-")
+        and route.get("available") is False
+        for route in model_routes
+    )
+    k2_readiness = BOOT.get("k2_agent_readiness") or {}
+    web_search_bad = (BOOT.get("web_search_readiness") or {}).get("available") is False
+    k2_required = bool(BOOT.get("agent_ref"))
+    k2_wrong_server = k2_required and (
+        k2_readiness.get("server_matches_katailyst2") is False
+    )
+    k2_outage_fallback = k2_required and (
+        BOOT.get("brain_source") == "bundled_outage_fallback"
+    )
+    k2_brain_bad = (
+        k2_required
+        and not k2_outage_fallback
+        and (
+            not k2_readiness.get("mounted")
+            or not k2_readiness.get("bearer_present")
+            or k2_readiness.get("transport_ok") is False
+            or not k2_readiness.get("runtime_pack_tool_listed")
+            or not k2_readiness.get("runtime_pack_callable")
+            or not k2_readiness.get("agent_bound_token")
+            or not k2_readiness.get("host_profile_compatible")
+            or BOOT.get("runtime_pack_applied") is not True
+        )
+    )
+    k2_context_bad = (
+        k2_required
+        and not k2_brain_bad
+        and (
+            not k2_readiness.get("well_tool_listed")
+            or not k2_readiness.get("well_callable")
+        )
+    )
+    plugin = BOOT.get("k2_context_plugin") or {}
+    k2_plugin_bad = k2_required and (
+        plugin.get("installed") is not True or plugin.get("enabled") is not True
+    )
+    slack_lead = BOOT.get("slack_agent_lead") or {}
+    slack_lead_bad = k2_required and (
+        slack_lead.get("local_agent_ready") is not True
+        or (
+            slack_lead.get("required") is True
+            and slack_lead.get("roster_ready") is not True
+        )
+    )
+    external_hook_bad = k2_required and (
+        (BOOT.get("external_dispatch") or {}).get("configured") is not True
+        or (BOOT.get("agent_run_ledger") or {}).get("ready") is not True
+    )
 
     if not GATEWAY_ENABLED:
         status, mode = "ok", "readiness_gateway"
     elif gateway["running"] and gateway["slack_adapter_available"] and mcp_dead:
         status, mode = "degraded", "gateway_no_mcp_sdk"
-    elif gateway["running"] and gateway["slack_adapter_available"] and model_credentials_bad:
+    elif (
+        gateway["running"]
+        and gateway["slack_adapter_available"]
+        and model_credentials_bad
+    ):
         status, mode = "degraded", "gateway_no_model_credentials"
+    elif gateway["running"] and gateway["slack_adapter_available"] and k2_wrong_server:
+        status, mode = "degraded", "gateway_k2_wrong_server"
+    elif (
+        gateway["running"] and gateway["slack_adapter_available"] and k2_outage_fallback
+    ):
+        status, mode = "degraded", "gateway_k2_outage_fallback"
+    elif gateway["running"] and gateway["slack_adapter_available"] and k2_brain_bad:
+        status, mode = "degraded", "gateway_k2_brain_unavailable"
+    elif gateway["running"] and gateway["slack_adapter_available"] and k2_context_bad:
+        status, mode = "degraded", "gateway_k2_context_unavailable"
+    elif gateway["running"] and gateway["slack_adapter_available"] and k2_plugin_bad:
+        status, mode = "degraded", "gateway_k2_context_plugin_missing"
+    elif (
+        gateway["running"] and gateway["slack_adapter_available"] and external_hook_bad
+    ):
+        status, mode = "degraded", "gateway_external_dispatch_unavailable"
+    elif gateway["running"] and gateway["slack_adapter_available"] and web_search_bad:
+        status, mode = "degraded", "gateway_web_search_degraded"
+    elif (
+        gateway["running"]
+        and gateway["slack_adapter_available"]
+        and fallback_routes_bad
+    ):
+        status, mode = "degraded", "gateway_model_fallback_degraded"
     elif gateway["running"] and gateway["slack_adapter_available"] and slack_auth_bad:
         status, mode = "degraded", "gateway_slack_auth_failed"
     elif gateway["running"] and gateway["slack_adapter_available"] and slack_scopes_bad:
         status, mode = "degraded", "gateway_slack_scopes_missing"
+    elif slack_lead_bad:
+        status, mode = "degraded", "gateway_slack_agent_lead_unready"
     elif (
         gateway["running"]
         and gateway["slack_adapter_available"]
@@ -637,11 +1984,20 @@ def health() -> dict[str, Any]:
         )
     elif mode == "gateway_no_model_credentials":
         if active_provider in {"xai-oauth", "openai-codex"}:
-            payload["note"] = (
-                f"Slack is connected, but the active {active_provider} subscription "
-                "OAuth credential is not logged in. Re-run the provider device-code "
-                "login before treating Cleo as able to answer."
-            )
+            if (BOOT.get("subscription_auth") or {}).get("rate_limited") is True:
+                reset_at = (BOOT.get("subscription_auth") or {}).get("reset_at")
+                reset_note = f" Reset is reported at {reset_at}." if reset_at else ""
+                payload["note"] = (
+                    f"Slack is connected and the active {active_provider} OAuth "
+                    "profile is valid, but its subscription quota is exhausted."
+                    + reset_note
+                )
+            else:
+                payload["note"] = (
+                    f"Slack is connected, but the active {active_provider} subscription "
+                    "OAuth credential is not logged in. Re-run the provider device-code "
+                    "login before treating Cleo as able to answer."
+                )
         else:
             payload["note"] = (
                 "Slack is connected, but OPENROUTER_API_KEY cannot run inference "
@@ -654,6 +2010,68 @@ def health() -> dict[str, Any]:
             "The gateway is running but Hermes could not build a Slack adapter, "
             "so the bot is connected to nothing. slack-bolt is an optional "
             "upstream extra — the image must install hermes-agent[slack]."
+        )
+    elif mode == "gateway_k2_outage_fallback":
+        payload["note"] = (
+            "Katailyst2 declared a transport/service outage at boot, so Cleo is "
+            "running from the reviewed bundled SOUL/AGENTS snapshot. This is an "
+            "explicit degraded fallback, never a substitute for a missing or "
+            "mis-scoped agent token."
+        )
+    elif mode == "gateway_k2_brain_unavailable":
+        payload["note"] = (
+            "Cleo did not boot the active agent:cleo runtime pack with an "
+            "agent-bound K2 token and a compatible paperclip_hermes host profile. "
+            "A mount alone is not a brain; read config.k2_agent_readiness."
+        )
+    elif mode == "gateway_k2_wrong_server":
+        payload["note"] = (
+            "The configured MCP endpoint answered, but it did not identify itself "
+            "as Katailyst2. Cleo must use the canonical v2 door, not the legacy v1 "
+            "bridge. Read config.k2_agent_readiness.server_repo."
+        )
+    elif mode == "gateway_k2_context_unavailable":
+        payload["note"] = (
+            "Cleo booted her canonical K2 runtime pack, but the independent "
+            "mission-time katailyst.well door is not callable. Her identity is "
+            "intact; task-specific registry enrichment is degraded."
+        )
+    elif mode == "gateway_k2_context_plugin_missing":
+        payload["note"] = (
+            "The canonical K2 pack is present, but Hermes did not install and "
+            "enable the hlt-k2-context pre_llm_call hook. A model turn would not "
+            "receive its one bounded task-specific K2 draw."
+        )
+    elif mode == "gateway_slack_agent_lead_unready":
+        payload["note"] = (
+            "The private Slack lead selector is not ready, so shared messages "
+            "fail closed before typing or model dispatch. Read "
+            "config.slack_agent_lead for the roster or local-identity mismatch."
+        )
+    elif mode == "gateway_external_dispatch_unavailable":
+        payload["note"] = (
+            "Slack work is available, but the authenticated K2 external-run "
+            "bridge is not configured. Set the shared agent-hook credential so "
+            "K2 can dispatch and poll Cleo's native Hermes runs."
+        )
+    elif mode == "gateway_model_fallback_degraded":
+        unavailable = [
+            f"{route.get('provider')}/{route.get('model')}"
+            for route in model_routes
+            if route.get("role", "").startswith("fallback-")
+            and route.get("available") is False
+        ]
+        payload["note"] = (
+            "The primary model route is ready, but one or more configured recovery "
+            "routes have a positively missing/rejected credential: "
+            + ", ".join(unavailable)
+        )
+    elif mode == "gateway_web_search_degraded":
+        search = BOOT.get("web_search_readiness") or {}
+        payload["note"] = (
+            f"Hermes selected the {search.get('provider') or 'configured'} web "
+            "search backend, but its credential or installed SDK is missing. "
+            "Read config.web_search_readiness before calling web research ready."
         )
     elif mode == "gateway_slack_socket_down":
         failure = gateway.get("slack_socket_last_failure") or "no marker captured"
