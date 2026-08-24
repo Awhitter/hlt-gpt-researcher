@@ -20,6 +20,18 @@ If K2 is temporarily unavailable, use this fallback:
 5. Inspect what came back and return one concise, finished synthesis with the
    artifact and sources.
 
+## Reconcile numeric evidence
+
+Build the final table and prose from the same current-run values. A factual
+count, rate, dollar value, or percentage may come only from the current
+request, a current-run tool result, or arithmetic whose grounded operands are
+explicit. Never promote a number from assistant reasoning, a remembered
+summary, or an earlier run into fact. Re-read conflicting tool results before
+composing; label every future target or scenario so it cannot be mistaken for
+an observed fact; and remove or mark unknown anything that does not reconcile.
+If the draft contains unsupported factual numbers, repair it before it can
+become a completed result.
+
 Do not turn a missing shell or browser into the answer. Search K2's progressive
 tool catalog and try one credible alternate path before reporting a real access
 gap.

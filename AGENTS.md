@@ -165,7 +165,7 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
-Three rules that exist because each was once a silent no-op:
+Four rules that exist because each was once a silent no-op:
 
 1. **`platform_toolsets.slack` is a security control, not a preference.**
    Upstream's default Slack toolset is "full access for workspace use" —
@@ -179,6 +179,14 @@ Three rules that exist because each was once a silent no-op:
 3. **Hermes reads memory from `$HERMES_HOME/memories/MEMORY.md`** (plural dir,
    fixed filenames). An earlier seeder wrote `$HERMES_HOME/memory/*.md` and
    nothing ever read it.
+4. **External `/v1/runs` answers reconcile factual business metrics before
+   completion.** `services/agent/hlt_numeric_grounding.py` accepts numbers only
+   from the current request, successful current-run tool results, or arithmetic
+   with grounded operands. The HLT upstream overlay blocks unsupported claims
+   as `run.failed` before `run.completed`, and closes the per-run agent so its
+   SQLite session has a durable `ended_at` and `end_reason`. This is an API
+   boundary guarantee for K2-hosted runs; direct Slack gateway delivery does
+   not pass through it.
 
 AI observability: HLT-hosted GPT Researcher emits Langfuse observations when
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. `/health`
