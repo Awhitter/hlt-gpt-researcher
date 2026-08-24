@@ -2552,7 +2552,9 @@ def test_authenticated_slack_identity_endpoint_returns_fresh_provider_proof(
     body = json.loads(response.body)
 
     assert unauthorized.status_code == 401
+    assert unauthorized.headers["cache-control"] == "no-store"
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     assert body["ready"] is True
     assert body["contractVersion"] == "slack_agent_identity.v1"
     assert body["agentRef"] == "agent:cleo"
@@ -2562,6 +2564,29 @@ def test_authenticated_slack_identity_endpoint_returns_fresh_provider_proof(
         "identity_complete": True,
     }
     assert body["identity"]["appId"] == "A-CLEO"
+
+
+def test_degraded_slack_identity_response_is_not_cacheable(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setattr(
+        health_gateway,
+        "slack_auth_readiness",
+        lambda _token: {
+            "auth_ok": True,
+            "scopes_known": True,
+            "missing_core_scopes": ["users:read"],
+            "identity_ok": False,
+            "identity": None,
+        },
+    )
+
+    response = health_gateway.slack_identityz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_missing_slack_file_scope_degrades_the_live_gateway(monkeypatch):

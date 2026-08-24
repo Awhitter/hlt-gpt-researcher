@@ -386,6 +386,7 @@ MAX_HOOK_MESSAGE_CHARS = 65_536
 MAX_HOOK_TIMEOUT_SECONDS = 900
 ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v1"
 SLACK_IDENTITY_CONTRACT_VERSION = "slack_agent_identity.v1"
+SLACK_IDENTITY_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 _RUN_LEDGER_LOCK = threading.Lock()
 _RUN_LEDGER: agent_run_ledger.AgentRunLedger | None = None
 _RUN_LEDGER_PATH: Path | None = None
@@ -1819,7 +1820,11 @@ def slack_identityz(
 ) -> JSONResponse:
     """Fresh, read-only Slack identity proof for K2's canonical binding writer."""
     if not _hook_authorized(authorization):
-        return JSONResponse({"ready": False, "error": "unauthorized"}, status_code=401)
+        return JSONResponse(
+            {"ready": False, "error": "unauthorized"},
+            status_code=401,
+            headers=SLACK_IDENTITY_RESPONSE_HEADERS,
+        )
     observed = slack_auth_readiness(os.getenv("SLACK_BOT_TOKEN", ""))
     checks = {
         "channel_auth_ok": observed.get("auth_ok") is True,
@@ -1839,6 +1844,7 @@ def slack_identityz(
             "identity": observed.get("identity"),
         },
         status_code=200 if ready else 503,
+        headers=SLACK_IDENTITY_RESPONSE_HEADERS,
     )
 
 
