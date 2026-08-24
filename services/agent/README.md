@@ -138,8 +138,11 @@ DeepSeek V4 Pro OpenRouter routes. `model_route_readiness` checks each route's
 credential without exposing tokens. `gateway.observed_model_route` remains
 empty until a successful model call, then names the provider/model that really
 answered — including a fallback. Cleo caps one generated provider reply at
-32,768 tokens so a small Slack artifact does not pre-authorize a model's 128k
-maximum; this does not reduce the model's readable context or tool loop.
+32,768 tokens, caps a run at 24 model iterations, and compacts the working
+prompt at 80,000 tokens. These provider-independent limits keep a useful run
+from consuming a whole subscription rate window without reducing the models'
+readable context or Cleo's tool access. `/health.config.max_turns` and
+`/health.config.compression_threshold_tokens` expose the active limits.
 
 `/health.config.k2_agent_readiness` is deliberately stricter than
 `mcp_mounted`. It verifies the `x-katailyst-repo: katailyst2` response header,
