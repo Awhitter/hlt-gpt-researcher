@@ -240,6 +240,9 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     assert config["model"]["provider"] == "xai-oauth"
     assert config["model"]["default"] == "grok-4.6"
     assert config["model"]["max_tokens"] == 32_768
+    assert config["agent"]["max_turns"] == 24
+    assert config["compression"]["enabled"] is True
+    assert config["compression"]["threshold_tokens"] == 80_000
     assert set(config["mcp_servers"]) == {"gpt-researcher", "codegraph", "katailyst2", "linear"}
     # The pinned API adapter reads its concurrency cap only from this exact
     # gateway path; putting it under platforms.api_server.extra is ignored.
@@ -497,6 +500,21 @@ def test_single_reply_cap_does_not_reserve_the_whole_context_window(tmp_path):
     """
     summary = render_config.render(env={}, home=tmp_path)
     assert summary["max_tokens"] == 32_768
+
+
+def test_turn_and_context_budgets_bound_subscription_usage(tmp_path):
+    """A hosted turn must converge before it can consume a rate window.
+
+    The limits are provider-independent: model failover cannot quietly restore
+    Hermes' 500-turn default or defer compaction to a million-token window.
+    """
+    summary = render_config.render(env={}, home=tmp_path)
+    config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+    assert config["agent"]["max_turns"] == 24
+    assert config["compression"]["threshold_tokens"] == 80_000
+    assert summary["max_turns"] == 24
+    assert summary["compression_threshold_tokens"] == 80_000
 
 
 def test_summary_reports_what_was_actually_mounted(tmp_path):

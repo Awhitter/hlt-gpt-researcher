@@ -42,6 +42,17 @@ DEFAULT_PROVIDER = "xai-oauth"
 # loop's reach, so her pin is checked by hand at the same cadence.
 DEFAULT_MODEL = "grok-4.6"
 DEFAULT_MAX_TOKENS = 32_768
+# A live Nursing Mastery funnel brief completed in 20 model iterations. Leaving
+# Hermes at its upstream 500-turn default gives one externally-triggered run
+# enough room to consume a subscription rate window long after the useful work
+# should have converged. Twenty-four keeps measured headroom while making a
+# runaway turn fail with Hermes' own final-summary path.
+DEFAULT_MAX_TURNS = 24
+# Grok's large context window otherwise delayed automatic compression until the
+# prompt had grown past 180k tokens. An absolute trigger bounds repeated input
+# independently of whichever model route is active; Hermes still preserves the
+# initial request, rolling summary, and recent tail.
+DEFAULT_COMPRESSION_THRESHOLD_TOKENS = 80_000
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "xai-oauth": DEFAULT_MODEL,
     "openai-codex": "gpt-5.6-sol",
@@ -527,6 +538,7 @@ def build_config(
             "max_tokens": DEFAULT_MAX_TOKENS,
         },
         "agent": {
+            "max_turns": DEFAULT_MAX_TURNS,
             # Fixes the "stops after stating intent" failure on some models.
             "intent_ack_continuation": True,
             # Default 180s posts "still working" into a shared channel every
@@ -644,7 +656,11 @@ def build_config(
         "session_reset": {"mode": "both", "idle_minutes": 1440},
         # Nothing pinned but the system prompt, rolling summary and recent tail
         # — right for long-lived Slack threads.
-        "compression": {"protect_first_n": 0},
+        "compression": {
+            "enabled": True,
+            "threshold_tokens": DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
+            "protect_first_n": 0,
+        },
         "prompt_caching": {"cache_ttl": "1h"},
         # Scheduled briefs land in their own thread and stay continuable.
         "cron": {"mirror_delivery": True},
@@ -706,6 +722,8 @@ def render(
             ],
         ],
         "max_tokens": config["model"]["max_tokens"],
+        "max_turns": config["agent"]["max_turns"],
+        "compression_threshold_tokens": config["compression"]["threshold_tokens"],
         "agent_ref": agent_ref(env) or "",
         "runtime_lane": runtime_lane(env),
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
