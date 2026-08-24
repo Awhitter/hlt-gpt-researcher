@@ -184,6 +184,16 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
 - The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
   not synthesize a second agent loop, does not post into Slack, and retains
   Hermes' normal model, tools, session and `pre_llm_call` behavior.
+- Before that surface may emit `run.completed`, the HLT overlay reconciles each
+  factual business count, rate, dollar value, and percentage against the
+  current request and successful current-run tool results. Explicitly labelled
+  future targets and arithmetic with grounded operands remain valid;
+  unsupported facts end as `run.failed` with no answer output. The per-run
+  agent then closes its owned SQLite session so `ended_at` and `end_reason`
+  cannot remain null after terminal work.
+- This deterministic gate belongs specifically to the hosted `/v1/runs`
+  boundary used by K2. Direct Slack gateway delivery does not traverse this
+  route and must not be described as covered by this gate.
 
 The ledger moves monotonically through `queued -> dispatching ->
 provider_bound -> terminal`. A restart before `dispatching` can safely resume;
