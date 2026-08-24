@@ -15,6 +15,18 @@ def test_docker_build_applies_and_asserts_the_numeric_grounding_overlay():
     assert dockerfile.index(check) < dockerfile.index(apply) < dockerfile.index(assertion)
 
 
+def test_gateway_child_inherits_the_numeric_grounding_module_path():
+    dockerfile = (SERVICE_DIR / "Dockerfile").read_text(encoding="utf-8")
+
+    # The gateway subprocess runs from HERMES_HOME (/data/hermes), so a build-only
+    # PYTHONPATH prefix does not make /app/hlt_numeric_grounding.py importable.
+    # Pin the image-level environment before Hermes drops privileges and starts.
+    runtime_path = "ENV PYTHONPATH=/app"
+    assert runtime_path in dockerfile
+    assert dockerfile.index(runtime_path) < dockerfile.index("USER hermes")
+    assert dockerfile.index(runtime_path) < dockerfile.index('CMD ["/app/entrypoint.sh"]')
+
+
 def test_overlay_gates_completion_and_closes_the_owned_agent_session():
     patch = (
         SERVICE_DIR / "hermes_patches" / "api_runs_numeric_grounding.patch"

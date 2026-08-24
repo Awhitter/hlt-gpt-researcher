@@ -7,6 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Hermes launches the gateway as a child process whose working directory is the
+# durable agent home, not /app.  The numeric-grounding overlay is an HLT module
+# imported by patched upstream code, so make its application directory part of
+# every Python process' import path rather than only the build-time assertions.
+ENV PYTHONPATH=/app
+
 # Hermes agent from upstream WITH every extra this agent actually uses.
 # Upstream ships these as OPTIONAL extras, and every one of them fails the
 # same way when missing: the feature is configured, reported healthy, and
