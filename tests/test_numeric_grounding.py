@@ -98,6 +98,19 @@ application received (funnel_application_submitted): 2 people, 0.21% conversion,
     assert verdict.checked_claims == 12
     assert verdict.grounded_claims == 12
 
+    exact_live_rendering = ledger.validate(
+        """RN7CyKkR, 2026-07-25 00:00:00 to 2026-08-24 23:59:59 UTC
+
+funnel_search_performed — 975 people, conversion 100%, drop-off 0%
+funnel_job_viewed — 37 people, conversion 3.79%, drop-off 96.21%
+funnel_profile_milestone_reached — 6 people, conversion 0.62%, drop-off 99.38%
+funnel_application_submitted — 2 people, conversion 0.21%, drop-off 99.79%
+"""
+    )
+    assert exact_live_rendering.ok is True
+    assert exact_live_rendering.checked_claims == 12
+    assert exact_live_rendering.grounded_claims == 12
+
     shorthand = ledger.validate(
         "Funnel: search 975 → detail 37 → apply 6 → received 2."
     )

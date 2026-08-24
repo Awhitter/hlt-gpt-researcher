@@ -261,6 +261,11 @@ def _numbers_in_line(line: str) -> list[_Number]:
 
 def _canonical_label_tokens(value: Any) -> set[str]:
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(value or ""))
+    # Analytics sources commonly emit ``Dropoff`` while human-facing copy uses
+    # ``drop-off`` or ``drop off``.  Keep those spelling forms on one semantic
+    # label so an exact current-run rate is not rejected only because the draft
+    # improved its typography.
+    text = re.sub(r"(?i)\bdrop[-\s]?off\b", "dropoff", text)
     raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]*", text.replace("_", "-").replace("-", " "))
     tokens: set[str] = set()
     for raw in raw_tokens:

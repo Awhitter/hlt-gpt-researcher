@@ -84,12 +84,17 @@ async def _assert_live_run_seam() -> None:
     )
     corrected = _FakeAgent(
         None,
-        "Funnel: search 975 → detail 37 → apply 6 → received 2.",
+        """funnel_search_performed — 975 people, conversion 100%, drop-off 0%
+funnel_job_viewed — 37 people, conversion 3.79%, drop-off 96.21%
+funnel_profile_milestone_reached — 6 people, conversion 0.62%, drop-off 99.38%
+funnel_application_submitted — 2 people, conversion 0.21%, drop-off 99.79%""",
         tool_result=(
             '<untrusted_tool_result source="mcp__posthog__exec">\n'
             '{"result":"Metric|funnel_search_performed|funnel_job_viewed|'
             'funnel_profile_milestone_reached|funnel_application_submitted\\n'
-            'Total person count|975|37|6|2"}\n'
+            'Total person count|975|37|6|2\\n'
+            'Conversion rate|100%|3.79%|0.62%|0.21%\\n'
+            'Dropoff rate|0%|96.21%|99.38%|99.79%"}\n'
             "</untrusted_tool_result>"
         ),
     )
