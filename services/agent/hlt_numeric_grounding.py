@@ -430,8 +430,66 @@ class NumericGroundingLedger:
             return
         self._facts.setdefault(key, set()).update(labels or {_UNLABELLED})
 
-    def _add_text_evidence(self, text: str, inherited_labels: set[str]) -> None:
+    def _add_text_evidence(
+        self,
+        text: str,
+        inherited_labels: set[str],
+        *,
+        depth: int = 0,
+    ) -> None:
+        table_headers: list[str] | None = None
         for line in text.splitlines() or [text]:
+            stripped = line.strip()
+
+            # Hosted MCP results are sometimes wrapped as untrusted text with a
+            # complete JSON result object on its own line. Decode that object so
+            # escaped newlines become real rows before extracting evidence.
+            if stripped[:1] in {"{", "["}:
+                try:
+                    parsed = json.loads(stripped)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                if isinstance(parsed, (dict, list)):
+                    self._walk_structured(
+                        parsed,
+                        inherited_labels,
+                        depth=depth + 1,
+                    )
+                    table_headers = None
+                    continue
+
+            cells = [cell.strip() for cell in line.split("|")]
+            if line.lstrip().startswith("|"):
+                cells = cells[1:]
+            if line.rstrip().endswith("|"):
+                cells = cells[:-1]
+
+            if len(cells) >= 2:
+                is_separator = all(
+                    not cell or bool(re.fullmatch(r":?-{3,}:?", cell))
+                    for cell in cells
+                )
+                if is_separator:
+                    continue
+
+                cell_numbers = [_numbers_in_line(cell) for cell in cells]
+                if not any(cell_numbers):
+                    table_headers = cells
+                    continue
+
+                if table_headers is not None and len(table_headers) == len(cells):
+                    row_labels = _canonical_label_tokens(cells[0])
+                    for index, numbers in enumerate(cell_numbers):
+                        for number in numbers:
+                            labels = set(inherited_labels)
+                            labels.update(row_labels)
+                            labels.update(_canonical_label_tokens(table_headers[index]))
+                            labels.update(_claim_labels(cells[index], number))
+                            self._record_fact(number, labels)
+                    continue
+            else:
+                table_headers = None
+
             for number in _numbers_in_line(line):
                 labels = set(inherited_labels)
                 labels.update(_claim_labels(line, number))
@@ -509,7 +567,7 @@ class NumericGroundingLedger:
                 if isinstance(parsed, (dict, list)):
                     self._walk_structured(parsed, labels, depth=depth + 1)
                     return
-            self._add_text_evidence(value, labels)
+            self._add_text_evidence(value, labels, depth=depth)
 
     def _add_evidence(self, value: Any) -> None:
         if isinstance(value, str):

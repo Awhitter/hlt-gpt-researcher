@@ -63,7 +63,9 @@ jobs:
             tests/test_websocket_manager.py \
             tests/test_firecrawl_retriever.py \
             tests/test_report_artifacts.py \
-            tests/test_research_run_store.py
+            tests/test_research_run_store.py \
+            tests/test_numeric_grounding.py \
+            tests/test_numeric_grounding_patch_contract.py
 
   frontend:
     name: Team UI tests

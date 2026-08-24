@@ -16,9 +16,23 @@ def _between(source: str, start: str, end: str) -> str:
 
 
 class _FakeAgent:
-    def __init__(self, callback: Any, final_response: str) -> None:
+    def __init__(
+        self,
+        callback: Any,
+        final_response: str,
+        *,
+        tool_result: Any | None = None,
+    ) -> None:
         self.callback = callback
         self.final_response = final_response
+        self.tool_result = tool_result or {
+            "steps": [
+                {"name": "search", "count": 975},
+                {"name": "detail", "count": 37},
+                {"name": "apply", "count": 6},
+                {"name": "received", "count": 2},
+            ]
+        }
         self.session_prompt_tokens = 10
         self.session_completion_tokens = 5
         self.session_total_tokens = 15
@@ -30,14 +44,7 @@ class _FakeAgent:
             "mcp__posthog__exec",
             None,
             None,
-            result={
-                "steps": [
-                    {"name": "search", "count": 975},
-                    {"name": "detail", "count": 37},
-                    {"name": "apply", "count": 6},
-                    {"name": "received", "count": 2},
-                ]
-            },
+            result=self.tool_result,
             is_error=False,
             duration=0.01,
         )
@@ -78,6 +85,13 @@ async def _assert_live_run_seam() -> None:
     corrected = _FakeAgent(
         None,
         "Funnel: search 975 → detail 37 → apply 6 → received 2.",
+        tool_result=(
+            '<untrusted_tool_result source="mcp__posthog__exec">\n'
+            '{"result":"Metric|funnel_search_performed|funnel_job_viewed|'
+            'funnel_profile_milestone_reached|funnel_application_submitted\\n'
+            'Total person count|975|37|6|2"}\n'
+            "</untrusted_tool_result>"
+        ),
     )
     pending = [fabricated, corrected]
 
