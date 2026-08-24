@@ -158,6 +158,13 @@ proves the well and starts Hermes. `GET /readyz` is the stricter post-activation
 receipt: canonical pack applied, one-turn context door callable, Slack socket
 live, primary model ready, durable ledger ready and the Hermes run API reachable.
 
+Authenticated `GET /slack-identityz` performs fresh Slack `auth.test` and
+`bots.info` reads and returns `slack_agent_identity.v1`: the stable workspace,
+app, bot and bot-user IDs plus scope checks. K2 uses this when the Slack token
+already lives on the hosted body, so owner verification never requires copying
+that token into a second vault. The endpoint sends no message and exposes no
+credential.
+
 ## K2 hosted-agent contract
 
 All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
