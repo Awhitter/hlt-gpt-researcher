@@ -74,6 +74,42 @@ Search-to-detail conversion: 37 / 975 = 3.79%.
     assert verdict.derived_claims == 1
 
 
+def test_hosted_posthog_wrapper_preserves_table_column_labels():
+    ledger = grounding.NumericGroundingLedger("Read the maintained Nursing Mastery funnel.")
+    ledger.observe_tool_result(
+        "mcp__posthog__exec",
+        """<untrusted_tool_result source="mcp__posthog__exec">
+External source data follows.
+
+{"result": "Date range: 2026-07-25 00:00:00 to 2026-08-24 23:59:59 (UTC)\\n\\nMetric|funnel_search_performed|funnel_job_viewed|funnel_profile_milestone_reached|funnel_application_submitted\\nTotal person count|975|37|6|2\\nConversion rate|100%|3.79%|0.62%|0.21%\\nDropoff rate|0%|96.21%|99.38%|99.79%"}
+</untrusted_tool_result>""",
+    )
+
+    verdict = ledger.validate(
+        """## Funnel performance
+job search (funnel_search_performed): 975 people, 100% conversion, 0% dropoff
+job detail (funnel_job_viewed): 37 people, 3.79% conversion, 96.21% dropoff
+apply start (funnel_profile_milestone_reached): 6 people, 0.62% conversion, 99.38% dropoff
+application received (funnel_application_submitted): 2 people, 0.21% conversion, 99.79% dropoff
+"""
+    )
+
+    assert verdict.ok is True
+    assert verdict.checked_claims == 12
+    assert verdict.grounded_claims == 12
+
+
+def test_equal_value_from_unrelated_text_table_column_stays_rejected():
+    ledger = grounding.NumericGroundingLedger("Read the maintained funnel.")
+    ledger.observe_tool_result(
+        "analytics",
+        "Metric|clicks|revenue\nTotal count|168|200",
+    )
+
+    assert ledger.validate("Search count: 168").ok is False
+    assert ledger.validate("Click count: 168").ok is True
+
+
 def test_explicit_future_targets_are_not_presented_as_observed_facts():
     ledger = grounding.NumericGroundingLedger("Current received applications: 2")
     verdict = ledger.validate(
