@@ -11,7 +11,7 @@ def test_docker_build_applies_and_asserts_the_numeric_grounding_overlay():
     assert "COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py" in dockerfile
     check = "apply --check /tmp/hermes-patches/api_runs_numeric_grounding.patch"
     apply = "apply /tmp/hermes-patches/api_runs_numeric_grounding.patch"
-    assertion = "assert_api_runs_numeric_grounding.py /opt/hermes"
+    assertion = "PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes"
     assert dockerfile.index(check) < dockerfile.index(apply) < dockerfile.index(assertion)
 
 

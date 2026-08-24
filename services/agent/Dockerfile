@@ -69,7 +69,7 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && grep -q 'pre_gateway_dispatch skip' /opt/hermes/gateway/run.py \
     && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py \
     && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes \
-    && python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \
+    && PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \
     && PYTHONPATH=/app python -c "from hlt_numeric_grounding import NumericGroundingLedger; assert NumericGroundingLedger('applications: 2').validate('Applications: 2').ok"
 
 ENV HERMES_UPSTREAM_REF=${HERMES_REF}
