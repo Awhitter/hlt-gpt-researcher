@@ -278,6 +278,10 @@ def _canonical_label_tokens(value: Any) -> set[str]:
         tokens.add("received")
     if "job" in tokens and "view" in tokens:
         tokens.add("detail")
+    if {"profile", "milestone", "reached"} <= tokens:
+        # Nursing Mastery's maintained funnel uses the source event name for
+        # the human-facing "apply start" stage.
+        tokens.add("apply")
     return tokens
 
 
