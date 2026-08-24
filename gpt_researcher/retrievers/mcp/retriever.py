@@ -2,9 +2,12 @@
 MCP-Based Research Retriever
 
 A retriever that uses Model Context Protocol (MCP) tools for intelligent research.
-This retriever implements a two-stage approach:
-1. Tool Selection: LLM selects 2-3 most relevant tools from all available MCP tools
-2. Research Execution: LLM uses the selected tools to conduct intelligent research
+A default MCP retriever asks the LLM to pick a handful of tools from every
+mounted server. Code-scoped runs pin ``search_source`` / ``read_source`` /
+``verify_source_ref``. Registry-scoped runs also pin Katailyst2's graph
+(``discover``, ``traverse``, ``get_entity``, plus ``tool_search`` /
+``tool_execute`` when that is the catalog door) so estate research is not a
+generic 3-tool web search against a 30-tool server.
 """
 import asyncio
 import logging
@@ -29,7 +32,9 @@ class MCPRetriever:
     Model Context Protocol (MCP) Retriever for GPT Researcher.
     
     This retriever implements a two-stage approach:
-    1. Tool Selection: LLM selects 2-3 most relevant tools from all available MCP tools
+    1. Tool Selection: LLM selects relevant tools; HLT then pins code-source
+       and Katailyst2 registry graph tools so estate research is not a 3-tool
+       web search against a 30-tool server.
     2. Research Execution: LLM with bound tools conducts intelligent research
     
     This approach is more efficient than calling all tools and provides better, 
@@ -144,13 +149,12 @@ class MCPRetriever:
             
             # Stage 2: Select most relevant tools
             await self.streamer.stream_stage_start("Stage 2", "Selecting most relevant tools")
-            selected_tools = await self.tool_selector.select_relevant_tools(self.query, all_tools, max_tools=3)
-            if getattr(self.researcher, "mcp_only", False):
-                selected_tools = self.tool_selector.ensure_code_source_tools(
-                    selected_tools,
-                    all_tools,
-                    max_tools=5,
-                )
+            selected_tools = await self.tool_selector.select_relevant_tools(self.query, all_tools, max_tools=5)
+            selected_tools = self.tool_selector.ensure_estate_research_tools(
+                selected_tools,
+                all_tools,
+                max_tools=10,
+            )
             
             if not selected_tools:
                 await self.streamer.stream_warning("No relevant tools selected, skipping MCP research")

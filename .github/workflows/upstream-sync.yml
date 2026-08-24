@@ -1,9 +1,10 @@
 name: Weekly upstream sync
 
 # Keeps this fork "main-branch-ish" against assafelovic/gpt-researcher.
-# Merges upstream into a sync branch, runs the HLT test suite, and opens an
-# AI-reviewable PR. On merge conflicts it opens the PR anyway with a conflict
-# report so an agent can resolve it.
+# Merges upstream into a sync branch, grades the overlay contract, runs the
+# HLT test suite on clean merges, and squash-merges when the week is clean.
+# Alec will not merge these by hand. Weeks that lose docking stamps, conflict,
+# or fail HLT checks stay open titled NEEDS AGENT.
 
 on:
   schedule:
@@ -13,6 +14,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+  actions: write
 
 jobs:
   sync:
@@ -55,17 +58,42 @@ jobs:
           git push -u origin "$BRANCH"
 
       - name: Set up Python
-        if: steps.merge.outputs.behind != '0' && steps.merge.outputs.conflicts == ''
+        if: steps.merge.outputs.behind != '0'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Overlay contract
+        if: steps.merge.outputs.behind != '0'
+        id: overlay
+        run: |
+          pip install pyyaml
+          set +e
+          python scripts/check_overlay_contract.py \
+            --diff-base origin/main \
+            --write-report overlay-grade.md
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Run HLT test suite
         if: steps.merge.outputs.behind != '0' && steps.merge.outputs.conflicts == ''
         id: tests
         run: |
-          pip install -r requirements.txt pytest >/dev/null 2>&1 || true
-          if python -m pytest tests/test_hlt_extensions.py tests/test_firecrawl_retriever.py -q; then
+          pip install -r requirements.txt pytest
+          if python -m pytest \
+            tests/test_hlt_extensions.py \
+            tests/test_hlt_grounding.py \
+            tests/test_hlt_scope_inference.py \
+            tests/test_hlt_suggestions.py \
+            tests/test_firecrawl_retriever.py \
+            tests/test_overlay_contract.py \
+            tests/test_tool_catalog.py \
+            -q; then
             echo "result=pass" >> "$GITHUB_OUTPUT"
           else
             echo "result=fail" >> "$GITHUB_OUTPUT"
@@ -73,26 +101,104 @@ jobs:
 
       - name: Open sync PR
         if: steps.merge.outputs.behind != '0'
+        id: pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "${{ steps.merge.outputs.conflicts }}" ]; then
-            STATUS="**Merge conflicts** in: ${{ steps.merge.outputs.conflicts }} — conflict markers are committed on this branch; resolve before merging."
-          elif [ "${{ steps.tests.outputs.result }}" = "pass" ]; then
-            STATUS="Clean merge, HLT test suite **passing**."
+          OVERLAY="${{ steps.overlay.outputs.result }}"
+          CONFLICTS="${{ steps.merge.outputs.conflicts }}"
+          TESTS="${{ steps.tests.outputs.result }}"
+          DATE="$(date +%Y-%m-%d)"
+          BEHIND="${{ steps.merge.outputs.behind }}"
+          BRANCH="${{ steps.merge.outputs.branch }}"
+
+          CLEAN=0
+          if [ -z "$CONFLICTS" ] && [ "$OVERLAY" = "pass" ] && [ "$TESTS" = "pass" ]; then
+            CLEAN=1
+            TITLE="Upstream sync ${DATE} (${BEHIND} commits)"
+            STATUS="Clean merge, overlay contract and HLT tests **passing**. This workflow will squash-merge once HLT checks go green — no human merge."
           else
-            STATUS="Clean merge but HLT test suite **failing** — investigate before merging."
+            TITLE="NEEDS AGENT: Upstream sync ${DATE}"
+            if [ -n "$CONFLICTS" ]; then
+              STATUS="**Merge conflicts** in: ${CONFLICTS} — conflict markers are committed. Alec will not merge this by hand; an agent must restore docking stamps from overlay/manifest.yaml, then merge."
+            elif [ "$OVERLAY" != "pass" ]; then
+              STATUS="Overlay contract **failing** — a docking stamp is missing (usually app.py lost _install_hlt_extensions). Restore markers in overlay/manifest.yaml; do not merge until the checker passes."
+            else
+              STATUS="HLT test suite **failing**. Fix tests before merge; Alec will not look at this PR."
+            fi
           fi
 
-          gh pr create \
-            --head "${{ steps.merge.outputs.branch }}" \
-            --title "Upstream sync $(date +%Y-%m-%d) (${{ steps.merge.outputs.behind }} commits)" \
-            --body "Weekly sync from assafelovic/gpt-researcher.
+          {
+            echo "Weekly sync from assafelovic/gpt-researcher."
+            echo
+            echo "${STATUS}"
+            echo
+            if [ -f overlay-grade.md ]; then
+              cat overlay-grade.md
+            else
+              echo "Overlay grade was not produced."
+            fi
+          } > /tmp/sync-pr-body.md
 
-          ${STATUS}
+          gh label create upstream-sync --description "Weekly Assaf sync" --color 0F5C4C 2>/dev/null || true
+          gh label create needs-agent --description "Blocked work Alec will not merge by hand" --color B45309 2>/dev/null || true
 
-          HLT overlay files to double-check after any upstream churn:
-          - backend/server/hlt_extensions.py
-          - gpt_researcher/retrievers/firecrawl/
-          - frontend/nextjs/components/brain/
-          - mcp_server/" || echo "PR may already exist for this branch"
+          EXISTING="$(gh pr view "$BRANCH" --json number --jq .number 2>/dev/null || true)"
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --title "$TITLE" --body-file /tmp/sync-pr-body.md
+            PR="$EXISTING"
+          else
+            gh pr create --head "$BRANCH" --title "$TITLE" --body-file /tmp/sync-pr-body.md
+            PR="$(gh pr view "$BRANCH" --json number --jq .number)"
+          fi
+
+          if [ "$CLEAN" = "1" ]; then
+            gh pr edit "$PR" --add-label "upstream-sync"
+          else
+            gh pr edit "$PR" --add-label "upstream-sync,needs-agent"
+          fi
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+          echo "clean=$CLEAN" >> "$GITHUB_OUTPUT"
+
+      - name: Automerge clean upstream
+        if: steps.merge.outputs.behind != '0' && steps.pr.outputs.clean == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR="${{ steps.pr.outputs.number }}"
+          BRANCH="${{ steps.merge.outputs.branch }}"
+          # PRs opened with GITHUB_TOKEN do not trigger pull_request workflows.
+          # workflow_dispatch is the documented exception — kick HLT checks onto
+          # the sync branch, then squash-merge. Alec will not merge these by hand.
+          if ! gh workflow run hlt-checks.yml --ref "$BRANCH"; then
+            gh pr edit "$PR" \
+              --title "NEEDS AGENT: Upstream sync $(date +%Y-%m-%d) (could not start HLT checks)" \
+              --add-label "needs-agent"
+            echo "Could not dispatch hlt-checks; left PR #$PR open."
+            exit 0
+          fi
+          RUN_ID=""
+          for _ in $(seq 1 30); do
+            RUN_ID="$(gh run list --workflow=hlt-checks.yml --branch="$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId' || true)"
+            if [ -n "$RUN_ID" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$RUN_ID" ]; then
+            gh pr edit "$PR" \
+              --title "NEEDS AGENT: Upstream sync $(date +%Y-%m-%d) (HLT checks never started)" \
+              --add-label "needs-agent"
+            echo "hlt-checks run did not appear; left PR #$PR open."
+            exit 0
+          fi
+          if timeout 25m gh run watch "$RUN_ID" --exit-status; then
+            gh pr merge "$PR" --squash --delete-branch \
+              --subject "chore(sync): upstream $(date +%Y-%m-%d)"
+          else
+            gh pr edit "$PR" \
+              --title "NEEDS AGENT: Upstream sync $(date +%Y-%m-%d) (HLT checks failed)" \
+              --add-label "needs-agent"
+            echo "HLT checks did not pass; left PR #$PR open for an agent."
+          fi

@@ -165,17 +165,24 @@ To rotate:
 
 ## Katailyst Integration
 
-Katailyst integration lives outside the public GPT Researcher browser UI. The
-canonical path is:
+Two directions, both the full catalog — not the `bootstrap` first-glance slice
+and not REST `POST /api/quick_search`.
 
-1. Register/discover `tool:gpt-researcher.mcp` in Katailyst.
-2. Let agents mount the hosted GPT Researcher MCP endpoint with
-   `Authorization: Bearer ${GPTR_MCP_TOKEN}`.
+**This service calling Katailyst2:** Registry/CMS/codebase/qbank scopes mount
+`https://katailyst2.vercel.app/mcp` with `$KATAILYST2_MCP_TOKEN`. The MCP
+retriever pins `discover` → `get_entity`/`traverse` (and `tool_search` /
+`tool_execute` when that is K2's catalog door). Do not set
+`KATAILYST_TOOLSET=bootstrap` on the research API; unset means the full graph.
+Live door map: `GET /api/hlt/capabilities` (public).
+
+**Katailyst calling this service:**
+
+1. Register/discover `tool:gpt-researcher.mcp` in Katailyst. Bind the hosted
+   MCP, not REST quick search.
+2. Let agents mount `https://gpt-researcher-mcp-production.up.railway.app/mcp`
+   with `Authorization: Bearer ${GPTR_MCP_TOKEN}`.
 3. Keep Katailyst credentials in the calling agent/runtime, not in browser
    source, local storage, or a public MCP textarea.
-
-This keeps the upstream-tracked GPT Researcher UI close to upstream while still
-letting HLT agents compose GPT Researcher with Katailyst.
 
 ## UI WebSocket Smoke
 

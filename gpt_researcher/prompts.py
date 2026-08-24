@@ -106,6 +106,10 @@ Select exactly {max_tools} tools, ranked by relevance to the research query.
             str(name).split("__")[-1].split(".")[-1].split("/")[-1]
             for name in tool_names
         }
+        registry_tool_names = {
+            str(name).split("__")[-1].split("/")[-1]
+            for name in tool_names
+        }
         source_workflow = ""
         if {"search_source", "read_source"}.issubset(normalized_tool_names):
             source_workflow = """
@@ -134,6 +138,30 @@ Select exactly {max_tools} tools, ranked by relevance to the research query.
     variants in every relevant repository you can identify. If that still finds
     nothing, report only that this run did not verify it; do not infer a permanent or system-wide absence.
 """
+
+        katailyst_workflow = ""
+        if registry_tool_names & {
+            "discover",
+            "traverse",
+            "get_entity",
+            "tool_search",
+            "tool.search",
+            "registry_agent_context",
+            "memory_query",
+            "registry_artifact_body",
+            "registry_capabilities",
+        }:
+            katailyst_workflow = """
+KATAILYST2 REGISTRY:
+Katailyst is the estate capability graph (skills, playbooks, KBs, agents,
+entities), not a web search engine and not corporate CMS. Start with discover
+(or tool_search if that is the catalog door), then get_entity or traverse on
+the returned refs. Use registry_agent_context, memory_query, or
+registry_artifact_body when they can load a pack, prior memory, or playbook
+body. If only tool_search and tool_execute are bound, search the catalog and
+execute read/describe paths only — never write, publish, or orchestrate.
+Quote entity refs the tools actually returned.
+"""
         
         return f"""You are a research assistant with access to specialized tools. Your task is to research the following query and provide comprehensive, accurate information.
 
@@ -146,6 +174,7 @@ INSTRUCTIONS:
 4. Synthesize information from multiple sources when possible
 5. Focus on factual, relevant information that directly addresses the query
 {source_workflow}
+{katailyst_workflow}
 
 AVAILABLE TOOLS: {tool_names}
 

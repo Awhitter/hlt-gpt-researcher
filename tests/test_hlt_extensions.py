@@ -18,6 +18,7 @@ HLT_ENV_KEYS = [
     "KATAILYST_MCP_URL",
     "KATAILYST_MCP_TOKEN",
     "KATAILYST_AUTH_TOKEN",
+    "KATAILYST_TOOLSET",
     "KATAILYST2_MCP_URL",
     "KATAILYST2_MCP_TOKEN",
     "HLT_CODEBASE_REPOS",
@@ -223,6 +224,46 @@ def test_katailyst2_env_preferred_over_legacy(monkeypatch):
 
     assert configs[0]["connection_url"] == "https://k2.example/mcp"
     assert configs[0]["connection_headers"] == {"Authorization": "Bearer kata_k2-token"}
+
+
+def test_cms_instruction_uses_registry_graph_not_web_search(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
+
+    task, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
+        task="What skills exist for nurse recruiting?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={"cms": True, "depth": "balanced"},
+    )
+
+    assert mcp_enabled is True
+    assert configs[0]["name"] == "katailyst"
+    assert "X-Katailyst-Toolset" not in configs[0]["connection_headers"]
+    assert "call discover then get_entity" in task
+    assert "capability graph" in task
+    assert metadata["enabled_sources"] == ["cms"]
+    assert len(hlt_extensions._scope_instruction("cms")) < 400
+
+
+def test_katailyst_toolset_header_is_opt_in_not_bootstrap(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("KATAILYST2_MCP_TOKEN", "kata_k2-token")
+    monkeypatch.setenv("KATAILYST_TOOLSET", "research")
+
+    _, _, _, configs, _, _ = hlt_extensions.prepare_research_request(
+        task="What playbooks cover audience research?",
+        mcp_enabled=False,
+        mcp_strategy="fast",
+        mcp_configs=[],
+        research_scope={"cms": True, "depth": "balanced"},
+    )
+
+    assert configs[0]["connection_headers"]["Authorization"] == "Bearer kata_k2-token"
+    assert configs[0]["connection_headers"]["X-Katailyst-Toolset"] == "research"
 
 
 def test_codebase_instruction_is_a_compact_runtime_contract(monkeypatch):
@@ -452,6 +493,23 @@ def test_hlt_readiness_routes_are_sanitized_and_authenticated(monkeypatch):
     body = readiness.json()
     assert body["integrations"]["metrics"]["status"] == "ready"
     assert "metabase-secret" not in json.dumps(body)
+
+
+def test_capabilities_endpoint_is_public_and_binds_mcp(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    set_firecrawl_import(monkeypatch, False)
+    monkeypatch.setenv("API_AUTH_KEY", "api-secret")
+
+    app = FastAPI()
+    hlt_extensions.install(app)
+    client = TestClient(app)
+
+    response = client.get("/api/hlt/capabilities")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bind"] == "mcp"
+    assert body["doors"]["quick_search"]["estate"] is False
+    assert "deep_research" in body["mcp"]["tools"]
 
 
 def test_langfuse_health_status_is_redacted(monkeypatch):

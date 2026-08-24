@@ -37,7 +37,9 @@ mcp_server/tools.py                   MCP tools (default scope="auto")
 
 Leaves never import `hlt_extensions`. New Brain/tab work goes in
 `hlt_brain.py`; new Auto signals go in `hlt_scope_inference.py`; the router
-stays the thin compose point.
+stays the thin compose point. The owned-vs-docking contract lives in
+[`overlay/manifest.yaml`](overlay/manifest.yaml) and is enforced by
+`scripts/check_overlay_contract.py` (Monday sync grades it even on conflicts).
 
 ## Where it sits in the HLT ecosystem
 
@@ -103,7 +105,11 @@ MCP `deep_research`/`quick_search` default to the same `scope="auto"`; REST
 `/api/quick_search` stays web-only by design. Toggles are browser-safe
 metadata; `hlt_extensions.prepare_research_request` expands presets
 (codegraph/GitHub/Katailyst/Apify/QBank), `hlt_media` handles Cloudinary,
-and `hlt_brain` owns `/api/brain/*`. Live runs render a Plan/Search/
+and `hlt_brain` owns `/api/brain/*`. When Katailyst is mounted, the MCP
+retriever pins `discover` / `traverse` / `get_entity` (and
+`tool_search`/`tool_execute` when that is K2's catalog door) so estate
+research uses the capability graph rather than three generic search tools.
+Live runs render a Plan/Search/
 Read/Write phase rail (`components/brain/ResearchProgress.tsx`); raw agent
 logs are collapsed by default.
 
@@ -133,14 +139,20 @@ audience-scoped report against the hosted API, refreshes the recruiting
 content inventory, and opens a PR into `my-docs/audience/`; it needs the
 `API_AUTH_KEY` and `FIRECRAWL_API_KEY` repo secrets.
 `.github/workflows/upstream-sync.yml` (Mondays) merges
-`assafelovic/gpt-researcher` master into a `sync/upstream-*` branch, runs the
-HLT test suite, and opens an AI-reviewable PR (with conflict markers
-committed when the merge conflicts).
+`assafelovic/gpt-researcher` master into a `sync/upstream-*` branch, grades
+the overlay contract, runs the HLT suite, and squash-merges when the week is
+clean. Weeks that lose docking stamps or fail tests stay open titled
+`NEEDS AGENT` — do not wait for a human merge.
 
-Katailyst registry: this service is registered as the tier-1 capability
+Katailyst registry: bind the hosted MCP
+(`https://gpt-researcher-mcp-production.up.railway.app/mcp`), not REST
+`/api/quick_search`. Live door map: public `GET /api/hlt/capabilities`.
+When this service calls K2, it mounts the full catalog and pins `discover` /
+`traverse` / `get_entity` — do not set `KATAILYST_TOOLSET=bootstrap` on the
+research API. Re-register or amend with `scripts/katailyst_mcp.py` +
+`scripts/katailyst_capability.md`. The REST `POST /report/` capability id
 `tool:http-api-https-gpt-researcher-api-production-up-railway-app-post-report`
-(name "Mastery Research (GPT Researcher)", staged, org-shared). Re-register or
-amend with `scripts/katailyst_mcp.py` + `scripts/katailyst_capability.md`.
+is the HTTP estate door; agents should still prefer MCP.
 
 Render sidecars: `hlt-codegraph` runs on the standard plan (gitnexus analyze
 OOMs on 512MB) with a 10GB disk at `/data`; boot reindex runs in the

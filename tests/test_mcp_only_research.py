@@ -254,6 +254,70 @@ def test_code_only_selection_always_includes_source_discovery_and_reading():
     ]
 
 
+def test_registry_selection_pins_katailyst_graph_not_generic_search():
+    tools = [
+        FakeTool("web_search"),
+        FakeTool("list_repos"),
+        FakeTool("discover"),
+        FakeTool("traverse"),
+        FakeTool("get_entity"),
+        FakeTool("tool_search"),
+        FakeTool("tool_execute"),
+        FakeTool("memory_query"),
+    ]
+
+    selected = MCPToolSelector.ensure_katailyst_registry_tools(
+        [tools[0], tools[1]],
+        tools,
+        max_tools=8,
+    )
+
+    assert [tool.name for tool in selected][:5] == [
+        "discover",
+        "traverse",
+        "get_entity",
+        "tool_search",
+        "tool_execute",
+    ]
+    assert "web_search" in [tool.name for tool in selected]
+
+
+def test_estate_selection_keeps_code_and_registry_tools_together():
+    tools = [
+        FakeTool("web_search"),
+        FakeTool("search_source"),
+        FakeTool("read_source"),
+        FakeTool("verify_source_ref"),
+        FakeTool("discover"),
+        FakeTool("traverse"),
+        FakeTool("get_entity"),
+        FakeTool("tool.search"),
+    ]
+
+    selected = MCPToolSelector.ensure_estate_research_tools(
+        [tools[0]],
+        tools,
+        max_tools=10,
+    )
+    names = [tool.name for tool in selected]
+
+    assert names[:3] == ["search_source", "read_source", "verify_source_ref"]
+    assert names[3:6] == ["discover", "traverse", "get_entity"]
+    assert "tool.search" in names
+    assert "web_search" in names
+
+
+def test_registry_research_prompt_is_not_generic_web_search():
+    prompt = PromptFamily.generate_mcp_research_prompt(
+        "What skills exist for nurse recruiting?",
+        [FakeTool("discover"), FakeTool("get_entity")],
+    )
+
+    assert "KATAILYST2 REGISTRY" in prompt
+    assert "capability graph" in prompt
+    assert "never write, publish, or orchestrate" in prompt
+
+
 def test_mcp_research_can_search_then_read_a_discovered_source(monkeypatch):
     search_tool = FakeTool(
         "search_source",
