@@ -98,6 +98,12 @@ application received (funnel_application_submitted): 2 people, 0.21% conversion,
     assert verdict.checked_claims == 12
     assert verdict.grounded_claims == 12
 
+    shorthand = ledger.validate(
+        "Funnel: search 975 → detail 37 → apply 6 → received 2."
+    )
+    assert shorthand.ok is True
+    assert shorthand.grounded_claims == 4
+
 
 def test_equal_value_from_unrelated_text_table_column_stays_rejected():
     ledger = grounding.NumericGroundingLedger("Read the maintained funnel.")
