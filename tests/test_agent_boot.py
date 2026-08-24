@@ -2429,8 +2429,16 @@ def test_health_names_the_exact_k2_readiness_seam(
     assert payload["mode"] == expected_mode
 
 
-def _fake_slack(monkeypatch, *, payload=None, scopes="", http_status=None, boom=False):
-    """Stand in for Slack auth.test and its OAuth-scope response header."""
+def _fake_slack(
+    monkeypatch,
+    *,
+    payload=None,
+    bots_payload=None,
+    scopes="",
+    http_status=None,
+    boom=False,
+):
+    """Stand in for Slack auth.test/bots.info and the OAuth-scope header."""
     import io
     import json as _json
     import urllib.error
@@ -2454,7 +2462,22 @@ def _fake_slack(monkeypatch, *, payload=None, scopes="", http_status=None, boom=
             raise urllib.error.HTTPError(
                 "https://slack.com/api/auth.test", http_status, "nope", {}, None
             )
-        return _Response(_json.dumps(payload or {"ok": True}).encode())
+        selected = (
+            bots_payload
+            or {
+                "ok": True,
+                "bot": {
+                    "id": "B-CLEO",
+                    "app_id": "A-CLEO",
+                    "user_id": "U-CLEO",
+                    "name": "Cleo",
+                    "deleted": False,
+                },
+            }
+            if request.full_url.endswith("/bots.info")
+            else payload or {"ok": True}
+        )
+        return _Response(_json.dumps(selected).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
 
@@ -2471,6 +2494,74 @@ def test_slack_readiness_proves_auth_scopes_and_file_delivery(monkeypatch):
     assert result["missing_core_scopes"] == []
     assert result["artifact_delivery_ready"] is True
     assert "files:write" in result["granted_scopes"]
+
+
+def test_slack_readiness_proves_stable_bot_app_and_workspace_identity(monkeypatch):
+    health_gateway = _load_health_gateway()
+    scopes = ",".join(sorted(health_gateway.CORE_SLACK_SCOPES))
+    _fake_slack(
+        monkeypatch,
+        scopes=scopes,
+        payload={
+            "ok": True,
+            "team": "HLT",
+            "team_id": "T-HLT",
+            "bot_id": "B-CLEO",
+            "user_id": "U-CLEO",
+        },
+    )
+
+    result = health_gateway.slack_auth_readiness("xoxb-test")
+
+    assert result["identity_ok"] is True
+    assert result["identity"] == {
+        "workspaceId": "T-HLT",
+        "workspaceName": "HLT",
+        "appId": "A-CLEO",
+        "botId": "B-CLEO",
+        "botUserId": "U-CLEO",
+        "botName": "Cleo",
+        "verifiedAt": result["identity"]["verifiedAt"],
+    }
+
+
+def test_authenticated_slack_identity_endpoint_returns_fresh_provider_proof(
+    monkeypatch,
+):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"agent_ref": "agent:cleo"})
+    _fake_slack(
+        monkeypatch,
+        scopes=",".join(sorted(health_gateway.CORE_SLACK_SCOPES)),
+        payload={
+            "ok": True,
+            "team": "HLT",
+            "team_id": "T-HLT",
+            "bot_id": "B-CLEO",
+            "user_id": "U-CLEO",
+        },
+    )
+
+    unauthorized = health_gateway.slack_identityz(authorization=None)
+    response = health_gateway.slack_identityz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    body = json.loads(response.body)
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert body["ready"] is True
+    assert body["contractVersion"] == "slack_agent_identity.v1"
+    assert body["agentRef"] == "agent:cleo"
+    assert body["checks"] == {
+        "channel_auth_ok": True,
+        "channel_scopes_ready": True,
+        "identity_complete": True,
+    }
+    assert body["identity"]["appId"] == "A-CLEO"
 
 
 def test_missing_slack_file_scope_degrades_the_live_gateway(monkeypatch):

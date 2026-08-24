@@ -26,7 +26,9 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -378,10 +380,12 @@ BOOT: dict[str, Any] = {}
 
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test"
+SLACK_BOTS_INFO_URL = "https://slack.com/api/bots.info"
 HERMES_API_BASE_URL = "http://127.0.0.1:8642"
 MAX_HOOK_MESSAGE_CHARS = 65_536
 MAX_HOOK_TIMEOUT_SECONDS = 900
 ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v1"
+SLACK_IDENTITY_CONTRACT_VERSION = "slack_agent_identity.v1"
 _RUN_LEDGER_LOCK = threading.Lock()
 _RUN_LEDGER: agent_run_ledger.AgentRunLedger | None = None
 _RUN_LEDGER_PATH: Path | None = None
@@ -1317,6 +1321,8 @@ def slack_auth_readiness(token: str, timeout: float = 6.0) -> dict[str, Any]:
         "granted_scopes": [],
         "missing_core_scopes": [],
         "artifact_delivery_ready": None,
+        "identity_ok": None,
+        "identity": None,
     }
     if not token:
         return result
@@ -1342,14 +1348,63 @@ def slack_auth_readiness(token: str, timeout: float = 6.0) -> dict[str, Any]:
         return result
 
     result["auth_ok"] = bool(payload.get("ok"))
-    if not result["auth_ok"] or not raw_scopes:
+    if not result["auth_ok"]:
         return result
 
-    scopes = sorted({scope.strip() for scope in raw_scopes.split(",") if scope.strip()})
-    result["scopes_known"] = True
-    result["granted_scopes"] = scopes
-    result["missing_core_scopes"] = sorted(CORE_SLACK_SCOPES - set(scopes))
-    result["artifact_delivery_ready"] = "files:write" in scopes
+    if raw_scopes:
+        scopes = sorted(
+            {scope.strip() for scope in raw_scopes.split(",") if scope.strip()}
+        )
+        result["scopes_known"] = True
+        result["granted_scopes"] = scopes
+        result["missing_core_scopes"] = sorted(CORE_SLACK_SCOPES - set(scopes))
+        result["artifact_delivery_ready"] = "files:write" in scopes
+
+    workspace_id = str(payload.get("team_id") or "").strip()
+    bot_id = str(payload.get("bot_id") or "").strip()
+    bot_user_id = str(payload.get("user_id") or "").strip()
+    if not workspace_id or not bot_id or not bot_user_id:
+        result["identity_ok"] = False
+        return result
+
+    info_request = urllib.request.Request(
+        SLACK_BOTS_INFO_URL,
+        data=urllib.parse.urlencode({"bot": bot_id, "team_id": workspace_id}).encode(),
+        headers={"Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(info_request, timeout=timeout) as response:
+            info_payload = _json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        result["identity_ok"] = False if exc.code in (400, 401, 403) else None
+        return result
+    except Exception:
+        return result
+
+    bot = info_payload.get("bot") if isinstance(info_payload, dict) else None
+    bot = bot if isinstance(bot, dict) else {}
+    app_id = str(bot.get("app_id") or "").strip()
+    info_bot_id = str(bot.get("id") or "").strip()
+    info_user_id = str(bot.get("user_id") or "").strip()
+    identity_ok = bool(
+        info_payload.get("ok")
+        and bot.get("deleted") is not True
+        and app_id
+        and info_bot_id == bot_id
+        and info_user_id == bot_user_id
+    )
+    result["identity_ok"] = identity_ok
+    if identity_ok:
+        result["identity"] = {
+            "workspaceId": workspace_id,
+            "workspaceName": str(payload.get("team") or "").strip() or None,
+            "appId": app_id,
+            "botId": bot_id,
+            "botUserId": bot_user_id,
+            "botName": str(bot.get("name") or "").strip() or None,
+            "verifiedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
     return result
 
 
@@ -1575,6 +1630,9 @@ def boot() -> None:
             BOOT.get("agent_ref") or "the configured agent",
         )
     slack_auth = slack_auth_readiness(os.getenv("SLACK_BOT_TOKEN", ""))
+    # Stable Slack IDs are returned only by the authenticated identity endpoint.
+    # /health publishes BOOT without authentication, so never retain them here.
+    slack_auth.pop("identity", None)
     BOOT["slack_auth"] = slack_auth
     logger.info("config slack_auth: %s", slack_auth)
     if GATEWAY_ENABLED and slack_auth["auth_ok"] is False:
@@ -1753,6 +1811,35 @@ def activationz(
         return JSONResponse({"ready": False, "error": "unauthorized"}, status_code=401)
     readiness = activation_readiness()
     return JSONResponse(readiness, status_code=200 if readiness["ready"] else 503)
+
+
+@app.get("/slack-identityz")
+def slack_identityz(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
+    """Fresh, read-only Slack identity proof for K2's canonical binding writer."""
+    if not _hook_authorized(authorization):
+        return JSONResponse({"ready": False, "error": "unauthorized"}, status_code=401)
+    observed = slack_auth_readiness(os.getenv("SLACK_BOT_TOKEN", ""))
+    checks = {
+        "channel_auth_ok": observed.get("auth_ok") is True,
+        "channel_scopes_ready": (
+            observed.get("scopes_known") is True
+            and not bool(observed.get("missing_core_scopes"))
+        ),
+        "identity_complete": observed.get("identity_ok") is True,
+    }
+    ready = all(checks.values())
+    return JSONResponse(
+        {
+            "ready": ready,
+            "contractVersion": SLACK_IDENTITY_CONTRACT_VERSION,
+            "agentRef": BOOT.get("agent_ref") or "",
+            "checks": checks,
+            "identity": observed.get("identity"),
+        },
+        status_code=200 if ready else 503,
+    )
 
 
 @app.get("/readyz")
