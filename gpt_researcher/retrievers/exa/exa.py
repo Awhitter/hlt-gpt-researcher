@@ -61,7 +61,13 @@ class ExaSearch:
         )
 
         search_response = [
-            {"href": result.url, "body": result.text} for result in results.results
+            {
+                "href": result.url,
+                "title": getattr(result, "title", "") or "",
+                "body": result.text,
+                "raw_content": result.text,
+            }
+            for result in results.results
         ]
         return search_response
 
@@ -80,7 +86,13 @@ class ExaSearch:
         )
 
         similar_response = [
-            {"href": result.url, "body": result.text} for result in results.results
+            {
+                "href": result.url,
+                "title": getattr(result, "title", "") or "",
+                "body": result.text,
+                "raw_content": result.text,
+            }
+            for result in results.results
         ]
         return similar_response
 

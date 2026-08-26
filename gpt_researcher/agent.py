@@ -30,6 +30,7 @@ from .skills.deep_research import DeepResearchSkill
 from .skills.image_generator import ImageGenerator
 from .skills.researcher import ResearchConductor
 from .skills.writer import ReportGenerator
+from .source_policy import SourcePolicy, canonicalize_url, merge_source_records
 from .utils.enum import ReportSource, ReportType, Tone
 from .utils.llm import create_chat_completion
 from .vector_store import VectorStoreWrapper
@@ -81,6 +82,7 @@ class GPTResearcher:
         mcp_configs: list[dict] | None = None,
         mcp_max_iterations: int | None = None,
         mcp_strategy: str | None = None,
+        source_policy: SourcePolicy | dict[str, Any] | None = None,
         **kwargs
     ):
         """
@@ -111,6 +113,7 @@ class GPTResearcher:
             headers (dict, optional): Additional headers for requests and configuration.
             max_subtopics (int): Maximum number of subtopics to generate.
             log_handler: Handler for logging events.
+            source_policy: Deterministic source admission and acceptance contract.
             prompt_family: Family of prompts to use.
             mcp_configs (list[dict], optional): List of MCP server configurations.
                 Each dictionary can contain:
@@ -149,6 +152,14 @@ class GPTResearcher:
         self.document_urls = document_urls
         self.complement_source_urls = complement_source_urls
         self.query_domains = query_domains or []
+        self.source_policy = SourcePolicy.from_value(source_policy)
+        if self.source_policy.is_strict:
+            # A strict run must never fall back to a scraper that fetches the
+            # target URL from this service's network. The MCP entrypoint also
+            # preflights the Firecrawl credential so this is usable or fails
+            # before any model/retrieval spend.
+            self.cfg.scraper = "firecrawl"
+        self.source_rejections: list[dict[str, Any]] = []
         self.research_sources = []  # The list of scraped sources including title, content and images
         self.research_images = []  # The list of selected research images
         self.documents = documents
@@ -637,7 +648,39 @@ class GPTResearcher:
         Args:
             sources: List of source dictionaries to add.
         """
-        self.research_sources.extend(sources)
+        indexed = {
+            canonicalize_url(str(source.get("url") or source.get("href") or "")): index
+            for index, source in enumerate(self.research_sources)
+            if isinstance(source, dict)
+            and canonicalize_url(str(source.get("url") or source.get("href") or ""))
+        }
+        for value in sources:
+            source = value if isinstance(value, dict) else {"title": str(value)}
+            canonical = canonicalize_url(
+                str(source.get("url") or source.get("href") or "")
+            )
+            if canonical and canonical in indexed:
+                index = indexed[canonical]
+                self.research_sources[index] = merge_source_records(
+                    self.research_sources[index], source
+                )
+                continue
+            if canonical:
+                source = merge_source_records({}, source)
+                indexed[canonical] = len(self.research_sources)
+            self.research_sources.append(source)
+
+    def add_source_rejection(self, url: str, reason: str, *, stage: str) -> None:
+        """Record a policy-blocked candidate without letting it enter context."""
+
+        record = {
+            "url": url,
+            "canonical_url": canonicalize_url(url),
+            "reason": reason,
+            "stage": stage,
+        }
+        if record not in self.source_rejections:
+            self.source_rejections.append(record)
 
     def add_references(self, report_markdown: str, visited_urls: set) -> str:
         """Add reference section to a markdown report.

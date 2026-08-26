@@ -17,16 +17,32 @@ def is_likely_content_image(image_url: str, alt_text: str = "") -> bool:
     """Reject common chrome/brand assets before they reach a research report."""
 
     parsed = urlparse(image_url)
+    host = (parsed.hostname or "").lower()
     path = parsed.path.lower()
-    description = f"{path} {alt_text.lower()}"
+    description = f"{host} {path} {parsed.query.lower()} {alt_text.lower()}"
     if parsed.scheme not in {"http", "https"}:
+        return False
+    tracking_hosts = {
+        "analytics.twitter.com",
+        "bat.bing.com",
+        "cm.g.doubleclick.net",
+        "google-analytics.com",
+        "mc.yandex.com",
+        "pixel.facebook.com",
+        "www.google-analytics.com",
+    }
+    if host in tracking_hosts or host.startswith(("pixel.", "tracking.")):
         return False
     if path.endswith((".svg", ".ico")):
         return False
     noise_terms = (
+        "1x1",
+        "beacon",
         "favicon",
         "logo",
+        "pixel.gif",
         "sprite",
+        "track.gif",
         "tracking-pixel",
         "spacer.",
         "placeholder",
@@ -34,6 +50,15 @@ def is_likely_content_image(image_url: str, alt_text: str = "") -> bool:
         "dmca compliant",
         "site icon",
     )
+    dimensions = parse_qs(parsed.query)
+    for width_key, height_key in (("w", "h"), ("width", "height")):
+        try:
+            width = int(dimensions.get(width_key, [""])[0])
+            height = int(dimensions.get(height_key, [""])[0])
+        except (TypeError, ValueError):
+            continue
+        if width <= 32 and height <= 32:
+            return False
     return not any(term in description for term in noise_terms)
 
 

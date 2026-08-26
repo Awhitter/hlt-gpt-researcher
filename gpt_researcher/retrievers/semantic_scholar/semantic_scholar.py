@@ -48,11 +48,13 @@ class SemanticScholarSearch:
 
         for result in results:
             if result.get("isOpenAccess") and result.get("openAccessPdf"):
+                abstract = result.get("abstract", "Abstract not available")
                 search_result.append(
                     {
                         "title": result.get("title", "No Title"),
                         "href": result["openAccessPdf"].get("url", "No URL"),
-                        "body": result.get("abstract", "Abstract not available"),
+                        "body": abstract,
+                        "raw_content": abstract,
                     }
                 )
 

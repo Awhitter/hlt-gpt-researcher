@@ -36,7 +36,7 @@ class FirecrawlSearch:
         self.base_url = f"{server_url.rstrip('/')}/v1/search"
 
     def search(self, max_results=10):
-        """Search the query via Firecrawl and return [{'href', 'body'}, ...]."""
+        """Search Firecrawl while distinguishing snippets from fetched page text."""
         if not self.api_key:
             print(
                 "Firecrawl API key not found. Set the FIRECRAWL_API_KEY environment "
@@ -67,13 +67,18 @@ class FirecrawlSearch:
                 url = result.get("url")
                 if not url:
                     continue
-                body = (
-                    result.get("markdown")
-                    or result.get("description")
-                    or result.get("title")
-                    or ""
-                )
-                search_response.append({"href": url, "body": body})
+                markdown = result.get("markdown") or ""
+                description = result.get("description") or ""
+                item = {
+                    "href": url,
+                    "title": result.get("title") or "",
+                    "body": markdown or description or result.get("title") or "",
+                }
+                # Only `markdown` is full page evidence. A long search
+                # description must still be scraped before synthesis.
+                if markdown:
+                    item["raw_content"] = markdown
+                search_response.append(item)
             return search_response
         except Exception as e:
             print(f"Error: {e}. Failed fetching sources. Resulting in empty response.")

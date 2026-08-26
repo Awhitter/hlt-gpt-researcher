@@ -85,10 +85,12 @@ class XquikSearch:
             if views:
                 engagement += f", {views} views"
 
+            full_text = f"{text}\n\n[{engagement}]"
             search_results.append({
                 "title": f"@{username}: {text[:120]}{'...' if len(text) > 120 else ''}",
                 "href": f"https://x.com/{username}/status/{tweet_id}",
-                "body": f"{text}\n\n[{engagement}]",
+                "body": full_text,
+                "raw_content": full_text,
             })
 
         return search_results

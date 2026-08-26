@@ -199,12 +199,60 @@ deployment should fail the smoke test unless all requested scopes are ready.
 - `deep_research` creates a `research_id` and returns context, sources, source
   URLs, attributed images, and counts. `depth` uses 5/8/12 results per query for
   fast/balanced/deep; `max_sources_per_query` can override that from 3–20.
-  `include_generated_images=true` opts into contextual illustrations; source
-  images remain automatic. Completed run metadata is persisted in SQLite and
-  can be recovered after an MCP/API restart.
+  `include_generated_images=true` opts into contextual illustrations. Source
+  images remain automatic for ordinary runs. Strict runs deliberately do not
+  fetch page images from the MCP service network; their only image option is
+  the separately attributed, opt-in generated-image path. Completed run
+  metadata is persisted in SQLite and can be recovered after an MCP/API restart.
+- `deep_research.source_policy` can make evidence selection strict. Use
+  `enforcement: "strict"`, `discovery_mode: "required_only"`, and typed
+  `required_sources` when a canary or regulated brief must use exact sources.
+  The run returns `source_manifest.v1`; disallowed candidates are blocked before
+  context, required pages with missing titles/content fail closed, and the
+  normalized manifest survives restart.
+
+  Strict mode supports at most 32 required sources and 64 allow/deny domains,
+  requires at least 100 characters of titled page content, and caps the judged
+  report at 40,000 characters. It always uses the remote Firecrawl scraper and
+  fails before model or retrieval spend with `strict_scraper_unavailable` unless
+  the Firecrawl Python package, `FIRECRAWL_API_KEY`, and a public
+  `FIRECRAWL_SERVER_URL` are available. The MCP service validates each requested
+  target plus Firecrawl's requested/resolved URL attestations, and bypasses the
+  Firecrawl content cache for strict evidence. Redirect-hop egress inside the
+  remote Firecrawl service remains a provider control.
+
+  ```json
+  {
+    "source_policy": {
+      "enforcement": "strict",
+      "discovery_mode": "required_only",
+      "min_accepted_sources": 2,
+      "required_sources": [
+        {
+          "id": "official-program",
+          "family": "official",
+          "url": "https://authority.example/program"
+        },
+        {
+          "id": "peer-reviewed-outcomes",
+          "family": "peer-reviewed",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC10907523/"
+        }
+      ]
+    }
+  }
+  ```
 - `quick_search` returns fast search results or a summary.
 - `write_report` accepts a prior `research_id`; if the hot cache was lost, it
   hydrates from persisted context and source metadata.
+- For strict runs, `write_report` also extracts every report URL, requires the
+  required sources to be cited, and invokes a separate evidence judge. Draft
+  text such as `PASS` has no effect on acceptance. Failed drafts remain
+  inspectable but return `publishable: false` and `report_quality.v1`. A failed
+  first candidate closes that run to further writes. If an accepted report
+  already exists, a later rejected custom-prompt revision is stored separately;
+  the accepted artifact and publishable run remain intact, and readback exposes
+  both the accepted and rejected revision receipts.
 - `get_research_sources` accepts a prior `research_id`.
 - `get_research_context` accepts a prior `research_id`.
 - `get_research_images` accepts a prior `research_id` and returns image URLs,

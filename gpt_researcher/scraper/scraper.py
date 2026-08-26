@@ -8,7 +8,13 @@ import asyncio
 import logging
 
 import requests
+from urllib.parse import urljoin
 
+from gpt_researcher.source_policy import (
+    SourcePolicy,
+    SourcePolicyError,
+    require_policy_source_url,
+)
 from gpt_researcher.utils.imports import check_pkg
 from gpt_researcher.utils.workers import WorkerPool
 
@@ -45,7 +51,17 @@ class Scraper:
     Scraper class to extract the content from the links
     """
 
-    def __init__(self, urls, user_agent, scraper, worker_pool: WorkerPool):
+    def __init__(
+        self,
+        urls,
+        user_agent,
+        scraper,
+        worker_pool: WorkerPool,
+        *,
+        enforce_public_network: bool = False,
+        source_policy: SourcePolicy | None = None,
+        failure_callback=None,
+    ):
         """
         Initialize the Scraper class.
         Args:
@@ -58,6 +74,16 @@ class Scraper:
         self.urls = unique_urls
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
+        self.enforce_public_network = enforce_public_network
+        self.source_policy = source_policy or SourcePolicy()
+        self.failure_callback = failure_callback
+        if enforce_public_network:
+            # Scrapers that use this shared session validate every redirect
+            # target before requests follows it. Browser backends revalidate
+            # their final URL separately.
+            self.session._gptr_enforce_public_network = True
+            self.session._gptr_source_policy = self.source_policy
+            self.session.hooks["response"].append(self._validate_response_url)
         self.scraper = scraper
         dependency = OPTIONAL_SCRAPER_DEPENDENCIES.get(self.scraper)
         if dependency:
@@ -84,8 +110,11 @@ class Scraper:
         res = [content for content in contents if content["raw_content"] is not None]
         return res
 
-    @staticmethod
-    def _empty_result(link: str, title: str = "") -> dict:
+    def _empty_result(
+        self, link: str, title: str = "", *, reason: str = "scrape_failed"
+    ) -> dict:
+        if self.failure_callback:
+            self.failure_callback({"url": link, "reason": reason})
         return {
             "url": link,
             "raw_content": None,
@@ -99,6 +128,13 @@ class Scraper:
         """
         async with self.worker_pool.throttle():
             try:
+                if self.enforce_public_network:
+                    await asyncio.to_thread(
+                        require_policy_source_url,
+                        self.source_policy,
+                        link,
+                        resolve_dns=True,
+                    )
                 Scraper = self.get_scraper(link)
                 scraper = Scraper(link, session)
 
@@ -120,7 +156,9 @@ class Scraper:
 
                 if len(content) < 100:
                     self.logger.warning(f"Content too short or empty for {link}")
-                    return self._empty_result(link, title)
+                    return self._empty_result(
+                        link, title, reason="scrape_content_too_short"
+                    )
 
                 # Log results
                 self.logger.info(f"\nTitle: {title}")
@@ -133,7 +171,9 @@ class Scraper:
 
                 if not content or len(content) < 100:
                     self.logger.warning(f"Content too short or empty for {link}")
-                    return self._empty_result(link, title)
+                    return self._empty_result(
+                        link, title, reason="scrape_content_too_short"
+                    )
 
                 return {
                     "url": link,
@@ -144,7 +184,25 @@ class Scraper:
 
             except Exception as e:
                 self.logger.error(f"Error processing {link}: {str(e)}")
-                return self._empty_result(link)
+                reason = (
+                    str(e)
+                    if isinstance(e, SourcePolicyError)
+                    else f"scrape_error:{type(e).__name__}"
+                )
+                return self._empty_result(link, reason=reason)
+
+    def _validate_response_url(self, response, *args, **kwargs):
+        require_policy_source_url(
+            self.source_policy, response.url, resolve_dns=True
+        )
+        location = response.headers.get("location")
+        if location:
+            require_policy_source_url(
+                self.source_policy,
+                urljoin(response.url, location),
+                resolve_dns=True,
+            )
+        return response
 
     def get_scraper(self, link):
         """
@@ -165,12 +223,20 @@ class Scraper:
 
         scraper_key = None
 
-        if link.endswith(".pdf"):
+        if self.enforce_public_network:
+            scraper_key = self.scraper
+        elif link.endswith(".pdf"):
             scraper_key = "pdf"
         elif "arxiv.org" in link:
             scraper_key = "arxiv"
         else:
             scraper_key = self.scraper
+
+        if self.enforce_public_network and scraper_key != "firecrawl":
+            raise SourcePolicyError(
+                "strict source policies require the Firecrawl remote scraper "
+                "so target URLs are not fetched from the MCP service network"
+            )
 
         scraper_class = SCRAPER_CLASSES.get(scraper_key)
         if scraper_class is None:

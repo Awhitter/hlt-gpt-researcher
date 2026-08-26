@@ -43,7 +43,8 @@ class PyMuPDFScraper:
             if self.is_url():
                 # Never disable SSL verification — a MITM attacker could serve
                 # a malicious PDF if we fall back to verify=False.
-                response = requests.get(self.link, timeout=(5, 30), stream=True)
+                client = self.session or requests
+                response = client.get(self.link, timeout=(5, 30), stream=True)
                 response.raise_for_status()
 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:

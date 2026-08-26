@@ -125,6 +125,33 @@ class ResearchRunStore:
                     if "duplicate column name" not in str(exc).lower():
                         raise
                 conn.execute("PRAGMA user_version = 3")
+            if version < 4:
+                for column in (
+                    "source_policy_json",
+                    "source_manifest_json",
+                    "report_quality_json",
+                ):
+                    try:
+                        conn.execute(f"ALTER TABLE research_runs ADD COLUMN {column} TEXT")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
+                conn.execute("PRAGMA user_version = 4")
+            if version < 5:
+                for column, column_type in (
+                    ("rejected_report_path", "TEXT"),
+                    ("rejected_report_quality_json", "TEXT"),
+                    ("rejected_report_request_fingerprint", "TEXT"),
+                    ("rejected_at", "TEXT"),
+                ):
+                    try:
+                        conn.execute(
+                            f"ALTER TABLE research_runs ADD COLUMN {column} {column_type}"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise
+                conn.execute("PRAGMA user_version = 5")
             if recover_interrupted:
                 self._mark_interrupted_locked(conn)
 
@@ -159,6 +186,7 @@ class ResearchRunStore:
         status: str = "running",
         resource_topic: str | None = None,
         hlt_research_scope: Any | None = None,
+        source_policy: Any | None = None,
     ) -> None:
         now = utc_now_iso()
         with self._lock, self._connect() as conn:
@@ -167,9 +195,9 @@ class ResearchRunStore:
                 INSERT INTO research_runs (
                     research_id, query, report_type, report_source, tone, status,
                     created_at, updated_at, started_at, resource_topic,
-                    hlt_research_scope_json
+                    hlt_research_scope_json, source_policy_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(research_id) DO UPDATE SET
                     query = excluded.query,
                     report_type = excluded.report_type,
@@ -181,7 +209,8 @@ class ResearchRunStore:
                     error_code = NULL,
                     error_message = NULL,
                     resource_topic = COALESCE(excluded.resource_topic, research_runs.resource_topic),
-                    hlt_research_scope_json = COALESCE(excluded.hlt_research_scope_json, research_runs.hlt_research_scope_json)
+                    hlt_research_scope_json = COALESCE(excluded.hlt_research_scope_json, research_runs.hlt_research_scope_json),
+                    source_policy_json = COALESCE(excluded.source_policy_json, research_runs.source_policy_json)
                 """,
                 (
                     research_id,
@@ -195,6 +224,7 @@ class ResearchRunStore:
                     now,
                     resource_topic,
                     _json_dump(hlt_research_scope) if hlt_research_scope is not None else None,
+                    _json_dump(source_policy) if source_policy is not None else None,
                 ),
             )
 
@@ -221,6 +251,13 @@ class ResearchRunStore:
             "error_message",
             "resource_topic",
             "hlt_research_scope",
+            "source_policy",
+            "source_manifest",
+            "report_quality",
+            "rejected_report_path",
+            "rejected_report_quality",
+            "rejected_report_request_fingerprint",
+            "rejected_at",
         }
         unknown = set(fields) - allowed
         if unknown:
@@ -238,6 +275,14 @@ class ResearchRunStore:
                 column_values["research_images_json"] = _json_dump(value)
             elif key == "hlt_research_scope":
                 column_values["hlt_research_scope_json"] = _json_dump(value)
+            elif key == "source_policy":
+                column_values["source_policy_json"] = _json_dump(value)
+            elif key == "source_manifest":
+                column_values["source_manifest_json"] = _json_dump(value)
+            elif key == "report_quality":
+                column_values["report_quality_json"] = _json_dump(value)
+            elif key == "rejected_report_quality":
+                column_values["rejected_report_quality_json"] = _json_dump(value)
             else:
                 column_values[key] = value
 
@@ -266,6 +311,9 @@ class ResearchRunStore:
         pdf_path: str | None = None,
         docx_path: str | None = None,
         hlt_research_scope: Any | None = None,
+        source_policy: Any | None = None,
+        source_manifest: Any | None = None,
+        report_quality: Any | None = None,
     ) -> None:
         sources = sources or []
         source_urls = source_urls or []
@@ -288,16 +336,53 @@ class ResearchRunStore:
         }
         if hlt_research_scope is not None:
             fields["hlt_research_scope"] = hlt_research_scope
+        if source_policy is not None:
+            fields["source_policy"] = source_policy
+        if source_manifest is not None:
+            fields["source_manifest"] = source_manifest
+        if report_quality is not None:
+            fields["report_quality"] = report_quality
         self.update_run(research_id, **fields)
 
-    def fail_run(self, research_id: str, *, error_code: str = "error", error_message: str = "") -> None:
-        self.update_run(
-            research_id,
+    def fail_run(
+        self,
+        research_id: str,
+        *,
+        error_code: str = "error",
+        error_message: str = "",
+        **receipt_fields: Any,
+    ) -> None:
+        """Atomically persist failure receipts and the terminal failed state."""
+
+        fields = dict(receipt_fields)
+        fields.update(
             status="failed",
             completed_at=utc_now_iso(),
             error_code=error_code,
             error_message=error_message,
         )
+        self.update_run(research_id, **fields)
+
+    def record_report_rejection(
+        self,
+        research_id: str,
+        *,
+        report_path: str | None,
+        report_quality: Any,
+        request_fingerprint: str,
+        costs: float | None = None,
+    ) -> None:
+        """Persist a rejected candidate without replacing the accepted revision."""
+
+        fields: dict[str, Any] = {
+            "rejected_report_path": report_path,
+            "rejected_report_quality": report_quality,
+            "rejected_report_request_fingerprint": request_fingerprint,
+            "rejected_at": utc_now_iso(),
+        }
+        if costs is not None:
+            fields["costs"] = costs
+        self.update_run(research_id, **fields)
 
     def get_run(self, research_id: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
@@ -339,6 +424,12 @@ class ResearchRunStore:
         data["source_urls"] = _json_load(data.get("source_urls_json"), [])
         data["research_images"] = _json_load(data.get("research_images_json"), [])
         data["hlt_research_scope"] = _json_load(data.get("hlt_research_scope_json"), None)
+        data["source_policy"] = _json_load(data.get("source_policy_json"), None)
+        data["source_manifest"] = _json_load(data.get("source_manifest_json"), None)
+        data["report_quality"] = _json_load(data.get("report_quality_json"), None)
+        data["rejected_report_quality"] = _json_load(
+            data.get("rejected_report_quality_json"), None
+        )
         return data
 
 

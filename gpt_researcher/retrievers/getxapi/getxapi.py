@@ -82,10 +82,15 @@ class GetXAPISearch:
 
             truncated = text[:80] + ("..." if len(text) > 80 else "")
 
+            full_text = (
+                f"{text}\n\n[likes:{likes} retweets:{retweets} "
+                f"replies:{replies} views:{views}]"
+            )
             search_results.append({
                 "title": f"@{username}: {truncated}",
                 "href": f"https://x.com/{username}/status/{tweet_id}",
-                "body": f"{text}\n\n[likes:{likes} retweets:{retweets} replies:{replies} views:{views}]",
+                "body": full_text,
+                "raw_content": full_text,
             })
 
         return search_results

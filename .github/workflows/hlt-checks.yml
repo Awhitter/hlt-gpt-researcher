@@ -59,9 +59,12 @@ jobs:
             tests/test_mcp_only_research.py \
             tests/test_hlt_scope_inference.py \
             tests/test_mcp_scope_params.py \
+            tests/test_mcp_persistence.py \
             tests/test_mcp_server_health.py \
             tests/test_websocket_manager.py \
             tests/test_firecrawl_retriever.py \
+            tests/test_source_policy.py \
+            tests/test_research_images.py \
             tests/test_report_artifacts.py \
             tests/test_research_run_store.py \
             tests/test_numeric_grounding.py \

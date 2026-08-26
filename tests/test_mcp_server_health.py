@@ -1,6 +1,11 @@
+import asyncio
+
+import pytest
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
-from mcp_server.server import app
+from mcp_server.server import app, mcp
+from mcp_server.tools import SourcePolicyInput
 
 
 def test_mcp_health_includes_redacted_langfuse_status():
@@ -22,3 +27,41 @@ def test_mcp_health_includes_redacted_langfuse_status():
     }
     assert "sk-" not in str(body)
     assert "pk-" not in str(body)
+
+
+def test_deep_research_exposes_typed_source_policy_schema():
+    tools = asyncio.run(mcp.list_tools())
+    deep_research = next(tool for tool in tools if tool.name == "deep_research")
+    schema_text = str(deep_research.inputSchema)
+
+    assert "SourcePolicyInput" in schema_text
+    assert "required_sources" in schema_text
+    assert "min_accepted_sources" in schema_text
+    assert "independent_judge_required" in schema_text
+
+
+def test_returned_source_policy_round_trips_through_public_schema():
+    payload = {
+        "version": "source_policy.v1",
+        "enforcement": "strict",
+        "discovery_mode": "required_only",
+        "allowed_domains": ["example.com"],
+        "denied_domains": [],
+        "required_sources": [
+            {
+                "id": "authority",
+                "family": "standard",
+                "url": "https://example.com/evidence",
+            }
+        ],
+        "min_accepted_sources": 1,
+        "min_content_chars": 100,
+        "require_title": True,
+        "require_required_sources_cited": True,
+        "independent_judge_required": True,
+    }
+
+    parsed = SourcePolicyInput.model_validate(payload)
+    assert parsed.model_dump(exclude_none=True) == payload
+    with pytest.raises(ValidationError):
+        SourcePolicyInput.model_validate({**payload, "version": "source_policy.v999"})
