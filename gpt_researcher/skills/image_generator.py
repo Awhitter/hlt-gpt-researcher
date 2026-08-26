@@ -145,6 +145,7 @@ class ImageGenerator:
                 
                 if images:
                     image_info = images[0]
+                    image_info["kind"] = "generated"
                     image_info['title'] = concept['title']
                     image_info['section_hint'] = concept.get('section_hint', '')
                     return image_info
@@ -547,6 +548,7 @@ Return ONLY the JSON, no additional text."""
                 
                 if images:
                     image_info = images[0]
+                    image_info["kind"] = "generated"
                     image_info["section_header"] = suggestion["section_header"]
                     generated_images.append(image_info)
                     
@@ -718,6 +720,7 @@ Return ONLY the JSON, no additional text."""
                 
                 if images:
                     image_info = images[0]
+                    image_info["kind"] = "generated"
                     image_info["description"] = image_description
                     generated_images.append(image_info)
                     

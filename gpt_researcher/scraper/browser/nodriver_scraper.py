@@ -11,6 +11,7 @@ import asyncio
 import logging
 
 from ..utils import get_relevant_images, extract_title, get_text_from_soup, clean_soup
+from gpt_researcher.source_policy import require_policy_source_url
 
 
 class NoDriverScraper:
@@ -216,6 +217,15 @@ class NoDriverScraper:
             # wait for potential redirection
             await page.sleep(random.uniform(0.3, 0.7))
             await browser.wait_or_timeout(page, "idle", 2)
+
+            final_url = str(getattr(page, "url", "") or self.url)
+            if getattr(self.session, "_gptr_enforce_public_network", False):
+                await asyncio.to_thread(
+                    require_policy_source_url,
+                    self.session._gptr_source_policy,
+                    final_url,
+                    resolve_dns=True,
+                )
 
             await browser.scroll_page_to_bottom(page)
             html = await page.get_content()

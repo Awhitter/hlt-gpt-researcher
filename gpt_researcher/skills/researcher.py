@@ -15,6 +15,7 @@ from ..actions.agent_creator import choose_agent
 from ..actions.query_processing import get_search_results, plan_research_outline
 from ..actions.utils import stream_output
 from ..document import DocumentLoader, LangChainDocumentLoader, OnlineDocumentLoader
+from ..source_policy import source_url_allowed
 from ..utils.enum import ReportSource, ReportType
 from ..utils.logging_config import get_json_handler
 
@@ -496,6 +497,17 @@ class ResearchConductor:
                             content = result.get("body", "")
                             url = result.get("href", "")
                             title = result.get("title", "")
+
+                            allowed, rejection_reason = source_url_allowed(
+                                self.researcher.source_policy, url
+                            )
+                            if url and not allowed:
+                                self.researcher.add_source_rejection(
+                                    url,
+                                    rejection_reason or "source_policy_rejected",
+                                    stage="mcp_retrieval",
+                                )
+                                continue
                             
                             if content:
                                 context_entry = {
@@ -821,6 +833,16 @@ class ResearchConductor:
 
         new_urls = []
         for url in url_set_input:
+            allowed, rejection_reason = source_url_allowed(
+                self.researcher.source_policy, url
+            )
+            if not allowed:
+                self.researcher.add_source_rejection(
+                    url,
+                    rejection_reason or "source_policy_rejected",
+                    stage="url_admission",
+                )
+                continue
             if url not in self.researcher.visited_urls:
                 self.researcher.visited_urls.add(url)
                 new_urls.append(url)
@@ -864,15 +886,39 @@ class ResearchConductor:
                 # Separate results that already have content from those needing scraping
                 for result in search_results:
                     url = result.get("href") or result.get("url")
-                    raw_content = result.get("raw_content") or result.get("body")
-                    if url and raw_content and len(raw_content) > 100:
-                        # Retriever already fetched full content (e.g. PubMed Central)
-                        prefetched_content.append({
+                    if not url:
+                        continue
+                    allowed, rejection_reason = source_url_allowed(
+                        self.researcher.source_policy, url
+                    )
+                    if not allowed:
+                        self.researcher.add_source_rejection(
+                            url,
+                            rejection_reason or "source_policy_rejected",
+                            stage="search_result",
+                        )
+                        continue
+                    # Search snippets are discovery metadata, not fetched page
+                    # evidence. Advisory runs may reuse retriever-attested full
+                    # text, but strict evidence must always pass through the
+                    # configured remote scraper so requested/resolved URL
+                    # provenance and cache controls are applied consistently.
+                    raw_content = result.get("raw_content")
+                    if (
+                        raw_content
+                        and len(raw_content) > 100
+                        and not self.researcher.source_policy.is_strict
+                    ):
+                        source_record = {
                             "url": url,
                             "raw_content": raw_content,
-                        })
-                        self.researcher.add_research_sources([{"url": url}])
-                    elif url:
+                            "title": result.get("title") or "",
+                        }
+                        # Retriever already fetched full content (e.g. PubMed Central)
+                        prefetched_content.append(source_record)
+                        self.researcher.add_research_sources([source_record])
+                        self.researcher.visited_urls.add(url)
+                    else:
                         new_search_urls.append(url)
             except Exception as e:
                 self.logger.error(f"Error searching with {retriever_class.__name__}: {e}")

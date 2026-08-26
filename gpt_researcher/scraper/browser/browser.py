@@ -17,6 +17,7 @@ from .processing.scrape_skills import (scrape_pdf_with_pymupdf,
 from urllib.parse import urljoin
 
 from ..utils import get_relevant_images, extract_title, get_text_from_soup, clean_soup
+from gpt_researcher.source_policy import require_policy_source_url
 
 FILE_DIR = Path(__file__).parent.parent
 
@@ -194,6 +195,12 @@ class BrowserScraper:
 
     def scrape_text_with_selenium(self) -> tuple:
         self.driver.get(self.url)
+        if getattr(self.session, "_gptr_enforce_public_network", False):
+            require_policy_source_url(
+                self.session._gptr_source_policy,
+                self.driver.current_url,
+                resolve_dns=True,
+            )
 
         try:
             WebDriverWait(self.driver, 20).until(

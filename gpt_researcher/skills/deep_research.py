@@ -100,16 +100,19 @@ class DeepResearchSkill:
         """Generate follow-up questions to clarify research direction"""
         # Get initial search results from all retrievers to inform query generation
         all_search_results = []
-        for retriever in self.researcher.retrievers:
-            try:
-                results = await get_search_results(
-                    query,
-                    retriever,
-                    researcher=self.researcher
-                )
-                all_search_results.extend(results)
-            except Exception as e:
-                logger.warning(f"Error with retriever {retriever.__name__}: {e}")
+        # Strict source runs cannot use discovery snippets to steer the plan;
+        # only their exact admitted pages may influence synthesis.
+        if not self.researcher.source_policy.is_strict:
+            for retriever in self.researcher.retrievers:
+                try:
+                    results = await get_search_results(
+                        query,
+                        retriever,
+                        researcher=self.researcher
+                    )
+                    all_search_results.extend(results)
+                except Exception as e:
+                    logger.warning(f"Error with retriever {retriever.__name__}: {e}")
         search_results = all_search_results
         logger.info(f"Initial web knowledge obtained: {len(search_results)} results")
 
@@ -231,6 +234,7 @@ Format each question on a new line starting with 'Question: '"""}
         all_visited_urls = visited_urls.copy()
         all_context = []
         all_sources = []
+        all_source_rejections = []
 
         # Process queries with concurrency limit
         semaphore = asyncio.Semaphore(self.concurrency_limit)
@@ -251,10 +255,25 @@ Format each question on a new line starting with 'Question: '"""}
                         websocket=self.websocket,
                         config_path=self.config_path,
                         headers=self.headers,
-                        visited_urls=self.visited_urls,
+                        # Each concurrent nested run owns its visited set.
+                        # Sharing this mutable set lets one run clear/consume
+                        # another run's strict required URLs.
+                        visited_urls=set(self.visited_urls),
                         # Propagate MCP configuration to nested researchers
                         mcp_configs=self.researcher.mcp_configs,
-                        mcp_strategy=self.researcher.mcp_strategy
+                        mcp_strategy=self.researcher.mcp_strategy,
+                        source_urls=(
+                            self.researcher.source_policy.required_urls or None
+                        ),
+                        complement_source_urls=(
+                            bool(self.researcher.source_policy.required_urls)
+                            and self.researcher.source_policy.discovery_mode
+                            != "required_only"
+                        ),
+                        query_domains=list(
+                            self.researcher.source_policy.allowed_domains
+                        ),
+                        source_policy=self.researcher.source_policy,
                     )
 
                     # Conduct research
@@ -283,7 +302,8 @@ Format each question on a new line starting with 'Question: '"""}
                         'researchGoal': serp_query['researchGoal'],
                         'citations': results['citations'],
                         'context': "\n".join(context) if isinstance(context, list) else (context or ""),
-                        'sources': sources if sources else []
+                        'sources': sources if sources else [],
+                        'source_rejections': list(researcher.source_rejections),
                     }
 
                 except Exception as e:
@@ -318,6 +338,9 @@ Format each question on a new line starting with 'Question: '"""}
                     all_context.append(ctx)
             if result['sources']:
                 all_sources.extend(result['sources'])
+            for rejection in result.get('source_rejections', []):
+                if rejection not in all_source_rejections:
+                    all_source_rejections.append(rejection)
 
             # Continue deeper if needed
             if depth > 1:
@@ -349,6 +372,9 @@ Format each question on a new line starting with 'Question: '"""}
                     all_context.extend(deeper_results['context'])
                 if deeper_results.get('sources'):
                     all_sources.extend(deeper_results['sources'])
+                for rejection in deeper_results.get('source_rejections', []):
+                    if rejection not in all_source_rejections:
+                        all_source_rejections.append(rejection)
 
         # Update class tracking
         self.context.extend(all_context)
@@ -363,7 +389,8 @@ Format each question on a new line starting with 'Question: '"""}
             'visited_urls': list(all_visited_urls),
             'citations': all_citations,
             'context': trimmed_context,
-            'sources': all_sources
+            'sources': all_sources,
+            'source_rejections': all_source_rejections,
         }
 
     async def run(self, on_progress=None) -> str:
@@ -427,6 +454,12 @@ Format each question on a new line starting with 'Question: '"""}
         # Set research sources
         if results.get('sources'):
             self.researcher.research_sources = results['sources']
+        for rejection in results.get('source_rejections', []):
+            self.researcher.add_source_rejection(
+                str(rejection.get('url') or ''),
+                str(rejection.get('reason') or 'scrape_failed'),
+                stage=str(rejection.get('stage') or 'scrape'),
+            )
 
         # Log total execution time
         end_time = time.time()

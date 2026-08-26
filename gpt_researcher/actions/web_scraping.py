@@ -2,6 +2,7 @@ from typing import Any
 from colorama import Fore, Style
 
 from gpt_researcher.utils.workers import WorkerPool
+from gpt_researcher.source_policy import SourcePolicy, SourcePolicyError
 from ..scraper import Scraper
 from ..config.config import Config
 from ..utils.logger import get_formatted_logger
@@ -10,7 +11,13 @@ logger = get_formatted_logger()
 
 
 async def scrape_urls(
-    urls, cfg: Config, worker_pool: WorkerPool
+    urls,
+    cfg: Config,
+    worker_pool: WorkerPool,
+    *,
+    enforce_public_network: bool = False,
+    source_policy: SourcePolicy | None = None,
+    failure_callback: Any | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Scrapes the urls
@@ -31,13 +38,25 @@ async def scrape_urls(
     )
 
     try:
-        scraper = Scraper(urls, user_agent, cfg.scraper, worker_pool=worker_pool)
+        scraper = Scraper(
+            urls,
+            user_agent,
+            cfg.scraper,
+            worker_pool=worker_pool,
+            enforce_public_network=enforce_public_network,
+            source_policy=source_policy,
+            failure_callback=failure_callback,
+        )
         scraped_data = await scraper.run()
         for item in scraped_data:
             if 'image_urls' in item:
                 images.extend(item['image_urls'])
     except Exception as e:
         print(f"{Fore.RED}Error in scrape_urls: {e}{Style.RESET_ALL}")
+        if failure_callback:
+            reason = str(e) if isinstance(e, SourcePolicyError) else f"scrape_error:{type(e).__name__}"
+            for url in urls:
+                failure_callback({"url": url, "reason": reason})
 
     return scraped_data, images
 

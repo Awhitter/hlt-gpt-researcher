@@ -144,8 +144,28 @@ def test_image_quality_filter_rejects_logos_icons_and_svg_artifacts():
     )
 
 
+def test_image_quality_filter_rejects_known_tracking_collectors_and_tiny_pixels():
+    assert not is_likely_content_image(
+        "https://mc.yandex.com/watch/28584306", ""
+    )
+    assert not is_likely_content_image(
+        "https://cdn.example.com/asset.png?width=1&height=1", ""
+    )
+
+
 def test_image_enrichment_replaces_junk_with_source_page_hero(monkeypatch):
-    async def fake_scrape_urls(urls, _cfg, _worker_pool):
+    async def fake_scrape_urls(
+        urls,
+        _cfg,
+        _worker_pool,
+        *,
+        enforce_public_network=False,
+        source_policy=None,
+        failure_callback=None,
+    ):
+        assert enforce_public_network is False
+        assert source_policy is None
+        assert failure_callback is None
         assert urls == ["https://example.com/alec", "https://example.com/about"]
         return [], [
             {

@@ -25,12 +25,40 @@ def test_search_maps_results(monkeypatch):
         results = FirecrawlSearch("test query").search(max_results=5)
 
     assert results == [
-        {"href": "https://example.com/a", "body": "About A"},
-        {"href": "https://example.com/b", "body": "Full B content"},
+        {
+            "href": "https://example.com/a",
+            "title": "A",
+            "body": "About A",
+        },
+        {
+            "href": "https://example.com/b",
+            "title": "",
+            "body": "Full B content",
+            "raw_content": "Full B content",
+        },
     ]
     args, kwargs = post.call_args
     assert args[0] == "https://api.firecrawl.dev/v1/search"
     assert kwargs["headers"]["Authorization"] == "Bearer fc-test"
+
+
+def test_long_search_description_is_not_mislabeled_as_fetched_page_content(monkeypatch):
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+    response = MagicMock()
+    response.json.return_value = {
+        "data": [
+            {
+                "url": "https://example.com/snippet",
+                "title": "Snippet only",
+                "description": "A" * 500,
+            }
+        ]
+    }
+    with patch("requests.post", return_value=response):
+        result = FirecrawlSearch("test query").search(max_results=1)[0]
+
+    assert result["body"] == "A" * 500
+    assert "raw_content" not in result
 
 
 def test_search_restricts_domains(monkeypatch):

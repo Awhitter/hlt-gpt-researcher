@@ -1,6 +1,11 @@
 from bs4 import BeautifulSoup
 import os
 from ..utils import get_relevant_images
+from gpt_researcher.source_policy import (
+    SourcePolicyError,
+    canonicalize_url,
+    require_policy_source_url,
+)
 
 class FireCrawl:
 
@@ -49,8 +54,16 @@ class FireCrawl:
         """
 
         try:
+            strict_network = getattr(
+                self.session, "_gptr_enforce_public_network", False
+            )
+            scrape_options = {"formats": ["markdown"]}
+            if strict_network:
+                # Strict evidence must not inherit stale or cross-key provider
+                # cache state. Firecrawl remains the remote fetch boundary.
+                scrape_options.update(max_age=0, store_in_cache=False)
             # Fixed: Changed from scrape_url() to scrape() to match FireCrawl SDK v4.6.0+
-            response = self.firecrawl.scrape(url=self.link, formats=["markdown"])
+            response = self.firecrawl.scrape(url=self.link, **scrape_options)
 
             # Check if the page has been scraped successfully
             # Fixed: Access metadata attributes directly (not as dict keys)
@@ -61,22 +74,61 @@ class FireCrawl:
                 print(f"Scrape failed! Status code: {response.metadata.status_code}")
                 return "", [], ""
 
+            if strict_network:
+                requested_url = getattr(response.metadata, "source_url", None)
+                resolved_url = getattr(response.metadata, "url", None)
+                if not requested_url or not resolved_url:
+                    raise SourcePolicyError(
+                        "strict Firecrawl response did not preserve requested and "
+                        "resolved URL provenance"
+                    )
+                canonical_link = canonicalize_url(self.link)
+                canonical_requested = canonicalize_url(str(requested_url))
+                canonical_resolved = canonicalize_url(str(resolved_url))
+                for attested_url in (requested_url, resolved_url):
+                    require_policy_source_url(
+                        self.session._gptr_source_policy,
+                        str(attested_url),
+                        resolve_dns=True,
+                    )
+                if canonical_requested != canonical_link:
+                    raise SourcePolicyError(
+                        "strict Firecrawl requested URL attestation did not match "
+                        "the requested source"
+                    )
+                if canonical_resolved != canonical_link:
+                    raise SourcePolicyError(
+                        "strict Firecrawl resolved URL did not match the requested "
+                        "source; redirected content cannot be relabeled"
+                    )
+
             # Extract the content (markdown) and title from FireCrawl response
             # Fixed: Access attributes directly (not as dict keys)
             content = response.markdown if response.markdown else ""
             title = response.metadata.title if response.metadata and response.metadata.title else ""
 
-            # Parse the HTML content of the response to create a BeautifulSoup object for the utility functions
-            response_bs = self.session.get(self.link, timeout=4)
-            soup = BeautifulSoup(
-                response_bs.content, "lxml", from_encoding=response_bs.encoding
-            )
-
-            # Get relevant images using the utility function
-            image_urls = get_relevant_images(soup, self.link)
+            if strict_network:
+                # Strict runs never fetch target pages from the MCP service
+                # network. Firecrawl owns the remote fetch; generated images
+                # remain separately opt-in and source images stay empty.
+                image_urls = []
+            else:
+                try:
+                    response_bs = self.session.get(self.link, timeout=4)
+                    soup = BeautifulSoup(
+                        response_bs.content,
+                        "lxml",
+                        from_encoding=response_bs.encoding,
+                    )
+                    image_urls = get_relevant_images(soup, self.link)
+                except Exception as image_error:
+                    print(f"Image enrichment failed; keeping Firecrawl text: {image_error}")
+                    image_urls = []
 
             return content, image_urls, title
 
+        except SourcePolicyError:
+            raise
         except Exception as e:
             print("Error! : " + str(e))
             return "", [], ""

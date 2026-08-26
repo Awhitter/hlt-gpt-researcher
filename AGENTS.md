@@ -117,6 +117,15 @@ then upserts the same research_id with its richer orderedData. `prepare_research
 top related prior reports into new runs (disable per-request with
 `hlt_research_scope.memory: false`).
 
+Strict MCP research can carry a typed `source_policy`: exact required URLs and
+allowed domains are admitted before retrieval, normalized into a durable
+`source_manifest.v1`, and returned on source/context/image readback. A strict
+report is not accepted because its prose says PASS. Its citations must match the
+manifest and a separate evidence-judge call must pass; otherwise the draft is
+retained with `publishable=false` and a quality receipt. Strict runs require the
+remote Firecrawl scraper. A failed first report closes the run; a later rejected
+custom-prompt revision cannot replace an already accepted artifact.
+
 Scraping stack: `SCRAPER=firecrawl` (Firecrawl API) is the production scraper
 and `RETRIEVER=firecrawl,mcp` runs web search on the same Firecrawl plan via
 the HLT-added `firecrawl` retriever (`gpt_researcher/retrievers/firecrawl/`);

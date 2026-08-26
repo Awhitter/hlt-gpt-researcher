@@ -356,6 +356,14 @@ rubrics, or a human review queue.
   `OUTPUTS_DIR` point at persistent storage. In-flight runs interrupted by a
   restart are marked `failed` with `interrupted_by_restart`; they are not
   resumed automatically.
+- When the source set is part of the acceptance contract, pass a strict typed
+  source policy instead of describing an allowlist only in prose. Exact required
+  URLs are fetched directly; the normalized source manifest and report-quality
+  receipt are the acceptance signals. The report's own verdict is never one.
+  Strict mode requires the Firecrawl package/key and a public Firecrawl server,
+  and intentionally returns no page-scraped source images; opt-in generated
+  illustrations remain available. A rejected revision never overwrites an
+  already accepted report.
 - Use REST for deterministic server calls, MCP for agents, and UI for humans.
 - Code-only runs do not fall back to public web search. They discover real
   paths, read the returned source, and validate immutable file links; if that

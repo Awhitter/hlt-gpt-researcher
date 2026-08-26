@@ -34,6 +34,22 @@ class BrowserManager:
             researcher.cfg.scraper_rate_limit_delay
         )
 
+    def _enforces_public_network(self) -> bool:
+        """Keep custom/upstream researcher doubles backward compatible."""
+
+        return bool(
+            getattr(getattr(self.researcher, "source_policy", None), "is_strict", False)
+        )
+
+    def _record_scrape_failure(self, failure: dict) -> None:
+        callback = getattr(self.researcher, "add_source_rejection", None)
+        if callback:
+            callback(
+                str(failure.get("url") or ""),
+                str(failure.get("reason") or "scrape_failed"),
+                stage="scrape",
+            )
+
     async def browse_urls(self, urls: list[str]) -> list[dict]:
         """
         Scrape content from a list of URLs.
@@ -53,7 +69,14 @@ class BrowserManager:
             )
 
         scraped_content, images = await scrape_urls(
-            urls, self.researcher.cfg, self.worker_pool
+            urls,
+            self.researcher.cfg,
+            self.worker_pool,
+            enforce_public_network=self._enforces_public_network(),
+            source_policy=getattr(self.researcher, "source_policy", None),
+            failure_callback=(
+                self._record_scrape_failure if self._enforces_public_network() else None
+            ),
         )
         self.researcher.add_research_sources(scraped_content)
         new_images = self.select_top_images(images, k=4)  # Select top 4 images
@@ -161,7 +184,14 @@ class BrowserManager:
             return []
 
         _scraped_content, images = await scrape_urls(
-            source_urls, self.researcher.cfg, self.worker_pool
+            source_urls,
+            self.researcher.cfg,
+            self.worker_pool,
+            enforce_public_network=self._enforces_public_network(),
+            source_policy=getattr(self.researcher, "source_policy", None),
+            failure_callback=(
+                self._record_scrape_failure if self._enforces_public_network() else None
+            ),
         )
         enriched = self.select_top_images(images, k=k)
         self.researcher.add_research_images(enriched)

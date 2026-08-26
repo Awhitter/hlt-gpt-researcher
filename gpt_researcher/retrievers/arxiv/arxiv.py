@@ -35,6 +35,7 @@ class ArxivSearch:
                 "title": result.title,
                 "href": result.pdf_url,
                 "body": result.summary,
+                "raw_content": result.summary,
             })
         
         return search_result
