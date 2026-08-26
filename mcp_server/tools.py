@@ -1107,6 +1107,8 @@ async def deep_research_tool(
     max_sources_per_query: int | None = None,
     include_generated_images: bool = False,
     source_policy: dict[str, Any] | None = None,
+    *,
+    _research_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         policy = SourcePolicy.from_value(source_policy)
@@ -1116,7 +1118,9 @@ async def deep_research_tool(
         await _require_strict_scraper_runtime(policy)
     except StrictScraperUnavailable as exc:
         return _error(str(exc), error_code="strict_scraper_unavailable")
-    research_id = str(uuid.uuid4())
+    # The HTTP automation facade supplies a deterministic private ID.  The
+    # public MCP tool keeps its existing random-ID behavior and schema.
+    research_id = _research_id or str(uuid.uuid4())
     store = get_research_run_store()
     store.create_run(
         research_id,

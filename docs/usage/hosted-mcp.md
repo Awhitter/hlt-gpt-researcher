@@ -142,6 +142,66 @@ curl -sS -X POST "https://gpt-researcher-api-production.up.railway.app/report/" 
   -d '{"task":"Research NCLEX-RN pass rate changes in 2026","report_type":"research_report","report_source":"web","tone":"Objective","repo_name":"","branch_name":"","generate_in_background":false}'
 ```
 
+## Make.com Strict Research Adapter
+
+Make.com and other simple HTTP clients can run the proven strict MCP sequence
+without creating an MCP session:
+
+```bash
+curl -sS -X POST \
+  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/v1" \
+  -H "Authorization: Bearer $GPTR_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema_version": "research_automation_request.v1",
+    "request_id": "make-research-2026-08-26-001",
+    "query": "What does the specified authority document?",
+    "report_prompt": "Cite every required source and state scope limits.",
+    "scope": "none",
+    "depth": "balanced",
+    "max_sources_per_query": 8,
+    "include_generated_images": false,
+    "source_policy": {
+      "version": "source_policy.v1",
+      "enforcement": "strict",
+      "discovery_mode": "required_only",
+      "required_sources": [
+        {
+          "id": "official-program",
+          "family": "official",
+          "url": "https://authority.example/program"
+        }
+      ],
+      "min_accepted_sources": 1,
+      "min_content_chars": 100,
+      "require_title": true,
+      "require_required_sources_cited": true,
+      "independent_judge_required": true
+    }
+  }'
+```
+
+The route uses the MCP service's existing Bearer middleware. Its request and
+result versions are `research_automation_request.v1` and
+`research_automation_result.v1`. `request_id` is the idempotency key: the same
+ID and canonical payload return the stored result with
+`idempotent_readback=true`; a changed payload under that ID returns HTTP 409
+without starting research. A currently owned request returns HTTP 202 with
+`Retry-After`. Long runs heartbeat their durable lease. After the one-hour
+default stale boundary (`AUTOMATION_RESEARCH_STALE_SECONDS`, minimum five
+minutes), a replacement worker rotates the lease generation before reconciling
+or resuming the deterministic core run; the prior worker is fenced from writing
+the terminal receipt or starting report generation after it loses ownership.
+Core runs marked `interrupted_by_restart` remain recoverable HTTP 202 receipts
+until that boundary, then are re-run under the replacement lease.
+
+Expected source/report rejection returns HTTP 200 with `status="failed"`,
+`publishable=false`, and the durable manifest/quality receipt. A successful
+result requires a passed source manifest, no missing or unadmitted citations,
+and an independent-judge pass. The facade returns the accepted report, cost,
+source/image counts, and `delivery.attempted=false`. It never publishes, sends,
+or writes Airtable; those remain separate governed effects.
+
 ## Auth And Rotation
 
 - API service secret: `API_AUTH_KEY`, sent as `X-API-Key`.

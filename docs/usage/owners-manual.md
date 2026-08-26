@@ -129,6 +129,8 @@ Use the browser UI when:
 Use the REST API when:
 
 - A server route, script, or automation needs a straightforward HTTP call.
+- Make.com needs one blocking strict run without managing an MCP session: use
+  the MCP host's authenticated `POST /automation/research/v1` facade.
 - You want `/api/quick_search` or `/report/` without MCP session handling.
 - Sidecar wants to call GPT Researcher from its own backend and pass the result
   into a specialist as `research_context`.
@@ -467,6 +469,10 @@ Do these in this order:
    measured by lane and output type.
 6. For production restart safety, keep the SQLite run store and generated
    outputs on the same durable Railway volume.
+
+The Make facade is deliberately research-only. Treat its `report` as an input
+to a separately governed content or delivery step; the facade itself never
+publishes, sends messages, or writes Airtable.
 
 The strategic target is simple: Katailyst decides what capability should run,
 GPT Researcher performs external research when it is the right capability,

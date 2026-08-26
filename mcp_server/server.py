@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 
 from gpt_researcher.utils.langfuse_observability import get_langfuse_runtime_status
 from mcp_server.auth import BearerAuthMiddleware
+from mcp_server.automation_research import install_automation_research_route
 from mcp_server.tools import register_tools
 
 load_dotenv()
@@ -52,6 +53,7 @@ mcp = FastMCP(
     transport_security=TransportSecuritySettings(allowed_hosts=_allowed_hosts()),
 )
 register_tools(mcp)
+install_automation_research_route(mcp)
 
 
 @mcp.custom_route("/health", methods=["GET"])

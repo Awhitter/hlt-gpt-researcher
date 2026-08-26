@@ -29,6 +29,12 @@ def test_mcp_health_includes_redacted_langfuse_status():
     assert "pk-" not in str(body)
 
 
+def test_make_research_adapter_is_installed_on_the_authenticated_mcp_app():
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    assert "/automation/research/v1" in paths
+
+
 def test_deep_research_exposes_typed_source_policy_schema():
     tools = asyncio.run(mcp.list_tools())
     deep_research = next(tool for tool in tools if tool.name == "deep_research")

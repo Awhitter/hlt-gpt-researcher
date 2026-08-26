@@ -13,7 +13,7 @@ customer/competitive research and for nontechnical teammates to ask
 capability questions across the estate.
 
 **Start here (operators + agents):** [`docs/usage/START-HERE.md`](docs/usage/START-HERE.md)
-— one screen: what it is, three doors, Auto scope, module map, smoke.
+— one screen: what it is, four doors, Auto scope, module map, smoke.
 
 PRD: `docs/prd/mastery-brain.md`. UI tabs: Ask / Audience / Codebase /
 Library / Vision / Changelog / Roadmap. Code scope prefers `CODEGRAPH_MCP_*`
@@ -33,6 +33,7 @@ backend/server/hlt_brain.py           /api/brain/* estate context, library, Line
 backend/server/hlt_media.py           Cloudinary for the media scope
 backend/server/hlt_text.py            shared tokenizer / stopwords
 mcp_server/tools.py                   MCP tools (default scope="auto")
+mcp_server/automation_research.py     strict Make/HTTP facade · durable idempotency · no delivery
 ```
 
 Leaves never import `hlt_extensions`. New Brain/tab work goes in
@@ -125,6 +126,16 @@ manifest and a separate evidence-judge call must pass; otherwise the draft is
 retained with `publishable=false` and a quality receipt. Strict runs require the
 remote Firecrawl scraper. A failed first report closes the run; a later rejected
 custom-prompt revision cannot replace an already accepted artifact.
+
+Make-compatible research uses authenticated
+`POST /automation/research/v1` on the MCP host. The isolated
+`mcp_server/automation_research.py` facade accepts only the versioned strict
+contract, binds each `request_id` to one canonical payload hash and deterministic
+research ID, and durably replays terminal results. Active work uses a heartbeat
+lease with generation fencing, so retries get an immediate running receipt and a
+reclaimed stale worker cannot overwrite the new owner's terminal result. It may
+research and write the local report artifact; it does not publish, message, or
+write Airtable.
 
 Scraping stack: `SCRAPER=firecrawl` (Firecrawl API) is the production scraper
 and `RETRIEVER=firecrawl,mcp` runs web search on the same Firecrawl plan via
