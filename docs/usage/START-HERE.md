@@ -19,6 +19,7 @@ cites sources.
 | --- | --- | --- | --- |
 | Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app | live |
 | Agents (Claude Code, Cursor, Katailyst2) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
+| Make.com / simple automations | Strict HTTP adapter | `https://gpt-researcher-mcp-production.up.railway.app/automation/research/v1` · Bearer `$GPTR_MCP_TOKEN` | deploy with the MCP service |
 | Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` | live |
 | Humans, in Slack | **Cleo**, Nursing Mastery product-owner facilitator | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | trust the current `/health` seam readback |
 
@@ -36,6 +37,9 @@ says `hlt-hermes` because Render cannot rename a service in place.)
   it; pure web otherwise).
 - REST `POST /api/quick_search` is deliberately **web-only** — use `/report/`
   or MCP when a script needs estate awareness.
+- The automation route is a blocking strict-source facade over the MCP engine.
+  It returns research and acceptance receipts only; publishing, messages, and
+  Airtable writes remain separate approved effects.
 
 Health: `curl -fsS …/health` on the API and MCP hosts above.
 
@@ -120,13 +124,15 @@ backend/server/
   hlt_media.py           ← Cloudinary for the media scope
   hlt_text.py            ← shared tokenizer/stopwords
 mcp_server/tools.py      ← MCP tools; both default scope="auto"
+mcp_server/automation_research.py ← strict Make HTTP facade; durable exact-request replay
 frontend/nextjs/         ← Mastery Research UI (Vercel)
 docs/usage/              ← this folder — operator docs
 docs/prd/mastery-brain.md
 ```
 
-All three research doors go through `prepare_research_request` except REST
-`/api/quick_search` (documented exception).
+The strict automation route deliberately bypasses internal scope/memory
+injection and uses only its typed source policy. REST `/api/quick_search` is
+the other documented routing exception.
 
 ## Kill switches & deeper docs
 

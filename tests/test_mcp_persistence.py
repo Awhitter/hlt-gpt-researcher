@@ -151,6 +151,30 @@ def test_mcp_depth_sets_source_breadth(monkeypatch, tmp_path):
     assert result["image_count"] == 1
 
 
+def test_internal_deterministic_research_id_is_persisted_without_changing_mcp_default(
+    monkeypatch, tmp_path
+):
+    _reset_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(mcp_tools, "GPTResearcher", FakeGPTResearcher)
+    deterministic_id = "8b2c16e0-6217-53e1-9fe3-e05ca23e0652"
+
+    result = asyncio.run(
+        mcp_tools.deep_research_tool(
+            "automation-owned identity",
+            _research_id=deterministic_id,
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["research_id"] == deterministic_id
+    assert (
+        run_store_module.get_research_run_store().get_run(deterministic_id)[
+            "query"
+        ]
+        == "automation-owned identity"
+    )
+
+
 def test_mcp_write_report_hydrates_from_sqlite_after_restart(monkeypatch, tmp_path):
     _reset_store(monkeypatch, tmp_path)
     monkeypatch.setattr(mcp_tools, "GPTResearcher", FakeGPTResearcher)
