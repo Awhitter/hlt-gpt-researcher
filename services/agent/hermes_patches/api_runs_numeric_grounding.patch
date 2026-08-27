@@ -1,8 +1,8 @@
 diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
-index d7bf533..6cc3f30 100644
+index 30ed5a810..a7b7e96b4 100644
 --- a/gateway/platforms/api_server.py
 +++ b/gateway/platforms/api_server.py
-@@ -97,6 +97,7 @@ from gateway.readiness import collect_runtime_readiness
+@@ -98,6 +98,7 @@ from gateway.readiness import collect_runtime_readiness
  
  from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
  from agent.secret_scope import get_secret as _scoped_get_secret
@@ -10,7 +10,7 @@ index d7bf533..6cc3f30 100644
  
  
  def _get_scoped_secret(name, default=None):
-@@ -6493,7 +6494,26 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6781,7 +6782,26 @@ class APIServerAdapter(BasePlatformAdapter):
          self._run_streams_created[run_id] = created_at
          self._run_approval_sessions[run_id] = approval_session_key
  
@@ -38,7 +38,7 @@ index d7bf533..6cc3f30 100644
  
          def _put_event_if_active(event: Optional[Dict]) -> None:
              """Enqueue only while this run still owns live transport state."""
-@@ -6628,6 +6648,12 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6916,6 +6936,12 @@ class APIServerAdapter(BasePlatformAdapter):
                                  conversation_history=conversation_history,
                                  task_id=effective_task_id,
                              )
@@ -51,7 +51,7 @@ index d7bf533..6cc3f30 100644
                          finally:
                              # Worker finished (interrupted or complete) —
                              # clear turn ownership immediately so a later
-@@ -6648,12 +6674,17 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6936,12 +6962,17 @@ class APIServerAdapter(BasePlatformAdapter):
                                          clear_session_vars(session_tokens)
                                      except Exception:
                                          pass
@@ -75,23 +75,27 @@ index d7bf533..6cc3f30 100644
  
                  result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                  if run_id in self._stopping_run_ids:
-@@ -6686,20 +6717,41 @@ class APIServerAdapter(BasePlatformAdapter):
-                     )
-                 else:
-                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
--                    _put_event_if_active({
+@@ -6978,24 +7009,45 @@ class APIServerAdapter(BasePlatformAdapter):
+                     # see turn_finalizer) rides on the terminal event/status so
+                     # the client can replay it as the next user turn.
+                     pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
+-                    completed_event = {
 -                        "event": "run.completed",
 -                        "run_id": run_id,
 -                        "timestamp": time.time(),
 -                        "output": final_response,
 -                        "usage": usage,
--                    })
+-                    }
+-                    if pending_steer:
+-                        completed_event["pending_steer"] = pending_steer
+-                    _put_event_if_active(completed_event)
 -                    self._set_run_status(
 -                        run_id,
 -                        "completed",
 -                        output=final_response,
 -                        usage=usage,
 -                        last_event="run.completed",
+-                        **({"pending_steer": pending_steer} if pending_steer else {}),
 -                    )
 +                    grounding_verdict = numeric_grounding.validate(final_response)
 +                    grounding_summary = grounding_verdict.as_dict()
@@ -112,14 +116,17 @@ index d7bf533..6cc3f30 100644
 +                            last_event="run.failed",
 +                        )
 +                    else:
-+                        _put_event_if_active({
++                        completed_event = {
 +                            "event": "run.completed",
 +                            "run_id": run_id,
 +                            "timestamp": time.time(),
 +                            "output": final_response,
 +                            "usage": usage,
 +                            "grounding": grounding_summary,
-+                        })
++                        }
++                        if pending_steer:
++                            completed_event["pending_steer"] = pending_steer
++                        _put_event_if_active(completed_event)
 +                        self._set_run_status(
 +                            run_id,
 +                            "completed",
@@ -127,6 +134,7 @@ index d7bf533..6cc3f30 100644
 +                            usage=usage,
 +                            grounding=grounding_summary,
 +                            last_event="run.completed",
++                            **({"pending_steer": pending_steer} if pending_steer else {}),
 +                        )
              except asyncio.CancelledError:
                  self._set_run_status(

@@ -1,8 +1,8 @@
 diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
-index 39de04861..554b247e2 100644
+index 6bae26aa0..b86e6c51e 100644
 --- a/gateway/platforms/base.py
 +++ b/gateway/platforms/base.py
-@@ -5571,6 +5571,49 @@ class BasePlatformAdapter(ABC):
+@@ -6053,6 +6053,49 @@ class BasePlatformAdapter(ABC):
          if not self._message_handler:
              return
  
@@ -49,14 +49,14 @@ index 39de04861..554b247e2 100644
 +                    break
 +            setattr(event, "_hermes_pre_gateway_dispatch_done", True)
 +
-         coerce_plaintext_gateway_command(event)
+         if event.allow_gateway_control:
+             coerce_plaintext_gateway_command(event)
  
-         # Telegram topic recovery only applies to private DM topic lanes. Do
 diff --git a/gateway/run.py b/gateway/run.py
-index 125185aea..4b741f1d3 100644
+index 84604b303..0a53de757 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -14540,7 +14540,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -16562,7 +16562,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          #   {"action": "allow"}   /   None          -> normal dispatch
          # Hook runs BEFORE auth so plugins can handle unauthorized senders
          # (e.g. customer handover ingest) without triggering the pairing flow.
@@ -68,10 +68,10 @@ index 125185aea..4b741f1d3 100644
                  from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                  _hook_results = _invoke_hook(
 diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
-index dc4b94ead..baa7e62dc 100644
+index e017838fc..8b8025ff1 100644
 --- a/plugins/platforms/slack/adapter.py
 +++ b/plugins/platforms/slack/adapter.py
-@@ -5334,6 +5334,11 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -5842,6 +5842,11 @@ class SlackAdapter(BasePlatformAdapter):
                  chat_id=event.get("channel", ""),
                  team_id=str(event.get("team") or event.get("team_id") or ""),
              )
