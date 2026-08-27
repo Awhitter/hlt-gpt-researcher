@@ -605,7 +605,7 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     assert "- pre_gateway_dispatch" in manifest
     assert "hermes_cli/plugins.py" in dockerfile
     assert "pre_gateway_dispatch skip" in dockerfile
-    assert "ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10" in dockerfile
+    assert "ARG HERMES_REF=fcbd1076a93841fa88855acce810e342a5b78101" in dockerfile
     assert "git -C /opt/hermes apply --check" in dockerfile
     assert "assert_pre_gateway_dispatch.py /opt/hermes" in dockerfile
     assert patch.count("diff --git") == 3

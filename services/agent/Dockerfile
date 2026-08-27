@@ -38,7 +38,7 @@ ENV PYTHONPATH=/app
 # left no way to know whether Cleo had the MCP naming repair that registers
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
-ARG HERMES_REF=83a1ca686207ef797e4eb86a46725dfe7d9a2f10
+ARG HERMES_REF=fcbd1076a93841fa88855acce810e342a5b78101
 COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py
 COPY hermes_patches /tmp/hermes-patches
 RUN git init /opt/hermes \
