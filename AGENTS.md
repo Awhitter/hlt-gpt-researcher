@@ -33,7 +33,9 @@ backend/server/hlt_brain.py           /api/brain/* estate context, library, Line
 backend/server/hlt_media.py           Cloudinary for the media scope
 backend/server/hlt_text.py            shared tokenizer / stopwords
 mcp_server/tools.py                   MCP tools (default scope="auto")
-mcp_server/automation_research.py     strict Make/HTTP facade · durable idempotency · no delivery
+mcp_server/automation_research.py     strict executor/routes/readback · blocking compatibility + async jobs · no delivery
+mcp_server/automation_research_contracts.py  versioned HTTP/K2 contract · identity · capacity/deadline config
+mcp_server/automation_research_store.py      durable SQLite admission · queue · lease/fencing receipts
 ```
 
 Leaves never import `hlt_extensions`. New Brain/tab work goes in
@@ -127,14 +129,25 @@ retained with `publishable=false` and a quality receipt. Strict runs require the
 remote Firecrawl scraper. A failed first report closes the run; a later rejected
 custom-prompt revision cannot replace an already accepted artifact.
 
-Make-compatible research uses authenticated
-`POST /automation/research/v1` on the MCP host. The isolated
-`mcp_server/automation_research.py` facade accepts only the versioned strict
-contract, binds each `request_id` to one canonical payload hash and deterministic
-research ID, and durably replays terminal results. Active work uses a heartbeat
-lease with generation fencing, so retries get an immediate running receipt and a
-reclaimed stale worker cannot overwrite the new owner's terminal result. It may
-research and write the local report artifact; it does not publish, message, or
+Automation-compatible research uses the authenticated routes on the MCP host.
+`POST /automation/research/v1` remains the blocking compatibility call. New
+work should use `POST /automation/research/jobs/v1/start`, then pure reads at
+`GET /automation/research/jobs/v1/{request_id}/status` and `/result`. Their
+provider operations are `mastery_research_start` (idempotent effect),
+`mastery_research_status` (read), and `mastery_research_result` (read). The
+automation modules accept only the versioned strict contract, bind each
+`request_id` to one canonical payload hash and stable external research ID,
+then persist the request before spawning work. The durable store admits a
+bounded configurable running set and FIFO queue. Every execution lease gets a
+distinct core run ID, generation, heartbeat, and deadline, so a stale or
+canceled attempt cannot overwrite the new winner. The service starts its
+recovery drainer at boot; status and result remain pure reads and never mutate
+the store. Terminal result readback includes the full normalized brief, accepted
+report, evidence, quality, cost, frozen contract/source snapshot provenance,
+and a provider-neutral `knowledge.refine.preview` handoff carrying
+`upstream_execution_receipt.v1`. Oversized reports are explicitly withheld
+from inline K2 handoff with a typed locator. The facade may research and write
+the local report artifact; it does not call K2, publish, message, deliver, or
 write Airtable.
 
 Scraping stack: `SCRAPER=firecrawl` (Firecrawl API) is the production scraper

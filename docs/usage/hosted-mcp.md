@@ -142,14 +142,14 @@ curl -sS -X POST "https://gpt-researcher-api-production.up.railway.app/report/" 
   -d '{"task":"Research NCLEX-RN pass rate changes in 2026","report_type":"research_report","report_source":"web","tone":"Objective","repo_name":"","branch_name":"","generate_in_background":false}'
 ```
 
-## Make.com Strict Research Adapter
+## Automation Strict Research Adapter
 
-Make.com and other simple HTTP clients can run the proven strict MCP sequence
-without creating an MCP session:
+Make.com, n8n, and other HTTP clients can start the proven strict MCP sequence
+without creating an MCP session or holding a connection while research runs:
 
 ```bash
 curl -sS -X POST \
-  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/v1" \
+  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/start" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -181,26 +181,78 @@ curl -sS -X POST \
   }'
 ```
 
-The route uses the MCP service's existing Bearer middleware. Its request and
-result versions are `research_automation_request.v1` and
-`research_automation_result.v1`. `request_id` is the idempotency key: the same
-ID and canonical payload return the stored result with
-`idempotent_readback=true`; a changed payload under that ID returns HTTP 409
-without starting research. A currently owned request returns HTTP 202 with
-`Retry-After`. Long runs heartbeat their durable lease. After the one-hour
-default stale boundary (`AUTOMATION_RESEARCH_STALE_SECONDS`, minimum five
-minutes), a replacement worker rotates the lease generation before reconciling
-or resuming the deterministic core run; the prior worker is fenced from writing
-the terminal receipt or starting report generation after it loses ownership.
-Core runs marked `interrupted_by_restart` remain recoverable HTTP 202 receipts
-until that boundary, then are re-run under the replacement lease.
+A newly admitted or durably queued start responds with HTTP 202 and durable
+`status_url` / `result_url` paths. A terminal replay returns its stored
+operation receipt with HTTP 200. Poll the paths with the same Bearer token:
+
+```bash
+curl -sS \
+  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/make-research-2026-08-26-001/status" \
+  -H "Authorization: Bearer $GPTR_MCP_TOKEN"
+
+curl -sS \
+  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/make-research-2026-08-26-001/result" \
+  -H "Authorization: Bearer $GPTR_MCP_TOKEN"
+```
+
+The provider operations are `mastery_research_start` (idempotent effect),
+`mastery_research_status` (pure read), and `mastery_research_result` (pure
+read). Existing callers may keep using blocking
+`POST /automation/research/v1`; it has the same request contract and preserved
+behavior.
+
+The routes use the MCP service's existing Bearer middleware. Their request,
+operation, status, blocking-result, and async-result versions are
+`research_automation_request.v1`, `research_automation_operation.v1`,
+`research_automation_status.v1`, `research_automation_result.v1`, and
+`research_automation_result_read.v1`. `request_id` is the idempotency key: the
+same ID and canonical payload return the stored operation/result; a changed
+payload under that ID returns HTTP 409 without starting research. Exact replays
+bypass admission. New work shares one configurable durable pool across the
+blocking and async routes: 8 attempts may run and 256 may wait by default.
+Queued starts return HTTP 202 with `Retry-After`; a full queue returns HTTP 429
+with `error_code="automation_admission_saturated"` and does not create another
+row. A background drainer promotes queued work in FIFO order.
+
+Long runs heartbeat their durable lease. The service starts its recovery
+drainer at boot. After the one-hour default stale boundary
+(`AUTOMATION_RESEARCH_STALE_SECONDS`, minimum five minutes), that drainer may
+rotate the lease generation and resume abandoned work without requiring another
+POST. The external research ID remains stable, while every lease owns a
+unique `core_run_id`; a stale or canceled attempt therefore cannot overwrite a
+new winner or reuse its core state. Status and result are read-only SQLite
+lookups and never reclaim, heartbeat, migrate, or create work. A missing store
+or schema reports `automation_store_unavailable`; a corrupt store or receipt is
+reported separately from a genuine 404.
+
+Admission and deadline settings are deliberately generous and bounded:
+
+| Setting | Default | Allowed range |
+| --- | ---: | ---: |
+| `AUTOMATION_RESEARCH_MAX_CONCURRENT` | 8 | 1-128 |
+| `AUTOMATION_RESEARCH_MAX_QUEUED` | 256 | 0-10,000 |
+| `AUTOMATION_RESEARCH_OVERALL_TIMEOUT_SECONDS` | 7,200 | 1-86,400 |
+| `AUTOMATION_RESEARCH_DEEP_TIMEOUT_SECONDS` | 5,400 | 1-86,400; capped by overall |
+| `AUTOMATION_RESEARCH_REPORT_TIMEOUT_SECONDS` | 1,800 | 1-86,400; capped by overall |
+| `AUTOMATION_RESEARCH_QUEUE_RECOVERY_POLL_SECONDS` | 30 | 1-60 |
+| `AUTOMATION_RESEARCH_BLOCKING_ADMISSION_POLL_SECONDS` | 2 | 1-30 |
+
+Deadline failures persist one of `automation_deep_research_timeout`,
+`automation_report_timeout`, or `automation_overall_timeout` as the typed
+terminal result for both the adapter operation and its lease-scoped core run.
 
 Expected source/report rejection returns HTTP 200 with `status="failed"`,
 `publishable=false`, and the durable manifest/quality receipt. A successful
 result requires a passed source manifest, no missing or unadmitted citations,
-and an independent-judge pass. The facade returns the accepted report, cost,
-source/image counts, and `delivery.attempted=false`. It never publishes, sends,
-or writes Airtable; those remain separate governed effects.
+and an independent-judge pass. Async result returns the accepted report,
+evidence, quality, USD cost, full normalized query/report prompt, frozen
+contract manifest, and source snapshot provenance. Its
+`knowledge.refine.preview` handoff is `ready` only when the complete report is
+at most 128,000 Unicode codepoints and 128,000 UTF-8 bytes. Larger reports are
+`withheld` with a typed reason and durable locator instead of silently
+truncated. The handoff is data only: this facade does not call K2. Both modes
+return `delivery.attempted=false`; neither publishes, sends, nor writes
+Airtable.
 
 ## Auth And Rotation
 

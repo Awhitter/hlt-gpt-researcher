@@ -14,6 +14,16 @@ research loop.
 - MCP server: https://gpt-researcher-mcp-production.up.railway.app/mcp
   (Bearer auth). Tools: `deep_research`, `quick_search`, `write_report`,
   `get_research_sources`, `get_research_context`; resource `research://{topic}`.
+- Nonblocking automation HTTP on the MCP host: authenticated
+  `POST /automation/research/jobs/v1/start` followed by pure status/result
+  reads. Provider tools are `mastery_research_start` (idempotent effect),
+  `mastery_research_status` (read), and `mastery_research_result` (read).
+  Result includes a frozen registration contract, source snapshot, and a
+  provider-neutral `knowledge.refine.preview` handoff with an
+  `upstream_execution_receipt.v1`. The handoff is `ready` only when the complete
+  accepted report fits the 128,000-codepoint and 128,000-UTF-8-byte inline
+  limits; larger reports are `withheld` with a typed reason and durable locator.
+  The older `POST /automation/research/v1` blocking call remains compatible.
 
 ## Scope presets (server-side, token-free for browsers)
 

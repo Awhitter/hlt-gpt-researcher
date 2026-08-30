@@ -1,6 +1,6 @@
 # GPT Researcher Owner's Manual
 
-Last updated: 2026-08-07
+Last updated: 2026-08-30
 
 > New here? Read [`START-HERE.md`](./START-HERE.md) first (one screen), then
 > come back for agent recipes, Sidecar wiring, and smoke details.
@@ -23,6 +23,7 @@ outside the fork.
 | Browser UI | `https://gpt-researcher-ui.vercel.app` | Human research sessions and visual report flow | Team login; research calls use server token flow |
 | API | `https://gpt-researcher-api-production.up.railway.app` | Scripts, Sidecar server routes, one-off REST clients | `X-API-Key: $API_AUTH_KEY` |
 | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` | Agents, Claude Code, Claude Desktop, Cursor, Katailyst-discovered tool use | `Authorization: Bearer $GPTR_MCP_TOKEN` |
+| Automation jobs | `https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/*` | Make.com, n8n, or any caller that should start now and poll later | `Authorization: Bearer $GPTR_MCP_TOKEN` |
 | Katailyst2 Registry | `https://katailyst2.vercel.app/mcp` | Discovery, routing, tool metadata, capability graph | Katailyst2 `kata_…` bearer token |
 
 Health checks:
@@ -129,8 +130,10 @@ Use the browser UI when:
 Use the REST API when:
 
 - A server route, script, or automation needs a straightforward HTTP call.
-- Make.com needs one blocking strict run without managing an MCP session: use
-  the MCP host's authenticated `POST /automation/research/v1` facade.
+- Make.com or n8n needs a nonblocking strict run without managing an MCP
+  session: use `POST /automation/research/jobs/v1/start`, then the returned
+  status/result paths. Use the older authenticated
+  `POST /automation/research/v1` only for an existing blocking caller.
 - You want `/api/quick_search` or `/report/` without MCP session handling.
 - Sidecar wants to call GPT Researcher from its own backend and pass the result
   into a specialist as `research_context`.
@@ -358,6 +361,24 @@ rubrics, or a human review queue.
   `OUTPUTS_DIR` point at persistent storage. In-flight runs interrupted by a
   restart are marked `failed` with `interrupted_by_restart`; they are not
   resumed automatically.
+- The async automation operation is separately durable in the same SQLite
+  store. `mastery_research_start` returns immediately after persisting its exact
+  request identity. The shared pool runs up to 8 attempts and durably queues up
+  to 256 by default; queued calls return 202, and a full queue returns the typed
+  429 `automation_admission_saturated`. Exact replays bypass admission. While
+  the service is active, its drainer promotes queued work in FIFO order and
+  reclaims abandoned stale leases. The drainer starts during service boot, so a
+  restart does not require another POST to recover a lone operation. The
+  external research ID stays stable,
+  but each lease has a distinct core run identity so stale work cannot replace
+  the newer winner. `mastery_research_status` and
+  `mastery_research_result` are pure reads and never reclaim, heartbeat,
+  migrate, or create work.
+- Automation attempts default to a two-hour overall deadline, with 90 minutes
+  for deep research and 30 minutes for report generation. Tune the bounded
+  `AUTOMATION_RESEARCH_MAX_*`, `AUTOMATION_RESEARCH_*_TIMEOUT_SECONDS`, and
+  polling variables in the hosted MCP guide. A timeout is a typed terminal
+  receipt, not an indefinitely running operation.
 - When the source set is part of the acceptance contract, pass a strict typed
   source policy instead of describing an allowlist only in prose. Exact required
   URLs are fetched directly; the normalized source manifest and report-quality
@@ -470,9 +491,17 @@ Do these in this order:
 6. For production restart safety, keep the SQLite run store and generated
    outputs on the same durable Railway volume.
 
-The Make facade is deliberately research-only. Treat its `report` as an input
-to a separately governed content or delivery step; the facade itself never
-publishes, sends messages, or writes Airtable.
+The automation facade is deliberately research-only. A successful async result
+contains a provider-neutral `knowledge.refine.preview` handoff with the report,
+source links, `derived_synthesis` provenance, a frozen contract/source snapshot,
+and an `upstream_execution_receipt.v1` for the Mastery Research attempt. The
+handoff is `ready` when the complete report fits both 128,000 Unicode codepoints
+and 128,000 UTF-8 bytes. A larger accepted report is `withheld` with a typed
+reason and durable locator so a caller can fetch or chunk it explicitly.
+Callers may pass a ready object to K2; this service does not execute the
+handoff. Treat the report as input to a separately governed content or delivery
+step—the facade itself never publishes, sends messages, writes Airtable, or
+delivers elsewhere.
 
 The strategic target is simple: Katailyst decides what capability should run,
 GPT Researcher performs external research when it is the right capability,

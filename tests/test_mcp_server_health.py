@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
+import mcp_server.server as mcp_server
 from mcp_server.server import app, mcp
 from mcp_server.tools import SourcePolicyInput
 
@@ -33,6 +34,23 @@ def test_make_research_adapter_is_installed_on_the_authenticated_mcp_app():
     paths = {getattr(route, "path", None) for route in app.routes}
 
     assert "/automation/research/v1" in paths
+    assert "/automation/research/jobs/v1/start" in paths
+    assert "/automation/research/jobs/v1/{request_id}/status" in paths
+    assert "/automation/research/jobs/v1/{request_id}/result" in paths
+
+
+def test_mcp_lifespan_schedules_durable_automation_recovery(monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(
+        mcp_server,
+        "schedule_automation_research_recovery",
+        lambda: scheduled.append(True),
+    )
+
+    with TestClient(app):
+        pass
+
+    assert scheduled == [True]
 
 
 def test_deep_research_exposes_typed_source_policy_schema():

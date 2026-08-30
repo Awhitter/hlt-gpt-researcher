@@ -19,7 +19,8 @@ cites sources.
 | --- | --- | --- | --- |
 | Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app | live |
 | Agents (Claude Code, Cursor, Katailyst2) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
-| Make.com / simple automations | Strict HTTP adapter | `https://gpt-researcher-mcp-production.up.railway.app/automation/research/v1` · Bearer `$GPTR_MCP_TOKEN` | deploy with the MCP service |
+| Make.com, n8n, simple automations | Nonblocking strict HTTP jobs | `POST …/automation/research/jobs/v1/start` → `GET …/{request_id}/status` → `GET …/{request_id}/result` · Bearer `$GPTR_MCP_TOKEN` | deploy with the MCP service |
+| Existing blocking callers | Strict HTTP compatibility route | `POST https://gpt-researcher-mcp-production.up.railway.app/automation/research/v1` · Bearer `$GPTR_MCP_TOKEN` | preserved |
 | Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` | live |
 | Humans, in Slack | **Cleo**, Nursing Mastery product-owner facilitator | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | trust the current `/health` seam readback |
 
@@ -37,9 +38,52 @@ says `hlt-hermes` because Render cannot rename a service in place.)
   it; pure web otherwise).
 - REST `POST /api/quick_search` is deliberately **web-only** — use `/report/`
   or MCP when a script needs estate awareness.
-- The automation route is a blocking strict-source facade over the MCP engine.
-  It returns research and acceptance receipts only; publishing, messages, and
-  Airtable writes remain separate approved effects.
+- Automation jobs use the same strict-source facade over the MCP engine. Start
+  persists one exact idempotent operation and returns immediately; status and
+  result are pure reads. The older `/automation/research/v1` call remains
+  blocking for compatibility. Neither path publishes, messages, or writes
+  Airtable.
+
+### Nonblocking automation contract
+
+Send the existing `research_automation_request.v1` body to:
+
+```text
+POST /automation/research/jobs/v1/start
+GET  /automation/research/jobs/v1/{request_id}/status
+GET  /automation/research/jobs/v1/{request_id}/result
+```
+
+The three provider operations are `mastery_research_start` (idempotent
+effect), `mastery_research_status` (read), and `mastery_research_result`
+(read). Repeating start with the same `request_id` and canonical payload never
+creates another operation; changing the payload under that ID returns 409.
+Result returns the accepted report, source evidence, independent quality
+receipt, cost, provenance, and a provider-neutral K2
+`knowledge.refine.preview` handoff. The handoff is `ready` only when the full
+accepted report fits both the 128,000 Unicode-codepoint and 128,000 UTF-8-byte
+inline limits. A larger report is `withheld` with the typed reason
+`k2_inline_content_limit_exceeded`, durable research locator, report path, and
+source snapshot identity so a caller can fetch or chunk it without pretending
+that truncated content is complete. The handoff records this run with
+`upstream_execution_receipt.v1`; it does not call K2 on its own.
+
+The durable operation survives process restarts even though an in-memory worker
+cannot. Work is admitted to a configurable shared pool (8 running and 256
+durably queued by default); queued starts return 202 and `Retry-After`, while a
+full durable queue returns the typed 429
+`automation_admission_saturated`. Exact idempotent replays bypass admission and
+return the existing receipt. A background drainer starts with the service,
+promotes queued work in FIFO order, and can reclaim abandoned work after the
+stale-lease boundary. Polling status/result remains a pure read and never
+performs that mutation.
+
+Each attempt persists its lease-scoped core run identity, generation, deadline,
+and phase budgets. Defaults are two hours overall, 90 minutes for deep research,
+and 30 minutes for report generation; operators can tune them with the
+`AUTOMATION_RESEARCH_*` variables documented in the hosted MCP guide. Terminal
+timeouts are typed, and a canceled or stale attempt cannot overwrite the newer
+winner.
 
 Health: `curl -fsS …/health` on the API and MCP hosts above.
 
@@ -124,7 +168,9 @@ backend/server/
   hlt_media.py           ← Cloudinary for the media scope
   hlt_text.py            ← shared tokenizer/stopwords
 mcp_server/tools.py      ← MCP tools; both default scope="auto"
-mcp_server/automation_research.py ← strict Make HTTP facade; durable exact-request replay
+mcp_server/automation_research.py ← automation executor/routes/readback; blocking compatibility + async jobs
+mcp_server/automation_research_contracts.py ← versioned contracts, identity, capacity/deadline config
+mcp_server/automation_research_store.py ← durable SQLite admission, queue, lease/fencing receipts
 frontend/nextjs/         ← Mastery Research UI (Vercel)
 docs/usage/              ← this folder — operator docs
 docs/prd/mastery-brain.md

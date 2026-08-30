@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -12,7 +13,10 @@ from starlette.responses import JSONResponse
 
 from gpt_researcher.utils.langfuse_observability import get_langfuse_runtime_status
 from mcp_server.auth import BearerAuthMiddleware
-from mcp_server.automation_research import install_automation_research_route
+from mcp_server.automation_research import (
+    install_automation_research_route,
+    schedule_automation_research_recovery,
+)
 from mcp_server.tools import register_tools
 
 load_dotenv()
@@ -37,6 +41,7 @@ def _allowed_hosts() -> list[str]:
         "0.0.0.0",
         "gpt-researcher-mcp-production.up.railway.app",
     ]
+
 
 mcp = FastMCP(
     name="GPT Researcher",
@@ -72,6 +77,19 @@ async def health_check(request):  # noqa: D401, ANN001
 
 
 app = mcp.streamable_http_app()
+_streamable_http_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _automation_app_lifespan(application):  # noqa: ANN001
+    """Compose boot recovery with the MCP transport's own lifespan."""
+
+    schedule_automation_research_recovery()
+    async with _streamable_http_lifespan(application) as state:
+        yield state
+
+
+app.router.lifespan_context = _automation_app_lifespan
 app.add_middleware(BearerAuthMiddleware)
 
 
