@@ -19,6 +19,15 @@ from .slack_lead_ledger import RECEIPT_SCHEMA, SlackLeadLedger
 
 logger = logging.getLogger(__name__)
 
+HOSTED_K2_CONTEXT = (
+    "[Katailyst2 hosted mission — bounded handoff already supplied] "
+    "K2 has already provided the mission context and any selected context refs in "
+    "this turn. Do not call katailyst.well again. Follow the per-run retrieval and "
+    "final-answer budget in the system instructions; use supplied refs directly, "
+    "allow at most one focused recovery search, and return a useful final before "
+    "the deadline."
+)
+
 
 def _agent_ref() -> str:
     configured = os.getenv("HLT_AGENT_REF", "").strip()
@@ -181,6 +190,24 @@ def _pre_llm_call(
     mission = str(user_message or "").strip()
     if not is_substantive_mission(mission):
         return None
+
+    # K2's durable-run bridge already carries the canonical mission reading,
+    # explicit refs, and execution budget. A second automatic wishing-well draw
+    # is duplicate discovery. More importantly, a slow draw used 16 seconds of
+    # a real 20-second mission before the model saw the task. Keep this branch
+    # network-free; the run-specific system prompt owns the exact time budget.
+    if (
+        str(platform or "").strip().lower() == "api_server"
+        and str(session_id or "").startswith("hook:k2:")
+    ):
+        logger.info(
+            "K2 mission context status=handoff_supplied blocks=0 latency_ms=0 "
+            "platform=%s session=%s turn=%s",
+            platform,
+            session_id[:24],
+            turn_id[:24],
+        )
+        return {"context": HOSTED_K2_CONTEXT}
 
     result = draw_mission_context(
         os.getenv("KATAILYST2_MCP_URL", "").strip(),
