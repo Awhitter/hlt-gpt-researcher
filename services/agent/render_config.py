@@ -184,7 +184,7 @@ SLACK_PLATFORM_HINT = (
     "For exact interface text or labeled structure, prefer a deterministic "
     "prototype or diagram tool; use image generation for imagery. A text diagram "
     "is a fallback, not the requested high-fidelity mockup.\n"
-    "Slack already shows your live work status and progressively edits one answer. "
+    "Slack already shows your live work in its ephemeral status. "
     "Do not narrate each tool call as a separate message, do not use a send-message "
     "tool to deliver the answer you are currently composing, and return exactly one "
     "final answer. Keep ordinary replies concise; long work is fine when the outcome "
@@ -507,13 +507,17 @@ def build_config(
         "You run as a hosted Slack bot on Render without direct shell, file "
         "writes, or browser control. Reach the estate and hosted artifact tools "
         f"through MCP and K2. Your runtime lane is {host_runtime_lane}. Long work "
-        "is fine; show one useful progress update."
+        "is fine; keep working state in Slack's ephemeral status and send only "
+        "the finished answer."
     )
     if registry_ref:
         runtime_hint += (
             f" Your registry identity is {registry_ref}. The host injects one "
             "Katailyst2 wishing-well draw for each substantive turn; judge its "
-            "candidates freely and do not repeat the draw unless the user asks."
+            "candidates freely and do not repeat the draw unless the user asks. "
+            "Your canonical runtime pack is already installed; do not fetch it "
+            "again inside a turn. For registry.get, start with card or concise "
+            "and load one full body only when the task actually needs it."
         )
 
     model_provider = (
@@ -560,9 +564,9 @@ def build_config(
         # the exact path the pinned API adapter reads; placing the cap in the
         # platform's `extra` mapping looks plausible but is ignored upstream.
         "gateway": {"api_server": {"max_concurrent_runs": 2}},
-        # Slack has no native draft API, but Hermes' edit transport is a true
-        # single-message stream: one post is progressively updated and the
-        # last update gets the final Block Kit rendering.
+        # Keep the global edit transport available for non-Slack gateway
+        # surfaces. Slack opts out below so model text before tool calls can
+        # never become permanent transcript fragments.
         "streaming": {
             "enabled": True,
             "transport": "edit",
@@ -578,10 +582,10 @@ def build_config(
             "show_commentary": False,
             "platforms": {
                 "slack": {
-                    "streaming": True,
-                    # The ephemeral Assistant status line carries the useful
-                    # current action. Progress/commentary bubbles would leave a
-                    # permanent transcript of the process instead of the work.
+                    # Keep every pre-tool assistant segment out of Slack. The
+                    # ephemeral Assistant status still shows that work is
+                    # active; only the finished response becomes a message.
+                    "streaming": False,
                     "tool_progress": "off",
                     "interim_assistant_messages": False,
                     "long_running_notifications": False,
@@ -660,6 +664,10 @@ def build_config(
             "enabled": True,
             "threshold_tokens": DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
             "protect_first_n": 0,
+            # Routine compaction is internal work, not a teammate-facing
+            # message. Hermes v0.21 suppresses it by default; pin the contract
+            # so a future default cannot reintroduce "compaction complete".
+            "progress_notices": False,
         },
         "prompt_caching": {"cache_ttl": "1h"},
         # Scheduled briefs land in their own thread and stay continuable.
@@ -704,6 +712,7 @@ def render(
 
     config = build_config(env, grounding_dir=str(home_path / "grounding"))
     servers: dict[str, Any] = config.get("mcp_servers", {})
+    slack_display = config["display"]["platforms"]["slack"]
     summary: dict[str, Any] = {
         "config_path": str(path),
         "model": config["model"]["default"],
@@ -756,12 +765,12 @@ def render(
         # home channel rather than leaving the briefs quietly unseeded.
         "home_channel_id": (build_home_channel(env) or {}).get("chat_id", ""),
         "slack_presentation": {
-            "one_message_stream": bool(config.get("streaming", {}).get("enabled")),
-            "transport": config.get("streaming", {}).get("transport"),
-            "tool_progress": config.get("display", {})
-            .get("platforms", {})
-            .get("slack", {})
-            .get("tool_progress"),
+            "one_message_stream": (
+                slack_display["streaming"] is False
+                and slack_display["interim_assistant_messages"] is False
+            ),
+            "transport": "final_send",
+            "tool_progress": slack_display["tool_progress"],
             # The ephemeral Assistant status line ("is digging through the
             # estate…") — the only live-status surface Hermes actually has.
             # An earlier revision reported a `live_status` display key here,

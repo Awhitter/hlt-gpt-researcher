@@ -58,6 +58,8 @@ class _FakeRequest:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload
         self.headers: dict[str, str] = {}
+        self.path = "/v1/runs"
+        self.method = "POST"
 
     async def json(self) -> dict[str, Any]:
         return self.payload
@@ -134,7 +136,7 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: assert_api_runs_numeric_grounding.py /opt/hermes")
     root = Path(sys.argv[1])
-    source = (root / "gateway" / "platforms" / "api_server.py").read_text(
+    source = (root / "gateway" / "platforms" / "api_server_runs.py").read_text(
         encoding="utf-8"
     )
     tool_executor_source = (root / "agent" / "tool_executor.py").read_text(
@@ -143,13 +145,13 @@ def main() -> None:
     codex_runtime_source = (root / "agent" / "codex_runtime.py").read_text(
         encoding="utf-8"
     )
-    compile(source, "gateway/platforms/api_server.py", "exec")
+    compile(source, "gateway/platforms/api_server_runs.py", "exec")
 
     assert "from hlt_numeric_grounding import NumericGroundingLedger" in source
     runs = _between(
         source,
-        "    async def _handle_runs",
-        "    async def _handle_get_run",
+        "async def _handle_runs",
+        "def _request_owns_run",
     )
     assert runs.index("NumericGroundingLedger(user_message)") < runs.index(
         "self._create_agent("
@@ -166,14 +168,14 @@ def main() -> None:
     assert 'cb("tool.completed", name, None, None,' in codex_runtime_source
     assert "duration=duration, is_error=is_error, result=result" in codex_runtime_source
 
-    run_sync = _between(runs, "                def _run_sync():", "                result, usage =")
+    run_sync = _between(runs, "            def _run_sync():", "            result, usage =")
     assert run_sync.index("agent.run_conversation(") < run_sync.index("agent.close()")
     assert "return r, u" in run_sync
 
     completion = _between(
         runs,
-        "                else:\n                    final_response =",
-        "            except asyncio.CancelledError:",
+        "            else:\n                final_response =",
+        "        except asyncio.CancelledError:",
     )
     assert completion.index("numeric_grounding.validate(final_response)") < completion.index(
         '"event": "run.completed"'

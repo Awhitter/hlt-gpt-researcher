@@ -243,6 +243,7 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     assert config["agent"]["max_turns"] == 24
     assert config["compression"]["enabled"] is True
     assert config["compression"]["threshold_tokens"] == 80_000
+    assert config["compression"]["progress_notices"] is False
     assert set(config["mcp_servers"]) == {"gpt-researcher", "codegraph", "katailyst2", "linear"}
     # The pinned API adapter reads its concurrency cap only from this exact
     # gateway path; putting it under platforms.api_server.extra is ignored.
@@ -454,7 +455,7 @@ def test_fallback_override_accepts_json_and_compact_routes():
     assert "fallback_providers" not in disabled
 
 
-def test_slack_uses_one_edited_stream_without_permanent_progress_bubbles(tmp_path):
+def test_slack_sends_one_final_answer_without_permanent_progress_bubbles(tmp_path):
     config = render_config.build_config(FULL_ENV)
     slack_display = config["display"]["platforms"]["slack"]
 
@@ -466,7 +467,7 @@ def test_slack_uses_one_edited_stream_without_permanent_progress_bubbles(tmp_pat
         "cursor": " ▉",
     }
     assert config["platforms"]["slack"]["typing_indicator"] is True
-    assert slack_display["streaming"] is True
+    assert slack_display["streaming"] is False
     assert slack_display["tool_progress"] == "off"
     assert slack_display["interim_assistant_messages"] is False
     assert slack_display["show_reasoning"] is False
@@ -483,11 +484,23 @@ def test_slack_uses_one_edited_stream_without_permanent_progress_bubbles(tmp_pat
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
     assert summary["slack_presentation"] == {
         "one_message_stream": True,
-        "transport": "edit",
+        "transport": "final_send",
         "tool_progress": "off",
         "assistant_status": True,
         "show_commentary": False,
     }
+
+    assert (
+        "keep working state in Slack's ephemeral status and send only the "
+        "finished answer"
+        in config["agent"]["environment_hint"]
+    )
+    assert "canonical runtime pack is already installed" in config["agent"][
+        "environment_hint"
+    ]
+    assert "registry.get, start with card or concise" in config["agent"][
+        "environment_hint"
+    ]
 
 
 def test_single_reply_cap_does_not_reserve_the_whole_context_window(tmp_path):
@@ -671,7 +684,7 @@ BASE_ARGV = ["hermes", "gateway", "run", "--external-supervisor"]
 def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     dockerfile = (SERVICE_DIR / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "ARG HERMES_REF=fcbd1076a93841fa88855acce810e342a5b78101" in dockerfile
+    assert "ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile
     assert 'fetch --depth=1 origin "${HERMES_REF}"' in dockerfile
     assert "checkout --detach FETCH_HEAD" in dockerfile
     assert 'rev-parse HEAD)" = "${HERMES_REF}"' in dockerfile
@@ -682,6 +695,7 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "GET  /v1/runs/{run_id}" in dockerfile
     assert '"pre_llm_call"' in dockerfile
     assert "ENV HERMES_UPSTREAM_REF=${HERMES_REF}" in dockerfile
+    assert "grep -q 're.escape(COMPACTION_DONE_STATUS)'" in dockerfile
     assert "[slack,mcp,tts-premium,fal,firecrawl]" in dockerfile
     assert "from firecrawl import Firecrawl" in dockerfile
 
