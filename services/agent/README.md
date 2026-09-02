@@ -149,7 +149,9 @@ readable context or Cleo's tool access. `/health.config.max_turns` and
 the runtime-pack and well tools, an agent-bound `agent:cleo` pack, the
 `paperclip_hermes` compatibility decision, active/online state, the applied
 pack digest, and an actual well call. A legacy v1 bridge, broad/misbound token,
-inactive pack, or unavailable well is named separately.
+inactive pack, or unavailable well is named separately. Once the canonical pack
+is verified, `contract_status` remains `pack_loaded` if only the optional Well
+probe fails; `well_status` and `well_outage_declared` carry that narrower truth.
 
 K2 activation has two stages. Authenticated `GET /activationz` returns the
 versioned `agent_host_activation_readiness.v1` contract and its exact 21

@@ -588,6 +588,8 @@ def k2_agent_readiness(
         "runtime_pack_callable": False,
         "well_tool_listed": False,
         "well_callable": False,
+        "well_status": "not_checked",
+        "well_outage_declared": False,
         "agent_block_found": False,
         "agent_bound_token": False,
         "host_profile_compatible": False,
@@ -752,14 +754,25 @@ def k2_agent_readiness(
         )
         _raise_for_rpc_error(well_call, operation="katailyst.well")
         result["well_callable"] = True
+        result["well_status"] = "loaded"
         result["contract_status"] = "loaded"
         return result
     except Exception as exc:
         if result["transport_ok"] is None:
             result["transport_ok"] = False
         kind = _exception_kind(exc)
-        result["contract_status"] = kind
-        result["outage_declared"] = kind == "outage"
+        if "_runtime_pack" in result:
+            # The canonical brain contract already succeeded. Keep the optional
+            # task-context failure on its own status axis so /health does not
+            # simultaneously claim both a healthy installed pack and a K2
+            # contract outage.
+            result["contract_status"] = "pack_loaded"
+            result["outage_declared"] = False
+            result["well_status"] = kind
+            result["well_outage_declared"] = kind == "outage"
+        else:
+            result["contract_status"] = kind
+            result["outage_declared"] = kind == "outage"
         result["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         return result
     finally:
