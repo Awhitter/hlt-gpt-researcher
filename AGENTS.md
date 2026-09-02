@@ -198,6 +198,12 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
+At boot, the K2 runtime pack is the canonical identity and doctrine while the
+Wishing Well is an independent task-context probe. If the pack succeeds and
+the Well times out, keep and run the K2 pack with context readiness shown as
+degraded; never replace a current canonical brain with bundled fallback solely
+because the optional context probe was slow.
+
 Four rules that exist because each was once a silent no-op:
 
 1. **`platform_toolsets.slack` is a security control, not a preference.**

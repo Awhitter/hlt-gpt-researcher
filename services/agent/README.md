@@ -157,9 +157,13 @@ non-circular checks: hosted body, durable admission ledger, credentials,
 dependencies, exact token-bound Cleo pack and host compatibility, without
 requiring Cleo to already be online. K2 can then activate the agent; the bounded
 watcher repeats `agents.runtime_pack` with `requireActive:true`, installs it,
-proves the well and starts Hermes. `GET /readyz` is the stricter post-activation
-receipt: canonical pack applied, one-turn context door callable, Slack socket
-live, primary model ready, durable ledger ready and the Hermes run API reachable.
+proves the well and starts Hermes. If the canonical active pack succeeds but
+the independent Well probe times out, Hermes keeps that K2 brain, starts
+visibly context-degraded, and retries K2 on real turns instead of replacing
+the current doctrine with a bundled fallback. `GET /readyz` is the stricter
+post-activation receipt: canonical pack applied, one-turn context door callable,
+Slack socket live, primary model ready, durable ledger ready and the Hermes run
+API reachable.
 
 Authenticated `GET /slack-identityz` performs fresh Slack `auth.test` and
 `bots.info` reads and returns `slack_agent_identity.v1`: the stable workspace,

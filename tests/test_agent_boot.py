@@ -1427,6 +1427,32 @@ def test_k2_readiness_keeps_the_pack_when_the_independent_well_is_down(monkeypat
     assert result["_runtime_pack"]["agentRef"] == "agent:cleo"
 
 
+def test_a_well_outage_does_not_discard_the_verified_runtime_pack(monkeypatch):
+    health_gateway = _load_health_gateway()
+    readiness = {
+        "contract_status": "outage",
+        "outage_declared": True,
+        "well_callable": False,
+        "_runtime_pack": _cleo_runtime_pack(),
+    }
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT["agent_ref"] = "agent:cleo"
+    monkeypatch.setattr(
+        health_gateway.grounding,
+        "install_runtime_pack",
+        lambda *args, **kwargs: {
+            "runtime_pack_applied": True,
+            "brain_source": "katailyst2_runtime_pack",
+        },
+    )
+
+    assert health_gateway._install_available_k2_pack(readiness) is True
+    assert health_gateway.BOOT["runtime_pack_applied"] is True
+    assert health_gateway.BOOT["brain_source"] == "katailyst2_runtime_pack"
+    assert health_gateway.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
+    assert "_runtime_pack" not in health_gateway.BOOT["k2_agent_readiness"]
+
+
 def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypatch):
     health_gateway = _load_health_gateway()
     calls = []
@@ -2308,6 +2334,55 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
     ]
     assert health_gateway.BOOT["runtime_pack_applied"] is True
     assert health_gateway.BOOT["gateway_start_allowed"] is True
+
+
+def test_activation_transition_starts_with_the_canonical_pack_when_well_times_out(
+    monkeypatch,
+):
+    health_gateway = _load_health_gateway()
+    preactivation = {
+        **_preactivation_boot_state()["k2_agent_readiness"],
+        "activation_ready": True,
+    }
+    active_with_context_outage = {
+        **preactivation,
+        "contract_status": "outage",
+        "outage_declared": True,
+        "well_callable": False,
+        "_runtime_pack": _cleo_runtime_pack(),
+    }
+    responses = iter([preactivation, active_with_context_outage])
+    monkeypatch.setattr(
+        health_gateway,
+        "_probe_k2_boot_contract",
+        lambda **kwargs: next(responses),
+    )
+    monkeypatch.setattr(
+        health_gateway.grounding,
+        "install_runtime_pack",
+        lambda *args, **kwargs: {
+            "runtime_pack_applied": True,
+            "brain_source": "katailyst2_runtime_pack",
+        },
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo",
+            "k2_context_plugin": {"installed": True, "enabled": True},
+            "slack_agent_lead": {
+                "roster_ready": True,
+                "local_agent_ready": True,
+                "required": True,
+            },
+        }
+    )
+
+    assert health_gateway._try_k2_activation_once() is True
+    assert health_gateway.BOOT["runtime_pack_applied"] is True
+    assert health_gateway.BOOT["brain_source"] == "katailyst2_runtime_pack"
+    assert health_gateway.BOOT["gateway_start_allowed"] is True
+    assert health_gateway.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
 
 
 def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypatch):
