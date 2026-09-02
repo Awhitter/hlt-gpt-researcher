@@ -870,6 +870,75 @@ def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hosted_k2_context_refs(metadata: Mapping[str, Any]) -> list[str]:
+    """Read the refs K2 already selected without trusting arbitrary prompt text."""
+    handoff = metadata.get("handoff")
+    if not isinstance(handoff, Mapping):
+        return []
+    context = handoff.get("context")
+    if not isinstance(context, Mapping):
+        return []
+    raw_refs = context.get("contextRefs")
+    if not isinstance(raw_refs, list):
+        return []
+    refs: list[str] = []
+    for value in raw_refs:
+        ref = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/\-]{0,199}", ref):
+            continue
+        if ref not in refs:
+            refs.append(ref)
+        if len(refs) >= 12:
+            break
+    return refs
+
+
+def _hosted_k2_run_instructions(normalized: Mapping[str, Any]) -> str:
+    """Give bounded K2 missions an explicit finish-first operating contract.
+
+    Hermes v0.21 does not accept a native per-run deadline field. The wrapper
+    stops the run at ``timeoutSeconds``, so the agent must see that budget before
+    its first model call and must not spend it rediscovering context K2 already
+    supplied in the handoff.
+    """
+    timeout_seconds = int(normalized["timeout_seconds"])
+    retrieval_seconds = timeout_seconds // 4
+    desired_reserve_seconds = (
+        max(8, timeout_seconds * 2 // 5)
+        if timeout_seconds <= 30
+        else min(60, max(15, timeout_seconds // 4))
+    )
+    reserve_seconds = min(max(0, timeout_seconds - 1), desired_reserve_seconds)
+    final_by_seconds = max(1, timeout_seconds - reserve_seconds)
+    refs = _hosted_k2_context_refs(normalized["metadata"])
+    if refs:
+        source_contract = (
+            "K2 already selected these context refs: "
+            + ", ".join(refs)
+            + ". Use an exact ref directly with registry.get (or skill_content for "
+            "an exact skill ref) when its body is needed. Do not call katailyst.well, "
+            "registry.search, or Katailyst2 tool.search. If a supplied ref is "
+            "unavailable, make at most one focused recovery search total."
+        )
+    else:
+        source_contract = (
+            "Use the mounted canonical runtime pack and the supplied K2 handoff first. "
+            "Do not call katailyst.well or request a broad tool catalog. Make at most "
+            "one focused discovery search total, and only when the answer genuinely "
+            "depends on missing evidence."
+        )
+    return " ".join(
+        (
+            "This is a governed internal Katailyst2 mission for Cleo.",
+            f"The hard end-to-end execution budget is {timeout_seconds} seconds; its clock starts before the first model call.",
+            f"Spend no more than {retrieval_seconds} seconds (25% of the budget) on all retrieval and tool calls combined, and begin composing the final answer no later than {final_by_seconds} seconds after start, reserving {reserve_seconds} seconds to finish.",
+            source_contract,
+            "Return the best evidence-bounded answer before the deadline even when some evidence remains unavailable; never trade the requested final for more discovery.",
+            "Complete the requested output shape compactly, preserve evidence, and do not send the result to Slack unless the mission itself explicitly requests a governed external effect.",
+        )
+    )
+
+
 def _hermes_api_json(
     path: str,
     *,
@@ -1034,12 +1103,7 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
             payload={
                 "input": normalized["message"],
                 "session_id": normalized["session_key"],
-                "instructions": (
-                    "This is a governed internal Katailyst2 mission for Cleo. "
-                    "Complete the work end to end, preserve evidence, and do not "
-                    "send the result to Slack unless the mission itself explicitly "
-                    "requests a governed external effect."
-                ),
+                "instructions": _hosted_k2_run_instructions(normalized),
             },
             timeout=8.0,
         )
@@ -1630,7 +1694,17 @@ def boot() -> None:
     )
     _publish_k2_readiness(k2_readiness)
     logger.info("config k2_agent_readiness: %s", k2_readiness)
-    if BOOT.get("agent_ref") and k2_readiness["contract_status"] != "loaded":
+    if (
+        BOOT.get("agent_ref")
+        and BOOT.get("runtime_pack_applied") is True
+        and k2_readiness.get("well_callable") is not True
+    ):
+        logger.warning(
+            "Katailyst2 loaded the canonical %s runtime pack, but optional "
+            "Wishing Well enrichment was unavailable at boot",
+            BOOT.get("agent_ref"),
+        )
+    elif BOOT.get("agent_ref") and k2_readiness["contract_status"] != "loaded":
         logger.error(
             "Katailyst2 did not load %s (status=%s)",
             BOOT.get("agent_ref") or "the configured agent",
@@ -1797,7 +1871,6 @@ def external_dispatch_readiness() -> dict[str, Any]:
         "k2_runtime_pack_applied": BOOT.get("runtime_pack_applied") is True,
         "k2_agent_bound_token": k2.get("agent_bound_token") is True,
         "k2_runtime_pack_tool_callable": k2.get("runtime_pack_callable") is True,
-        "k2_well_callable": k2.get("well_callable") is True,
         "k2_context_plugin_ready": (
             plugin.get("installed") is True and plugin.get("enabled") is True
         ),
@@ -1812,6 +1885,9 @@ def external_dispatch_readiness() -> dict[str, Any]:
         "ready": all(checks.values()),
         "agentRef": BOOT.get("agent_ref") or "",
         "checks": checks,
+        "optionalChecks": {
+            "k2_well_enrichment_callable": k2.get("well_callable") is True,
+        },
         "hermesApi": api,
     }
 
@@ -2018,8 +2094,6 @@ def health() -> dict[str, Any]:
         status, mode = "degraded", "gateway_k2_outage_fallback"
     elif gateway["running"] and gateway["slack_adapter_available"] and k2_brain_bad:
         status, mode = "degraded", "gateway_k2_brain_unavailable"
-    elif gateway["running"] and gateway["slack_adapter_available"] and k2_context_bad:
-        status, mode = "degraded", "gateway_k2_context_unavailable"
     elif gateway["running"] and gateway["slack_adapter_available"] and k2_plugin_bad:
         status, mode = "degraded", "gateway_k2_context_plugin_missing"
     elif (
@@ -2073,6 +2147,17 @@ def health() -> dict[str, Any]:
         "config": BOOT,
         "gateway": gateway,
     }
+    if k2_context_bad:
+        payload["advisories"] = [
+            {
+                "code": "k2_well_enrichment_unavailable",
+                "impact": (
+                    "Optional automatic task-specific enrichment was unavailable "
+                    "at boot. The canonical runtime pack and direct K2 reads remain "
+                    "the working context path."
+                ),
+            }
+        ]
     if mode == "readiness_gateway":
         payload["note"] = (
             "The agent is installed and configured but the Slack gateway is off. "
@@ -2134,12 +2219,6 @@ def health() -> dict[str, Any]:
             "The configured MCP endpoint answered, but it did not identify itself "
             "as Katailyst2. Cleo must use the canonical v2 door, not the legacy v1 "
             "bridge. Read config.k2_agent_readiness.server_repo."
-        )
-    elif mode == "gateway_k2_context_unavailable":
-        payload["note"] = (
-            "Cleo booted her canonical K2 runtime pack, but the independent "
-            "mission-time katailyst.well door is not callable. Her identity is "
-            "intact; task-specific registry enrichment is degraded."
         )
     elif mode == "gateway_k2_context_plugin_missing":
         payload["note"] = (

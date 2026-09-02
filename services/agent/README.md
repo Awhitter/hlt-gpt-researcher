@@ -159,11 +159,14 @@ requiring Cleo to already be online. K2 can then activate the agent; the bounded
 watcher repeats `agents.runtime_pack` with `requireActive:true`, installs it,
 proves the well and starts Hermes. If the canonical active pack succeeds but
 the independent Well probe times out, Hermes keeps that K2 brain, starts
-visibly context-degraded, and retries K2 on real turns instead of replacing
-the current doctrine with a bundled fallback. `GET /readyz` is the stricter
-post-activation receipt: canonical pack applied, one-turn context door callable,
+with a visible optional-enrichment advisory, and retries K2 on ordinary Slack
+turns instead of replacing the current doctrine with a bundled fallback. That
+optional timeout does not fail whole-agent health or the hosted run door because
+K2 handoffs already carry mission context and can read exact refs directly.
+`GET /readyz` is the stricter post-activation receipt: canonical pack applied,
 Slack socket live, primary model ready, durable ledger ready and the Hermes run
-API reachable.
+API reachable; `optionalChecks.k2_well_enrichment_callable` preserves the
+independent Well readback without misclassifying the working agent as offline.
 
 Authenticated `GET /slack-identityz` performs fresh Slack `auth.test` and
 `bots.info` reads and returns `slack_agent_identity.v1`: the stable workspace,
@@ -187,7 +190,14 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
   are bounded, secret-redacted, and persisted across wrapper restarts.
 - The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
   not synthesize a second agent loop, does not post into Slack, and retains
-  Hermes' normal model, tools, session and `pre_llm_call` behavior.
+  Hermes' normal model, tools and session behavior.
+- `timeoutSeconds` is the hard end-to-end provider budget. The per-run system
+  instructions cap retrieval at 25%, reserve time for the requested final, use
+  K2-selected context refs directly, and allow at most one focused recovery
+  search. Because K2's handoff already carries the canonical mission reading
+  and selected refs, `hook:k2:*` API runs skip the plugin's second automatic
+  Wishing Well draw; ordinary Slack turns keep the one-draw `pre_llm_call`
+  behavior.
 - Before that surface may emit `run.completed`, the HLT overlay reconciles each
   factual business count, rate, dollar value, and percentage against the
   current request and successful current-run tool results. Explicitly labelled

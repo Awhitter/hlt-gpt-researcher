@@ -1569,6 +1569,29 @@ def test_mission_context_hook_skips_small_talk_and_draws_once(monkeypatch):
     ]
 
 
+def test_hosted_k2_mission_uses_supplied_handoff_without_a_second_well(monkeypatch):
+    plugin = _load_k2_plugin()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("hosted K2 missions must not spend their budget on another well draw")
+
+    monkeypatch.setattr(plugin, "draw_mission_context", fail_if_called)
+
+    result = plugin._pre_llm_call(
+        user_message=(
+            "Produce the compact experiment.\n\n---\nK2 handoff bridge:\n"
+            '{"context":{"contextRefs":["skill:nm-funnel-brief"]},"timeoutSec":20}'
+        ),
+        platform="api_server",
+        session_id=f"hook:k2:{K2_RUN_ID}",
+        turn_id="turn-1",
+    )
+
+    assert result == {"context": plugin.HOSTED_K2_CONTEXT}
+    assert "use supplied refs directly" in result["context"]
+    assert "return a useful final before the deadline" in result["context"]
+
+
 def test_mission_context_draw_calls_the_well_once_and_bounds_the_packet(monkeypatch):
     runtime_context = _load(
         "hlt_k2_runtime_context_test",
@@ -1688,6 +1711,47 @@ def _hook_payload(*, message="Produce the Nursing Mastery funnel brief."):
     }
 
 
+def test_hosted_k2_instructions_reserve_the_final_and_use_explicit_refs_directly():
+    health_gateway = _load_health_gateway()
+    payload = _hook_payload()
+    payload["timeoutSeconds"] = 120
+    payload["metadata"]["handoff"] = {
+        "context": {
+            "contextRefs": [
+                "skill:nm-funnel-brief",
+                "kb:nursing-mastery-recruiting-funnel",
+            ]
+        },
+        "timeoutSec": 120,
+    }
+
+    normalized = health_gateway._validate_hook_payload(payload)
+    instructions = health_gateway._hosted_k2_run_instructions(normalized)
+
+    assert "hard end-to-end execution budget is 120 seconds" in instructions
+    assert "no more than 30 seconds (25% of the budget)" in instructions
+    assert "begin composing the final answer no later than 90 seconds" in instructions
+    assert "skill:nm-funnel-brief" in instructions
+    assert "kb:nursing-mastery-recruiting-funnel" in instructions
+    assert "Use an exact ref directly with registry.get" in instructions
+    assert "at most one focused recovery search total" in instructions
+    assert "Do not call katailyst.well, registry.search, or Katailyst2 tool.search" in instructions
+
+
+def test_twenty_second_hosted_mission_leaves_time_for_a_final():
+    health_gateway = _load_health_gateway()
+    payload = _hook_payload()
+    payload["timeoutSeconds"] = 20
+
+    normalized = health_gateway._validate_hook_payload(payload)
+    instructions = health_gateway._hosted_k2_run_instructions(normalized)
+
+    assert "no more than 5 seconds (25% of the budget)" in instructions
+    assert "begin composing the final answer no later than 12 seconds" in instructions
+    assert "reserving 8 seconds to finish" in instructions
+    assert "request a broad tool catalog" in instructions
+
+
 def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path):
     health_gateway = _load_health_gateway()
     calls = []
@@ -1726,6 +1790,8 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
     assert calls[0][1]["token"] == "a-secure-shared-hook-token"
     assert calls[0][1]["session_key"] == f"hook:k2:{K2_RUN_ID}"
     assert calls[0][1]["payload"]["session_id"] == f"hook:k2:{K2_RUN_ID}"
+    assert "25% of the budget" in calls[0][1]["payload"]["instructions"]
+    assert "never trade the requested final for more discovery" in calls[0][1]["payload"]["instructions"]
     assert scheduled == [
         ("run_" + "a" * 32, "a-secure-shared-hook-token", 300)
     ]
@@ -2256,7 +2322,7 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     )
 
 
-def test_post_activation_readyz_requires_real_run_and_well_surfaces(monkeypatch):
+def test_post_activation_readyz_requires_the_real_run_surface_and_reports_optional_well(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(
@@ -2293,11 +2359,13 @@ def test_post_activation_readyz_requires_real_run_and_well_surfaces(monkeypatch)
     assert json.loads(response.body)["ready"] is True
 
     health_gateway.BOOT["k2_agent_readiness"]["well_callable"] = False
-    degraded = health_gateway.readyz(
+    still_ready = health_gateway.readyz(
         authorization="Bearer a-secure-shared-hook-token"
     )
-    assert degraded.status_code == 503
-    assert json.loads(degraded.body)["checks"]["k2_well_callable"] is False
+    assert still_ready.status_code == 200
+    body = json.loads(still_ready.body)
+    assert body["ready"] is True
+    assert body["optionalChecks"]["k2_well_enrichment_callable"] is False
 
 
 def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
@@ -2484,7 +2552,7 @@ def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypa
                 "identity_matches": True,
             },
             True,
-            "gateway_k2_context_unavailable",
+            "gateway",
         ),
         (
             {
@@ -2514,6 +2582,7 @@ def test_health_names_the_exact_k2_readiness_seam(
             "running": True,
             "slack_adapter_available": True,
             "mcp_sdk_available": True,
+            "slack_socket_connected": True,
         },
     )
     health_gateway.BOOT.clear()
@@ -2527,13 +2596,35 @@ def test_health_names_the_exact_k2_readiness_seam(
             "k2_agent_readiness": readiness,
             "slack_auth": {},
             "mcp_mounted": ["katailyst2"],
+            "k2_context_plugin": {"installed": True, "enabled": True},
+            "slack_agent_lead": {
+                "roster_ready": True,
+                "local_agent_ready": True,
+                "required": True,
+            },
+            "external_dispatch": {"configured": True},
+            "agent_run_ledger": {"ready": True},
+            "web_search_readiness": {"available": True},
         }
     )
 
     payload = health_gateway.health()
 
-    assert payload["status"] == "degraded"
+    assert payload["status"] == (
+        "ok" if expected_mode == "gateway" else "degraded"
+    )
     assert payload["mode"] == expected_mode
+    if expected_mode == "gateway":
+        assert payload["advisories"] == [
+            {
+                "code": "k2_well_enrichment_unavailable",
+                "impact": (
+                    "Optional automatic task-specific enrichment was unavailable "
+                    "at boot. The canonical runtime pack and direct K2 reads remain "
+                    "the working context path."
+                ),
+            }
+        ]
 
 
 def _fake_slack(
