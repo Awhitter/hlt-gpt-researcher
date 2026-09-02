@@ -1251,6 +1251,8 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
     assert result["runtime_pack_callable"] is True
     assert result["well_tool_listed"] is True
     assert result["well_callable"] is True
+    assert result["well_status"] == "loaded"
+    assert result["well_outage_declared"] is False
     assert result["agent_block_found"] is True
     assert result["agent_bound_token"] is True
     assert result["host_profile_compatible"] is True
@@ -1436,8 +1438,10 @@ def test_k2_readiness_keeps_the_pack_when_the_independent_well_is_down(monkeypat
     assert result["well_tool_listed"] is True
     assert result["well_callable"] is False
     assert result["agent_block_found"] is True
-    assert result["contract_status"] == "outage"
-    assert result["outage_declared"] is True
+    assert result["contract_status"] == "pack_loaded"
+    assert result["outage_declared"] is False
+    assert result["well_status"] == "outage"
+    assert result["well_outage_declared"] is True
     assert result["_runtime_pack"]["agentRef"] == "agent:cleo"
 
 
