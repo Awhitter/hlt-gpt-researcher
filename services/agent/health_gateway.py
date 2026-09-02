@@ -1461,6 +1461,21 @@ def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
     return True
 
 
+def _install_available_k2_pack(k2_readiness: dict[str, Any]) -> bool:
+    """Install a verified pack even when the independent Well probe is down.
+
+    ``k2_agent_readiness`` retains ``_runtime_pack`` after a later Well outage.
+    The pack is the canonical identity and doctrine; the Well is task-time
+    context. Losing the former because the latter exceeded its timeout makes a
+    healthy agent boot from stale bundled grounding, which is strictly worse
+    than starting the canonical brain with context readiness marked degraded.
+    """
+    if "_runtime_pack" not in k2_readiness:
+        _publish_k2_readiness(k2_readiness)
+        return False
+    return _install_active_k2_pack(k2_readiness)
+
+
 def _activation_poll_seconds() -> float:
     try:
         value = float(os.getenv("K2_ACTIVATION_POLL_SECONDS", "10"))
@@ -1479,10 +1494,7 @@ def _try_k2_activation_once() -> bool:
     if preactivation.get("activation_ready") is not True:
         return False
     active = _probe_k2_boot_contract(require_active=True, probe_well=True)
-    if active.get("contract_status") != "loaded":
-        _publish_k2_readiness(active)
-        return False
-    if not _install_active_k2_pack(active):
+    if not _install_available_k2_pack(active):
         return False
     plugin = BOOT.get("k2_context_plugin") or {}
     slack_lead = BOOT.get("slack_agent_lead") or {}
@@ -1587,9 +1599,9 @@ def boot() -> None:
     else:
         k2_readiness = preactivation
 
-    if k2_readiness.get("contract_status") == "loaded":
-        _install_active_k2_pack(k2_readiness)
-    elif BOOT.get("agent_ref") and k2_readiness.get("outage_declared") is True:
+    if not _install_available_k2_pack(k2_readiness) and (
+        BOOT.get("agent_ref") and k2_readiness.get("outage_declared") is True
+    ):
         BOOT["brain_source"] = "bundled_outage_fallback"
         BOOT["bundled_fallback_reason"] = k2_readiness.get("error") or "K2 outage"
 
