@@ -38,7 +38,7 @@ ENV PYTHONPATH=/app
 # left no way to know whether Cleo had the MCP naming repair that registers
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
-ARG HERMES_REF=fcbd1076a93841fa88855acce810e342a5b78101
+ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77
 COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py
 COPY hermes_patches /tmp/hermes-patches
 RUN git init /opt/hermes \
@@ -73,6 +73,7 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && grep -q 'skip before adapter processing' /opt/hermes/gateway/platforms/base.py \
     && grep -q '_hermes_pre_gateway_dispatch_done' /opt/hermes/gateway/run.py \
     && grep -q 'pre_gateway_dispatch skip' /opt/hermes/gateway/run.py \
+    && grep -q 're.escape(COMPACTION_DONE_STATUS)' /opt/hermes/gateway/run.py \
     && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py \
     && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes \
     && PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \

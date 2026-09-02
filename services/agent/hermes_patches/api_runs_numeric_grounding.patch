@@ -1,141 +1,142 @@
-diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
-index 30ed5a810..a7b7e96b4 100644
---- a/gateway/platforms/api_server.py
-+++ b/gateway/platforms/api_server.py
-@@ -98,6 +98,7 @@ from gateway.readiness import collect_runtime_readiness
+diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
+index 116d6a7..97811a5 100644
+--- a/gateway/platforms/api_server_runs.py
++++ b/gateway/platforms/api_server_runs.py
+@@ -10,6 +10,8 @@ import uuid
+ from contextlib import suppress
+ from typing import Any, Dict, List, Optional
  
- from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
- from agent.secret_scope import get_secret as _scoped_get_secret
 +from hlt_numeric_grounding import NumericGroundingLedger
- 
- 
- def _get_scoped_secret(name, default=None):
-@@ -6781,7 +6782,26 @@ class APIServerAdapter(BasePlatformAdapter):
-         self._run_streams_created[run_id] = created_at
-         self._run_approval_sessions[run_id] = approval_session_key
- 
--        event_cb = self._make_run_event_callback(run_id, loop)
-+        # Keep factual numeric claims tied to evidence from this request.  The
-+        # ledger sees the current user message and successful current-run tool
-+        # results only; inherited assistant context is deliberately excluded.
-+        numeric_grounding = NumericGroundingLedger(user_message)
-+        _stream_event_cb = self._make_run_event_callback(run_id, loop)
 +
-+        def event_cb(
-+            event_type: str,
-+            tool_name: str = None,
-+            preview: str = None,
-+            args=None,
-+            **kwargs,
-+        ):
-+            numeric_grounding.observe_tool_event(
-+                event_type,
-+                tool_name,
-+                result=kwargs.get("result"),
-+                is_error=bool(kwargs.get("is_error", False)),
-+            )
-+            _stream_event_cb(event_type, tool_name, preview, args, **kwargs)
+ try:
+     from aiohttp import web
+     from aiohttp.web_request import RequestKey
+@@ -619,7 +621,26 @@ async def _handle_runs(
+     self._run_streams_created[run_id] = created_at
+     self._run_approval_sessions[run_id] = approval_session_key
  
-         def _put_event_if_active(event: Optional[Dict]) -> None:
-             """Enqueue only while this run still owns live transport state."""
-@@ -6916,6 +6936,12 @@ class APIServerAdapter(BasePlatformAdapter):
-                                 conversation_history=conversation_history,
-                                 task_id=effective_task_id,
-                             )
-+                            u = {
-+                                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-+                                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-+                                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-+                            }
-+                            return r, u
-                         finally:
-                             # Worker finished (interrupted or complete) —
-                             # clear turn ownership immediately so a later
-@@ -6936,12 +6962,17 @@ class APIServerAdapter(BasePlatformAdapter):
-                                         clear_session_vars(session_tokens)
-                                     except Exception:
-                                         pass
--                        u = {
--                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
--                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
--                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
--                        }
--                        return r, u
-+                            # /v1/runs creates one agent per run, so this is the
-+                            # owning lifecycle boundary.  Besides releasing
-+                            # sockets/processes, close() durably stamps the
-+                            # session's ended_at/end_reason fields.
-+                            try:
-+                                agent.close()
-+                            except Exception:
-+                                logger.exception(
-+                                    "[api_server] agent close failed for run=%s",
-+                                    run_id,
-+                                )
+-    event_cb = self._make_run_event_callback(run_id, loop)
++    # Keep factual numeric claims tied to evidence from this request. The
++    # ledger sees the current user message and successful current-run tool
++    # results only; inherited assistant context is deliberately excluded.
++    numeric_grounding = NumericGroundingLedger(user_message)
++    _stream_event_cb = self._make_run_event_callback(run_id, loop)
++
++    def event_cb(
++        event_type: str,
++        tool_name: str = None,
++        preview: str = None,
++        args=None,
++        **kwargs,
++    ):
++        numeric_grounding.observe_tool_event(
++            event_type,
++            tool_name,
++            result=kwargs.get("result"),
++            is_error=bool(kwargs.get("is_error", False)),
++        )
++        _stream_event_cb(event_type, tool_name, preview, args, **kwargs)
  
-                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
-                 if run_id in self._stopping_run_ids:
-@@ -6978,24 +7009,45 @@ class APIServerAdapter(BasePlatformAdapter):
-                     # see turn_finalizer) rides on the terminal event/status so
-                     # the client can replay it as the next user turn.
-                     pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
--                    completed_event = {
--                        "event": "run.completed",
--                        "run_id": run_id,
--                        "timestamp": time.time(),
--                        "output": final_response,
--                        "usage": usage,
--                    }
--                    if pending_steer:
--                        completed_event["pending_steer"] = pending_steer
--                    _put_event_if_active(completed_event)
--                    self._set_run_status(
--                        run_id,
--                        "completed",
--                        output=final_response,
--                        usage=usage,
--                        last_event="run.completed",
--                        **({"pending_steer": pending_steer} if pending_steer else {}),
--                    )
-+                    grounding_verdict = numeric_grounding.validate(final_response)
-+                    grounding_summary = grounding_verdict.as_dict()
-+                    if not grounding_verdict.ok:
-+                        error_msg = grounding_verdict.failure_message()
-+                        _put_event_if_active({
-+                            "event": "run.failed",
-+                            "run_id": run_id,
-+                            "timestamp": time.time(),
-+                            "error": error_msg,
-+                            "grounding": grounding_summary,
-+                        })
-+                        self._set_run_status(
-+                            run_id,
-+                            "failed",
-+                            error=error_msg,
-+                            grounding=grounding_summary,
-+                            last_event="run.failed",
-+                        )
-+                    else:
-+                        completed_event = {
-+                            "event": "run.completed",
-+                            "run_id": run_id,
-+                            "timestamp": time.time(),
-+                            "output": final_response,
-+                            "usage": usage,
-+                            "grounding": grounding_summary,
+     def _put_event_if_active(event: Optional[Dict]) -> None:
+         """Enqueue only while this run still owns live transport state."""
+@@ -822,6 +843,12 @@ async def _handle_runs(
+                             conversation_history=conversation_history,
+                             task_id=effective_task_id,
+                         )
++                        u = {
++                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
++                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
++                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
 +                        }
-+                        if pending_steer:
-+                            completed_event["pending_steer"] = pending_steer
-+                        _put_event_if_active(completed_event)
-+                        self._set_run_status(
-+                            run_id,
-+                            "completed",
-+                            output=final_response,
-+                            usage=usage,
-+                            grounding=grounding_summary,
-+                            last_event="run.completed",
-+                            **({"pending_steer": pending_steer} if pending_steer else {}),
-+                        )
-             except asyncio.CancelledError:
-                 self._set_run_status(
-                     run_id,
++                        return r, u
+                     finally:
+                         # Worker finished (interrupted or complete) —
+                         # clear turn ownership immediately so a later
+@@ -851,12 +878,17 @@ async def _handle_runs(
+                                     reset_room_execution_policy(room_policy_token)
+                                 except Exception:
+                                     pass
+-                    u = {
+-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+-                    }
+-                    return r, u
++                        # /v1/runs creates one agent per run, so this is the
++                        # owning lifecycle boundary. Besides releasing
++                        # sockets/processes, close() durably stamps the
++                        # session's ended_at/end_reason fields.
++                        try:
++                            agent.close()
++                        except Exception:
++                            logger.exception(
++                                "[api_server] agent close failed for run=%s",
++                                run_id,
++                            )
+ 
+             result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+             if (
+@@ -897,24 +929,45 @@ async def _handle_runs(
+                 # see turn_finalizer) rides on the terminal event/status so
+                 # the client can replay it as the next user turn.
+                 pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
+-                completed_event = {
+-                    "event": "run.completed",
+-                    "run_id": run_id,
+-                    "timestamp": time.time(),
+-                    "output": final_response,
+-                    "usage": usage,
+-                }
+-                if pending_steer:
+-                    completed_event["pending_steer"] = pending_steer
+-                _put_event_if_active(completed_event)
+-                self._set_run_status(
+-                    run_id,
+-                    "completed",
+-                    output=final_response,
+-                    usage=usage,
+-                    last_event="run.completed",
+-                    **({"pending_steer": pending_steer} if pending_steer else {}),
+-                )
++                grounding_verdict = numeric_grounding.validate(final_response)
++                grounding_summary = grounding_verdict.as_dict()
++                if not grounding_verdict.ok:
++                    error_msg = grounding_verdict.failure_message()
++                    _put_event_if_active({
++                        "event": "run.failed",
++                        "run_id": run_id,
++                        "timestamp": time.time(),
++                        "error": error_msg,
++                        "grounding": grounding_summary,
++                    })
++                    self._set_run_status(
++                        run_id,
++                        "failed",
++                        error=error_msg,
++                        grounding=grounding_summary,
++                        last_event="run.failed",
++                    )
++                else:
++                    completed_event = {
++                        "event": "run.completed",
++                        "run_id": run_id,
++                        "timestamp": time.time(),
++                        "output": final_response,
++                        "usage": usage,
++                        "grounding": grounding_summary,
++                    }
++                    if pending_steer:
++                        completed_event["pending_steer"] = pending_steer
++                    _put_event_if_active(completed_event)
++                    self._set_run_status(
++                        run_id,
++                        "completed",
++                        output=final_response,
++                        usage=usage,
++                        grounding=grounding_summary,
++                        last_event="run.completed",
++                        **({"pending_steer": pending_steer} if pending_steer else {}),
++                    )
+         except asyncio.CancelledError:
+             self._set_run_status(
+                 run_id,

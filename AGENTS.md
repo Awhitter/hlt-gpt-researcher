@@ -204,6 +204,11 @@ the Well times out, keep and run the K2 pack with context readiness shown as
 degraded; never replace a current canonical brain with bundled fallback solely
 because the optional context probe was slow.
 
+Slack token streaming stays off: pre-tool model text must not become permanent
+thread fragments. Keep per-tool, interim, and routine compaction posts off; the
+ephemeral Assistant status is the working-state surface and only the finished
+answer becomes a Slack message.
+
 Four rules that exist because each was once a silent no-op:
 
 1. **`platform_toolsets.slack` is a security control, not a preference.**

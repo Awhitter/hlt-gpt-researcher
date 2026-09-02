@@ -206,10 +206,16 @@ a lost response after that boundary is surfaced as nonterminal `unknown` with
 poll `statusUrl` and terminalize its run from that receipt. Treating the initial
 202 as completed is a control-plane bug, not a successful Cleo run.
 
-Slack uses Hermes' single-message edit stream. The answer progressively updates
-in place, the ephemeral Assistant status shows the current useful action, and
-per-tool/interim commentary bubbles stay off. The model returns one final answer
-instead of using a Slack send tool to duplicate its own response.
+Slack sends one finished answer. Token streaming stays off for this surface
+because pre-tool model text must not become permanent Slack replies; the
+ephemeral Assistant status carries working state instead. Per-tool/interim
+commentary posts stay off, routine compaction notices are suppressed, and the
+model does not use a Slack send tool to duplicate its own response.
+
+The canonical K2 runtime pack is installed at boot. Turns use `registry.get`
+at card or concise depth first and load a full body only when needed; fetching
+the runtime pack again or opening several full registry bodies just burns the
+working context without adding authority.
 
 One-to-one DMs belong to the agent the teammate opened. Channels and group DMs
 require a fresh native Slack mention; the first recognized, nonquoted mention

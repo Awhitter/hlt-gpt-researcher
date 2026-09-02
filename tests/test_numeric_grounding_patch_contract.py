@@ -31,15 +31,20 @@ def test_overlay_gates_completion_and_closes_the_owned_agent_session():
     patch = (
         SERVICE_DIR / "hermes_patches" / "api_runs_numeric_grounding.patch"
     ).read_text(encoding="utf-8")
+    added_lines = "\n".join(
+        line[1:]
+        for line in patch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
 
     assert "+from hlt_numeric_grounding import NumericGroundingLedger" in patch
-    assert "+            numeric_grounding.observe_tool_event(" in patch
-    assert patch.index("+                    grounding_verdict =") < patch.index(
-        '+                            "event": "run.completed"'
+    assert "numeric_grounding.observe_tool_event(" in added_lines
+    assert added_lines.index("grounding_verdict =") < added_lines.index(
+        '"event": "run.completed"'
     )
-    assert '+                            "event": "run.failed"' in patch
-    assert "+                                agent.close()" in patch
-    assert "+                            return r, u" in patch
+    assert '"event": "run.failed"' in added_lines
+    assert "agent.close()" in added_lines
+    assert "return r, u" in added_lines
 
 
 def test_cleo_source_carries_the_same_reconciliation_contract():
