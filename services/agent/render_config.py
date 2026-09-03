@@ -68,11 +68,14 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
 # XAI_API_KEY is configured, the SAME model over the plain api-key provider is
 # the first recovery route — the OAuth token is a six-hour credential that has
 # already expired unnoticed once (2026-08-18, 68 hours dark), and a key rung
-# means an auth failure degrades billing, never the model. Codex follows (its
-# ChatGPT subscription is also already paid for), then OpenRouter as the
-# independent paid safety net.
+# means an auth failure degrades billing, never the model. OpenRouter is the
+# independent safety net. ChatGPT subscription OAuth is intentionally not a
+# default rung: its refresh token is single-use and this long-lived service
+# cannot renew it without an operator device-code login. A stale Codex profile
+# previously emitted refresh 401s at every boot while health still called the
+# route available. Operators can still add ``openai-codex`` explicitly through
+# ``HERMES_FALLBACK_PROVIDERS`` after a fresh login and bounded private canary.
 DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
-    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
     {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
     {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813"},

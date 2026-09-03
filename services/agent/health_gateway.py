@@ -1325,6 +1325,65 @@ def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
     return "inference"
 
 
+def _codex_subscription_auth_readiness(
+    *, status_getter: Any | None = None, pool_loader: Any | None = None
+) -> dict[str, Any]:
+    """Require a selectable Codex pool entry, not a legacy login flag.
+
+    Pinned Hermes checks the pool first, but when every entry fails refresh it
+    falls through to the legacy singleton. ``get_codex_auth_status`` can then
+    return ``logged_in: true`` from that same stale singleton immediately after
+    the pool logged a refresh 401. Runtime recovery will try the unusable pool
+    again, so that flag alone is not evidence of an available fallback.
+
+    Calling the upstream status helper first lets Hermes perform its normal
+    refresh/self-heal. We then reload the pool and require a selectable entry.
+    Only non-secret booleans and a normalized source kind leave this adapter.
+    """
+    if status_getter is None:
+        from hermes_cli.auth import get_codex_auth_status
+
+        status_getter = get_codex_auth_status
+    if pool_loader is None:
+        from agent.credential_pool import load_pool
+
+        pool_loader = load_pool
+
+    status = status_getter() or {}
+    pool = pool_loader("openai-codex")
+    pool_has_credentials = bool(pool and pool.has_credentials())
+    pool_has_available = bool(pool and pool.has_available())
+    logged_in = bool(status.get("logged_in"))
+    rate_limited = bool(status.get("rate_limited"))
+    usable = (
+        logged_in
+        and not rate_limited
+        and pool_has_credentials
+        and pool_has_available
+    )
+    raw_source = str(status.get("source") or "")
+    source_kind = "credential_pool" if raw_source.startswith("pool:") else raw_source
+    if source_kind not in {"credential_pool", "hermes-auth-store"}:
+        source_kind = ""
+    error = str(status.get("error") or "")
+    if logged_in and not usable and not rate_limited:
+        error = "stored OAuth profile has no selectable credential-pool entry"
+    return {
+        "logged_in": logged_in,
+        "usable": usable,
+        "rate_limited": rate_limited,
+        "reset_at": status.get("reset_at"),
+        "last_refresh": status.get("last_refresh"),
+        "source": source_kind,
+        "error_code": str(status.get("error_code") or ""),
+        "error": error,
+        "credential_pool": {
+            "has_credentials": pool_has_credentials,
+            "has_available": pool_has_available,
+        },
+    }
+
+
 def subscription_auth_readiness(provider: str) -> dict[str, Any]:
     """Read OAuth-provider readiness without exposing stored tokens.
 
@@ -1337,6 +1396,7 @@ def subscription_auth_readiness(provider: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "provider": provider,
         "logged_in": None,
+        "usable": None,
         "rate_limited": False,
         "reset_at": None,
         "last_refresh": None,
@@ -1348,9 +1408,7 @@ def subscription_auth_readiness(provider: str) -> dict[str, Any]:
 
             status = get_xai_oauth_auth_status() or {}
         elif provider == "openai-codex":
-            from hermes_cli.auth import get_codex_auth_status
-
-            status = get_codex_auth_status() or {}
+            status = _codex_subscription_auth_readiness()
         else:
             return result
     except Exception as exc:
@@ -1368,6 +1426,15 @@ def subscription_auth_readiness(provider: str) -> dict[str, Any]:
     result["reset_at"] = status.get("reset_at")
     result["last_refresh"] = status.get("last_refresh")
     result["error"] = str(status.get("error") or "")
+    if status.get("usable") is not None:
+        result["usable"] = bool(status.get("usable"))
+    elif result["logged_in"] is not None:
+        result["usable"] = bool(
+            result["logged_in"] and not result["rate_limited"]
+        )
+    for key in ("source", "error_code", "credential_pool"):
+        if key in status:
+            result[key] = status[key]
     return result
 
 
@@ -1382,8 +1449,12 @@ def model_route_readiness(
             continue
         if provider in {"xai-oauth", "openai-codex"}:
             auth = subscription_auth_readiness(provider)
-            if auth.get("logged_in") is False or auth.get("rate_limited") is True:
+            if auth.get("usable") is False:
                 available: bool | None = False
+            elif auth.get("usable") is True:
+                available = True
+            elif auth.get("logged_in") is False or auth.get("rate_limited") is True:
+                available = False
             elif auth.get("logged_in") is True:
                 available = True
             else:
@@ -1698,10 +1769,10 @@ def boot() -> None:
         subscription_auth = subscription_auth_readiness(active_provider)
         BOOT["subscription_auth"] = subscription_auth
         logger.info("config subscription_auth: %s", subscription_auth)
-        if subscription_auth["logged_in"] is False:
+        if subscription_auth.get("usable") is False:
             logger.error(
                 "%s is the active model provider but its subscription OAuth "
-                "credential is not logged in",
+                "credential is not usable",
                 active_provider,
             )
     elif active_provider == "openrouter" and not BOOT.get("openrouter_key_present"):
@@ -2088,7 +2159,8 @@ def health() -> dict[str, Any]:
     if active_provider in {"xai-oauth", "openai-codex"}:
         active_subscription = BOOT.get("subscription_auth") or {}
         model_credentials_bad = (
-            active_subscription.get("logged_in") is False
+            active_subscription.get("usable") is False
+            or active_subscription.get("logged_in") is False
             or active_subscription.get("rate_limited") is True
         )
     elif active_provider == "openrouter":
@@ -2264,10 +2336,14 @@ def health() -> dict[str, Any]:
                     + reset_note
                 )
             else:
+                auth_error = str(
+                    (BOOT.get("subscription_auth") or {}).get("error") or ""
+                )
                 payload["note"] = (
                     f"Slack is connected, but the active {active_provider} subscription "
-                    "OAuth credential is not logged in. Re-run the provider device-code "
+                    "OAuth credential is not usable. Re-run the provider device-code "
                     "login before treating Cleo as able to answer."
+                    + (f" Readiness detail: {auth_error}." if auth_error else "")
                 )
         else:
             payload["note"] = (
