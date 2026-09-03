@@ -3,6 +3,11 @@
 # the whole remote manifest rather than merging fields. Cleo uses Slack's current
 # Agent View. The pinned Hermes runtime supports its app_home_opened and
 # app_context_changed lifecycle, but not Agent Sessions/native Stop yet.
+_metadata:
+  # Match the version emitted by Slack's manifest export API and the pinned
+  # Hermes manifest generator so validators do not have to infer a schema.
+  major_version: 1
+  minor_version: 1
 display_information:
   name: Cleo
   description: Nursing Mastery product owner — research, decisions, and useful artifacts.
