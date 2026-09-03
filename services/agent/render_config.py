@@ -45,9 +45,11 @@ DEFAULT_MAX_TOKENS = 32_768
 # A live Nursing Mastery funnel brief completed in 20 model iterations. Leaving
 # Hermes at its upstream 500-turn default gives one externally-triggered run
 # enough room to consume a subscription rate window long after the useful work
-# should have converged. Twenty-four keeps measured headroom while making a
-# runaway turn fail with Hermes' own final-summary path.
+# should have converged. Twenty-four keeps measured headroom for API/K2 work;
+# interactive Slack gets the stricter surface cap below.
 DEFAULT_MAX_TURNS = 24
+DEFAULT_SLACK_MAX_TURNS = 7
+DEFAULT_SLACK_TOOL_ROUNDS = 5
 # Grok's large context window otherwise delayed automatic compression until the
 # prompt had grown past 180k tokens. An absolute trigger bounds repeated input
 # independently of whichever model route is active; Hermes still preserves the
@@ -226,8 +228,13 @@ SLACK_PLATFORM_HINT = (
     "Slack already shows your live work in its ephemeral status. "
     "Do not narrate each tool call as a separate message, do not use a send-message "
     "tool to deliver the answer you are currently composing, and return exactly one "
-    "final answer. Keep ordinary replies concise; long work is fine when the outcome "
-    "needs it."
+    "final answer. Keep ordinary replies concise. Use at most five tool-calling rounds "
+    "for a Slack turn: take the highest-signal reads first, never repeat a discovery "
+    "query, then synthesize from evidence already collected and call missing values "
+    "unknown. Reserve the final model response for synthesis.\n"
+    "When the user requests a Slack table, emit a plain Markdown pipe table with a "
+    "header and separator row, never a fenced code block. If the table would not stay "
+    "compact, use short bullets instead."
 )
 
 # Slash commands any workspace member may run. Everything else — /model, /yolo,
@@ -590,6 +597,9 @@ def build_config(
         },
         "agent": {
             "max_turns": DEFAULT_MAX_TURNS,
+            # Interactive Slack work gets a faster final-summary fail-safe;
+            # API/K2 runs keep the full global budget above.
+            "platform_max_turns": {"slack": DEFAULT_SLACK_MAX_TURNS},
             # Fixes the "stops after stating intent" failure on some models.
             "intent_ack_continuation": True,
             # Default 180s posts "still working" into a shared channel every
@@ -801,6 +811,8 @@ def render(
         ],
         "max_tokens": config["model"]["max_tokens"],
         "max_turns": config["agent"]["max_turns"],
+        "slack_max_turns": config["agent"]["platform_max_turns"]["slack"],
+        "slack_tool_round_limit": DEFAULT_SLACK_TOOL_ROUNDS,
         "compression_threshold_tokens": config["compression"]["threshold_tokens"],
         "mcp_result_size_chars": config["tool_budget"]["mcp_result_size_chars"],
         "tool_search": {

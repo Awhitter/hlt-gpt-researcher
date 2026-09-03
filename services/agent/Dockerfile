@@ -55,6 +55,8 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes apply /tmp/hermes-patches/api_runs_numeric_grounding.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/progressive_tool_result_compaction.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/progressive_tool_result_compaction.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/platform_turn_budget.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/platform_turn_budget.patch \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
@@ -82,6 +84,7 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes \
     && python /tmp/hermes-patches/assert_k2_runtime_pack_prompt_refresh.py /opt/hermes \
     && python /tmp/hermes-patches/assert_progressive_tool_result_compaction.py /opt/hermes \
+    && python /tmp/hermes-patches/assert_platform_turn_budget.py /opt/hermes \
     && PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \
     && PYTHONPATH=/app python -c "from hlt_numeric_grounding import NumericGroundingLedger; assert NumericGroundingLedger('applications: 2').validate('Applications: 2').ok"
 

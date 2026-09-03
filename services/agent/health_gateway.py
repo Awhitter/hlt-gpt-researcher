@@ -1858,7 +1858,7 @@ def boot() -> None:
         "installed": plugin_installed,
         "enabled": plugin_enabled,
         "hook": "pre_llm_call",
-        "hooks": ["pre_gateway_dispatch", "pre_llm_call"],
+        "hooks": ["pre_gateway_dispatch", "pre_llm_call", "pre_tool_call"],
     }
     slack_lead = BOOT.get("slack_agent_lead") or {}
     slack_lead_ready = slack_lead.get("local_agent_ready") is True and (

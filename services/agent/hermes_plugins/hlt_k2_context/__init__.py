@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,16 @@ logger = logging.getLogger(__name__)
 SPILLOVER_DEFAULT_PAGE_CHARS = 8_000
 SPILLOVER_MAX_PAGE_CHARS = 12_000
 _SAFE_SPILLOVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,220}\.txt")
+SLACK_TOOL_ROUND_LIMIT = 5
+_TOOL_BUDGET_TTL_SECONDS = 60 * 60
+_TOOL_BUDGET_MAX_TURNS = 256
+_TOOL_BUDGET_LOCK = threading.Lock()
+_TOOL_BUDGETS: dict[str, dict[str, Any]] = {}
+_TOOL_BUDGET_BLOCK_MESSAGE = (
+    "Slack foreground tool budget reached after five tool-calling rounds. "
+    "Do not call another tool in this turn. Return one useful final answer now "
+    "from the evidence already collected, and label any missing value unknown."
+)
 
 HOSTED_K2_CONTEXT = (
     "[Katailyst2 hosted mission — bounded handoff already supplied] "
@@ -45,6 +57,74 @@ def _spillover_session_prefix(session_id: str) -> str:
     if not raw_session_id:
         return ""
     return hashlib.sha256(raw_session_id.encode("utf-8")).hexdigest()[:20]
+
+
+def _tool_budget_key(*, turn_id: str = "", session_id: str = "") -> str:
+    return str(turn_id or session_id or "").strip()
+
+
+def _start_slack_tool_budget(*, turn_id: str = "", session_id: str = "") -> None:
+    """Start one bounded tool-round ledger for an interactive Slack turn."""
+    key = _tool_budget_key(turn_id=turn_id, session_id=session_id)
+    if not key:
+        return
+    now = time.monotonic()
+    with _TOOL_BUDGET_LOCK:
+        stale = [
+            item_key
+            for item_key, state in _TOOL_BUDGETS.items()
+            if now - float(state.get("started_at", now)) > _TOOL_BUDGET_TTL_SECONDS
+        ]
+        for item_key in stale:
+            _TOOL_BUDGETS.pop(item_key, None)
+        if len(_TOOL_BUDGETS) >= _TOOL_BUDGET_MAX_TURNS:
+            oldest = min(
+                _TOOL_BUDGETS,
+                key=lambda item_key: float(
+                    _TOOL_BUDGETS[item_key].get("started_at", now)
+                ),
+            )
+            _TOOL_BUDGETS.pop(oldest, None)
+        _TOOL_BUDGETS[key] = {
+            "started_at": now,
+            "rounds": set(),
+            "blocked_rounds": set(),
+        }
+
+
+def _pre_tool_call(
+    tool_name: str = "",
+    session_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    tool_call_id: str = "",
+    **_: Any,
+) -> dict[str, str] | None:
+    """Bound Slack tool rounds while preserving parallel calls in each round."""
+    key = _tool_budget_key(turn_id=turn_id, session_id=session_id)
+    round_id = str(api_request_id or tool_call_id or "").strip()
+    if not key or not round_id:
+        return None
+    with _TOOL_BUDGET_LOCK:
+        state = _TOOL_BUDGETS.get(key)
+        if state is None:
+            return None
+        rounds = state["rounds"]
+        if round_id in rounds:
+            return None
+        if len(rounds) >= SLACK_TOOL_ROUND_LIMIT:
+            blocked_rounds = state["blocked_rounds"]
+            if round_id not in blocked_rounds:
+                blocked_rounds.add(round_id)
+                logger.info(
+                    "Slack tool-round budget reached: turn=%s rounds=%s tool=%s",
+                    key[:32],
+                    len(rounds),
+                    tool_name,
+                )
+            return {"action": "block", "message": _TOOL_BUDGET_BLOCK_MESSAGE}
+        rounds.add(round_id)
+    return None
 
 
 def _read_spillover(args: Any = None, **context: Any) -> str:
@@ -292,6 +372,8 @@ def _pre_llm_call(
     this mission without slowly clogging the agent's durable memory.
     """
     mission = str(user_message or "").strip()
+    if str(platform or "").strip().lower() == "slack":
+        _start_slack_tool_budget(turn_id=turn_id, session_id=session_id)
     if not is_substantive_mission(mission):
         return None
 
@@ -386,3 +468,4 @@ def register(ctx: Any) -> None:
     )
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_llm_call", _pre_llm_call)
+    ctx.register_hook("pre_tool_call", _pre_tool_call)

@@ -245,6 +245,7 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     assert config["model"]["default"] == "grok-4.6"
     assert config["model"]["max_tokens"] == 32_768
     assert config["agent"]["max_turns"] == 24
+    assert config["agent"]["platform_max_turns"] == {"slack": 7}
     assert config["compression"]["enabled"] is True
     assert config["compression"]["threshold_tokens"] == 80_000
     assert config["compression"]["progress_notices"] is False
@@ -630,8 +631,11 @@ def test_turn_and_context_budgets_bound_subscription_usage(tmp_path):
     config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
     assert config["agent"]["max_turns"] == 24
+    assert config["agent"]["platform_max_turns"]["slack"] == 7
     assert config["compression"]["threshold_tokens"] == 80_000
     assert summary["max_turns"] == 24
+    assert summary["slack_max_turns"] == 7
+    assert summary["slack_tool_round_limit"] == 5
     assert summary["compression_threshold_tokens"] == 80_000
 
 
@@ -836,6 +840,8 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "from firecrawl import Firecrawl" in dockerfile
     assert "progressive_tool_result_compaction.patch" in dockerfile
     assert "assert_progressive_tool_result_compaction.py" in dockerfile
+    assert "platform_turn_budget.patch" in dockerfile
+    assert "assert_platform_turn_budget.py" in dockerfile
 
 
 def test_the_verbosity_flag_goes_where_upstream_declares_it():
@@ -1886,13 +1892,14 @@ def test_restricted_slack_surface_can_page_only_hermes_spillover(monkeypatch, tm
 def test_k2_plugin_registers_bounded_spillover_reader():
     plugin = _load_k2_plugin()
     registered = {}
+    hooks = []
 
     class Context:
         def register_tool(self, **kwargs):
             registered.update(kwargs)
 
-        def register_hook(self, *_args, **_kwargs):
-            pass
+        def register_hook(self, name, *_args, **_kwargs):
+            hooks.append(name)
 
     plugin.register(Context())
 
@@ -1901,6 +1908,53 @@ def test_k2_plugin_registers_bounded_spillover_reader():
     params = registered["schema"]["parameters"]
     assert params["properties"]["limit"]["maximum"] == 12_000
     assert params["additionalProperties"] is False
+    assert hooks == ["pre_gateway_dispatch", "pre_llm_call", "pre_tool_call"]
+
+
+def test_slack_tool_budget_preserves_parallelism_then_forces_synthesis():
+    plugin = _load_k2_plugin()
+    # The real lifecycle hook opens a ledger even when a short Slack prompt
+    # does not need a K2 context draw.
+    assert plugin._pre_llm_call(
+        user_message="hi",
+        platform="slack",
+        turn_id="turn-a",
+        session_id="session-a",
+    ) is None
+
+    for index in range(plugin.SLACK_TOOL_ROUND_LIMIT):
+        request_id = f"request-{index}"
+        assert plugin._pre_tool_call(
+            tool_name="mcp__posthog__exec",
+            turn_id="turn-a",
+            api_request_id=request_id,
+            tool_call_id=f"call-{index}-a",
+        ) is None
+        # Several parallel tools from one model response are one round.
+        assert plugin._pre_tool_call(
+            tool_name="mcp__katailyst2__tool_execute",
+            turn_id="turn-a",
+            api_request_id=request_id,
+            tool_call_id=f"call-{index}-b",
+        ) is None
+
+    blocked = plugin._pre_tool_call(
+        tool_name="mcp__posthog__exec",
+        turn_id="turn-a",
+        api_request_id="request-over-budget",
+        tool_call_id="call-over-budget",
+    )
+    assert blocked["action"] == "block"
+    assert "Return one useful final answer now" in blocked["message"]
+
+    # The hook is Slack-scoped by pre_llm initialization; other surfaces that
+    # never open a ledger retain the full global tool capability.
+    assert plugin._pre_tool_call(
+        tool_name="mcp__posthog__exec",
+        turn_id="api-turn",
+        api_request_id="api-request",
+        tool_call_id="api-call",
+    ) is None
 
 
 def test_nonparticipant_brian_keeps_gateway_readiness_without_joining_election(
@@ -3513,6 +3567,9 @@ def test_slack_gets_its_own_prompt_guidance():
     assert "No 'Sources:' footer" in hint
     assert "at the end" not in hint
     assert "return the answer or artifact" in hint
+    assert "at most five tool-calling rounds" in hint
+    assert "plain Markdown pipe table" in hint
+    assert "never a fenced code block" in hint
     assert "describe one direct mcp__katailyst2__<verb>" in hint
     assert "detailLevel 'summary' first" in hint
     assert "mcp__posthog__exec as a CLI bridge" in hint
