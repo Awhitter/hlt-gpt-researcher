@@ -168,6 +168,11 @@ with a visible optional-enrichment advisory, and retries K2 on ordinary Slack
 turns instead of replacing the current doctrine with a bundled fallback. That
 optional timeout does not fail whole-agent health or the hosted run door because
 K2 handoffs already carry mission context and can read exact refs directly.
+During a declared K2 transport outage, Cleo may start from the reviewed bundled
+fallback, but the same bounded watcher stays alive. When K2 recovers it installs
+the canonical pack in place, clears the stale outage receipt, and Hermes detects
+the managed pack epoch on the next message so existing Slack conversations adopt
+the new SOUL and doctrine without losing their history or restarting the socket.
 `GET /readyz` is the stricter post-activation receipt: canonical pack applied,
 Slack socket live, primary model ready, durable ledger ready and the Hermes run
 API reachable; `optionalChecks.k2_well_enrichment_callable` preserves the

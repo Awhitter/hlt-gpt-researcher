@@ -1,0 +1,114 @@
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index c67550d..476d3c0 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1138,6 +1138,36 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
+ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
+     """Return False when the persisted runtime-identity lines are stale."""
+ 
++    def active_k2_pack_source() -> str:
++        """Return the managed K2 pack marker currently installed for this agent.
++
++        HLT's host can replace its reviewed outage SOUL with the canonical
++        Katailyst2 runtime pack while this gateway remains online. Gateway
++        sessions intentionally cache their assembled system prompt, so the
++        marker is the small, versioned epoch that makes that hot promotion
++        visible on the next turn without discarding conversation history.
++        """
++        try:
++            from pathlib import Path
++
++            from agent.system_prompt import _agent_home
++
++            home = _agent_home(agent)
++            if home is None:
++                return ""
++            source_prefix = "<!-- source: katailyst2 agents.runtime_pack "
++            for line in (Path(home) / "SOUL.md").read_text(
++                encoding="utf-8", errors="replace"
++            ).splitlines():
++                marker = line.strip()
++                if marker.startswith(source_prefix) and marker.endswith("-->"):
++                    return marker
++        except Exception:
++            # Runtime identity checks are advisory cache invalidation. A read
++            # failure must not turn into a rebuild loop on every message.
++            pass
++        return ""
++
+     def line_value(label: str) -> str:
+         """Last matching line wins.
+ 
+@@ -1208,7 +1238,15 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
+     if stored_platform and current_platform and stored_platform != current_platform:
+         return False
+ 
++    # A canonical K2 pack can be installed after a declared boot-time outage.
++    # Reuse the cache only when the stored prompt already contains this exact
++    # agent/version marker; rebuilding once refreshes SOUL.md and AGENTS.md for
++    # an existing Slack thread without restarting the gateway or losing history.
++    k2_pack_source = active_k2_pack_source()
++    if k2_pack_source and k2_pack_source not in prompt:
++        return False
++
+     return True
+ 
+ 
+ # The three _get_continuation_prompt variants below, in named-constant form
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index 64c39c7..5ab7baf 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -29,6 +29,8 @@ import json
+ import logging
+ import os
+ import re
++from collections.abc import Iterator
++from contextlib import contextmanager
+ from typing import Any, Dict, List, Optional
+ 
+ from agent.prompt_builder import (
+@@ -65,6 +67,34 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
+ )
+ 
+ 
++@contextmanager
++def _k2_runtime_pack_read_lock(agent: Any) -> Iterator[None]:
++    """Read a hot-installed K2 identity and doctrine as one coherent pack."""
++    try:
++        import fcntl
++
++        home = _agent_home(agent)
++    except (ImportError, OSError):
++        home = None
++    if home is None:
++        yield
++        return
++    try:
++        lock_path = Path(home) / ".hlt-k2-runtime-pack.lock"
++        handle = lock_path.open("a+", encoding="utf-8")
++        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
++    except OSError:
++        # Non-Unix or read-only homes keep upstream behavior. HLT's hosted
++        # Linux runtime always has flock and a writable managed agent home.
++        yield
++        return
++    try:
++        yield
++    finally:
++        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
++        handle.close()
++
++
+ def _ra():
+     """Lazy reference to the ``run_agent`` module.
+ 
+@@ -1050,6 +1080,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
+     rebuilt (on compaction/restore) the unchanged stable scaffold ahead of
+     the change stays in the reused prefix.
+     """
+-    parts = build_system_prompt_parts(agent, system_message=system_message)
++    with _k2_runtime_pack_read_lock(agent):
++        parts = build_system_prompt_parts(agent, system_message=system_message)
+     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+     agent._cached_system_prompt_static = parts["stable"]

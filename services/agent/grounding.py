@@ -30,8 +30,9 @@ import re
 import shutil
 import sys
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 # Lets a later boot recognise a file it wrote and refresh it, while leaving a
 # hand-edited one alone. Hermes extends the same courtesy to its own default.
@@ -338,6 +339,20 @@ def _atomic_managed_write(path: Path, body: str) -> None:
     os.replace(temp, path)
 
 
+@contextmanager
+def _runtime_pack_write_lock(home_path: Path) -> Iterator[None]:
+    """Keep SOUL and doctrine coherent for a concurrently serving gateway."""
+    import fcntl
+
+    lock_path = home_path / ".hlt-k2-runtime-pack.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def install_runtime_pack(
     runtime_pack: Mapping[str, Any],
     *,
@@ -584,8 +599,12 @@ def install_runtime_pack(
         )
         return result
 
-    _atomic_managed_write(soul_path, soul)
-    _atomic_managed_write(agents_path, agents)
+    # Hermes can assemble a prompt while the recovery watcher is installing a
+    # pack. Its matching shared lock spans the complete prompt read, so a turn
+    # observes the old pair or the new pair, never a mixed identity/doctrine.
+    with _runtime_pack_write_lock(home_path):
+        _atomic_managed_write(soul_path, soul)
+        _atomic_managed_write(agents_path, agents)
     digest = hashlib.sha256(
         json.dumps(runtime_pack, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
