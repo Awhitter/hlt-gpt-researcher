@@ -1,9 +1,12 @@
-"""One bounded Katailyst2 wishing-well draw for a Hermes mission.
+"""One bounded Katailyst2 context draw for a Hermes mission.
 
 This module is deliberately self-contained inside the user plugin directory:
 Hermes loads user plugins from its durable home and must not depend on the
 wrapper process's import path. It uses streamable HTTP directly, exactly like
-the boot readiness probe, and invokes ``katailyst.well`` at most once per call.
+the boot readiness probe. Current K2 runs the model-judged Well asynchronously,
+so this hook starts the durable draw and hands its exact get handle to the model
+without waiting. Compact registry search remains the fallback for an incomplete
+durable Well tool surface.
 """
 
 from __future__ import annotations
@@ -19,10 +22,14 @@ from typing import Any
 MCP_PROTOCOL_VERSION = "2025-03-26"
 MAX_CONTEXT_CHARS = 8_000
 MAX_CONTEXT_BLOCKS = 12
-WELL_NAMES = ("katailyst.well", "katailyst_well")
+MISSION_CONTEXT_TIMEOUT_SECONDS = 4.0
+WELL_START_NAMES = ("katailyst.well.start", "katailyst_well_start")
+WELL_GET_NAMES = ("katailyst.well.get", "katailyst_well_get")
+WELL_SYNC_NAMES = ("katailyst.well", "katailyst_well")
+REGISTRY_SEARCH_NAMES = ("registry.search", "registry_search")
 
 _CACHE_LOCK = threading.Lock()
-_TOOL_CACHE: dict[tuple[str, str], str] = {}
+_TOOL_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 _TRIVIAL_MISSIONS = frozenset(
     {
         "hi",
@@ -120,18 +127,27 @@ def _cache_key(url: str, token: str) -> tuple[str, str]:
     return url, hashlib.sha256(token.encode()).hexdigest()
 
 
-def _tool_name(
+def _evict_tool_surface(url: str, token: str) -> None:
+    with _CACHE_LOCK:
+        _TOOL_CACHE.pop(_cache_key(url, token), None)
+
+
+def _first_name(names: list[str], candidates: tuple[str, ...]) -> str:
+    return next((name for name in names if name in candidates), "")
+
+
+def _tool_surface(
     url: str,
     token: str,
     *,
     session_id: str,
     rpc: Any,
-) -> str:
+) -> dict[str, str]:
     key = _cache_key(url, token)
     with _CACHE_LOCK:
-        cached = _TOOL_CACHE.get(key, "")
+        cached = _TOOL_CACHE.get(key)
     if cached:
-        return cached
+        return dict(cached)
     listed, _, _ = rpc("tools/list", {}, session_id)
     if listed.get("error"):
         raise RuntimeError(str(listed["error"]))
@@ -140,18 +156,31 @@ def _tool_name(
         for tool in ((listed.get("result") or {}).get("tools") or [])
         if isinstance(tool, Mapping)
     ]
-    found = next((name for name in names if name in WELL_NAMES), "")
-    if not found:
-        raise RuntimeError("katailyst.well is not in this token's tool surface")
+    surface = {
+        "well_start": _first_name(names, WELL_START_NAMES),
+        "well_get": _first_name(names, WELL_GET_NAMES),
+        "well_sync": _first_name(names, WELL_SYNC_NAMES),
+        "registry_search": _first_name(names, REGISTRY_SEARCH_NAMES),
+    }
+    if not (
+        (surface["well_start"] and surface["well_get"])
+        or surface["well_sync"]
+        or surface["registry_search"]
+    ):
+        raise RuntimeError("Katailyst context tools are not in this token's surface")
     with _CACHE_LOCK:
-        _TOOL_CACHE[key] = found
-    return found
+        _TOOL_CACHE[key] = dict(surface)
+    return surface
 
 
 def _block_lines(data: Mapping[str, Any]) -> tuple[list[str], int]:
     lines: list[str] = []
     count = 0
+    # The synchronous compatibility tool calls these groups ``dives``; the
+    # durable start/get contract calls the same shape ``angles``.
     dives = data.get("dives")
+    if not isinstance(dives, list):
+        dives = data.get("angles")
     if not isinstance(dives, list):
         return lines, count
     for dive in dives:
@@ -228,18 +257,58 @@ def _format_context(data: Mapping[str, Any], *, agent_ref: str) -> tuple[str, in
     return context, count
 
 
+def _format_search_context(
+    data: Mapping[str, Any], *, agent_ref: str
+) -> tuple[str, int]:
+    candidates = data.get("candidates")
+    return _format_context(
+        {
+            "dives": [
+                {"facet": "Compact registry fallback", "blocks": candidates or []}
+            ]
+        },
+        agent_ref=agent_ref,
+    )
+
+
+def _pending_context(
+    agent_ref: str, run_id: str, poll_tool: str, poll_after_seconds: Any
+) -> str:
+    timing = f" after about {poll_after_seconds}s" if poll_after_seconds else " later"
+    return (
+        "[Katailyst2 mission context — durable draw started without delaying this turn]\n\n"
+        f"Runtime identity: `{agent_ref}`\n\n"
+        f"The model-judged Well draw is already running as `{run_id}`. Do not "
+        "start another draw or wait before working. Use the active runtime pack, "
+        "direct K2 reads, and your own reasoning now. If the deeper roster would "
+        f"materially improve the result, poll `{poll_tool}` once{timing} with "
+        f"`{{\"runId\":\"{run_id}\"}}`; otherwise finish without ceremony."
+    )
+
+
+def mission_idempotency_key(
+    *, agent_ref: str, mission: str, session_id: str = "", turn_id: str = ""
+) -> str:
+    """Bind retries of one Hermes turn to one durable Well run."""
+    material = "\0".join((agent_ref, session_id, turn_id, mission))
+    return "hermes:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def draw_mission_context(
     url: str,
     token: str,
     *,
     mission: str,
     agent_ref: str,
-    timeout: float = 15.0,
+    idempotency_key: str = "",
+    timeout: float = MISSION_CONTEXT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Call the current well exactly once and return bounded prompt context."""
+    """Start one durable Well draw and return prompt context within one deadline."""
     started = time.monotonic()
+    deadline = started + max(0.25, timeout)
     result: dict[str, Any] = {
         "status": "not_configured",
+        "mode": "none",
         "context": "",
         "block_count": 0,
         "well_calls": 0,
@@ -258,14 +327,49 @@ def draw_mission_context(
 
     def rpc(method: str, params: dict[str, Any], session_id: str = ""):
         nonlocal request_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Katailyst mission-context deadline expired")
         request_id += 1
         return _post(
             url,
             token,
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
             session_id=session_id,
-            timeout=timeout,
+            timeout=max(0.05, remaining),
         )
+
+    def call_tool(name: str, arguments: dict[str, Any], session_id: str):
+        called, _, _ = rpc(
+            "tools/call",
+            {"name": name, "arguments": arguments},
+            session_id,
+        )
+        tool_result = called.get("result")
+        tool_result = tool_result if isinstance(tool_result, Mapping) else {}
+        if called.get("error") or tool_result.get("isError") is True:
+            raise RuntimeError(f"{name}: {str(called.get('error') or 'isError')[:200]}")
+        return _tool_data(tool_result)
+
+    def registry_fallback(
+        surface: Mapping[str, str], session_id: str, *, error: str = ""
+    ) -> dict[str, Any]:
+        search = call_tool(
+            surface["registry_search"],
+            {"query": mission[:600], "limit": 8, "format": "compact"},
+            session_id,
+        )
+        context, block_count = _format_search_context(search, agent_ref=agent_ref)
+        result.update(
+            {
+                "status": "loaded",
+                "mode": "registry_search_fallback",
+                "context": context,
+                "block_count": block_count,
+                "error": error,
+            }
+        )
+        return result
 
     try:
         initialized, session_id, headers = rpc(
@@ -280,29 +384,85 @@ def draw_mission_context(
             raise RuntimeError(str(initialized["error"]))
         if headers.get("x-katailyst-repo", "").strip().lower() != "katailyst2":
             raise RuntimeError("configured endpoint is not Katailyst2")
-        tool_name = _tool_name(url, token, session_id=session_id, rpc=rpc)
+        surface = _tool_surface(url, token, session_id=session_id, rpc=rpc)
+        well_arguments = {
+            "mission": mission,
+            "budget": 8,
+            "thoughts": True,
+            "traverse": False,
+        }
+
+        if surface["well_start"] and surface["well_get"]:
+            result["mode"] = "async"
+            result["well_calls"] = 1
+            start_arguments = dict(well_arguments)
+            if idempotency_key:
+                start_arguments["idempotencyKey"] = idempotency_key[:200]
+            try:
+                started_run = call_tool(
+                    surface["well_start"], start_arguments, session_id
+                )
+                run_id = str(started_run.get("runId") or "").strip()
+                if not run_id:
+                    raise RuntimeError("katailyst.well.start returned no runId")
+                poll_after = started_run.get("pollAfterSeconds")
+                run_status = str(started_run.get("status") or "queued").lower()
+                if run_status in {"failed", "cancelled"}:
+                    raise RuntimeError(f"katailyst.well async run {run_status}")
+                terminal = (
+                    started_run.get("result") if run_status == "succeeded" else None
+                )
+                if run_status == "succeeded" and not isinstance(terminal, Mapping):
+                    raise RuntimeError("katailyst.well succeeded without a result")
+                if terminal is not None:
+                    context, block_count = _format_context(
+                        terminal, agent_ref=agent_ref
+                    )
+                    result.update(
+                        status="loaded", context=context, block_count=block_count
+                    )
+                    return result
+                result.update(
+                    status="pending",
+                    mode="async_pending",
+                    context=_pending_context(
+                        agent_ref,
+                        run_id,
+                        (
+                            "mcp__katailyst2__"
+                            + surface["well_get"].replace(".", "_")
+                        ),
+                        poll_after,
+                    ),
+                )
+                return result
+            except Exception as async_exc:
+                if surface["registry_search"] and time.monotonic() < deadline:
+                    try:
+                        return registry_fallback(
+                            surface,
+                            session_id,
+                            error=(
+                                f"{type(async_exc).__name__}: "
+                                f"{str(async_exc)[:180]}"
+                            ),
+                        )
+                    finally:
+                        # The fallback kept this turn useful, but the failed
+                        # durable start may mean this cached discovery surface
+                        # is stale. Re-list next turn instead of repeatedly
+                        # routing through a broken async tool.
+                        _evict_tool_surface(url, token)
+                raise
+
+        if surface["registry_search"]:
+            return registry_fallback(surface, session_id)
+
+        # Compatibility-only server. The same hard deadline still prevents a
+        # legacy synchronous draw from consuming the user's whole turn.
+        result["mode"] = "sync_compat"
         result["well_calls"] = 1
-        called, _, _ = rpc(
-            "tools/call",
-            {
-                "name": tool_name,
-                "arguments": {
-                    "mission": mission,
-                    "budget": 8,
-                    "thoughts": True,
-                    "traverse": False,
-                },
-            },
-            session_id,
-        )
-        tool_result = called.get("result") or {}
-        if called.get("error") or tool_result.get("isError"):
-            with _CACHE_LOCK:
-                _TOOL_CACHE.pop(_cache_key(url, token), None)
-            raise RuntimeError(
-                str(called.get("error") or "katailyst.well returned isError")
-            )
-        data = _tool_data(tool_result)
+        data = call_tool(surface["well_sync"], well_arguments, session_id)
         context, block_count = _format_context(data, agent_ref=agent_ref)
         result.update(
             {
@@ -314,6 +474,7 @@ def draw_mission_context(
         )
         return result
     except Exception as exc:  # the well fuels a turn; it never sinks one
+        _evict_tool_surface(url, token)
         result["status"] = "unavailable"
         result["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         result["context"] = (

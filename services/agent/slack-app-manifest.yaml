@@ -18,7 +18,7 @@ display_information:
   background_color: "#06101C"
 features:
   bot_user:
-    display_name: cleo
+    display_name: Cleo
     always_online: true
   app_home:
     # Hermes does not publish a Home-tab view at this pin. Leave it off instead
@@ -90,21 +90,39 @@ features:
       - name: Finish the useful artifact
         description: Research, create, and verify the brief, prototype, or decision.
     suggested_prompts:
-      - title: What shipped this week?
-        message: What shipped in Nursing Mastery this week, and what's still in flight?
-      - title: Explain a subsystem
-        message: I'm new here. Explain how the job board gets its jobs, and point me at the files.
-      - title: Where do I start?
-        message: I just joined. What are the three things I should understand first about this codebase, and what will confuse me?
-      - title: Take a product task
-        message: Pick one high-leverage Nursing Mastery product question we can answer today, do the research, and bring back the useful artifact or decision.
+      - title: Choose the next product bet
+        message: What should Nursing Mastery build or change next? Use current evidence and make the call.
+      - title: Read the funnel
+        message: Read the Nursing Mastery funnel. Name the bottleneck and the one decision I should make.
+      - title: Take a product mission
+        message: Take one high-leverage Nursing Mastery mission through research, decision, and a finished artifact.
 oauth_config:
+  pkce_enabled: false
   scopes:
+    user:
+      - canvases:write
+      - links:write
+      - reactions:write
+      - search:read.public
+      - reactions:read
+      - canvases:read
+      - lists:write
+      - reminders:read
+      - users.profile:read
+      - emoji:read
     bot:
+      - search:read.public
       - app_mentions:read
+      - assistant:write
+      - canvases:read
+      - canvases:write
       - channels:history
       - channels:read
       - chat:write
+      - chat:write.customize
+      - commands
+      - files:read
+      - files:write
       - groups:history
       - groups:read
       - im:history
@@ -115,12 +133,10 @@ oauth_config:
       - reactions:read
       - reactions:write
       - users:read
-      - files:read
-      - files:write
-      # Native slash commands (/help, /new, /queue …).
-      - commands
-      # Assistant/agent view: thread titles and suggested prompts.
-      - assistant:write
+      - incoming-webhook
+      - lists:read
+      - mcp:connect
+      - links.embed:write
 settings:
   event_subscriptions:
     bot_events:
@@ -134,6 +150,7 @@ settings:
       - message.mpim
   interactivity:
     is_enabled: true
+  is_mcp_enabled: false
   org_deploy_enabled: false
   socket_mode_enabled: true
   token_rotation_enabled: false

@@ -9,7 +9,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .runtime_context import draw_mission_context, is_substantive_mission
+from .runtime_context import (
+    draw_mission_context,
+    is_substantive_mission,
+    mission_idempotency_key,
+)
 from .slack_agent_lead import (
     ROSTER_NONPARTICIPANT_REFS,
     load_fallback_roster,
@@ -214,11 +218,18 @@ def _pre_llm_call(
         os.getenv("KATAILYST2_MCP_TOKEN", "").strip(),
         mission=mission,
         agent_ref=_agent_ref(),
+        idempotency_key=mission_idempotency_key(
+            agent_ref=_agent_ref(),
+            mission=mission,
+            session_id=str(session_id or ""),
+            turn_id=str(turn_id or ""),
+        ),
     )
     logger.info(
-        "K2 mission context status=%s blocks=%s latency_ms=%s platform=%s "
-        "session=%s turn=%s",
+        "K2 mission context status=%s mode=%s blocks=%s "
+        "latency_ms=%s platform=%s session=%s turn=%s",
         result.get("status"),
+        result.get("mode"),
         result.get("block_count"),
         result.get("latency_ms"),
         platform or "unknown",

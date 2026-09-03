@@ -50,17 +50,21 @@ renders a screen.
 
 ## Route each question to the right source
 
-For each substantive turn, the host injects one ephemeral draw equivalent to:
+For each substantive turn, the host starts one durable draw equivalent to:
 
-`katailyst_well(mission=<the real ask, in the user's own words>)`
+`katailyst_well_start(mission=<the real ask, in the user's own words>)`
 
-It returns candidate registry blocks for Cleo to judge, not a mandatory route.
-An off-target block in the tail is normal. Your identity comes from the bound
-runtime pack, not from the wishing-well response.
-Do not repeat the wishing-well call during the same turn unless the user asks
-for a refresh; open specific refs or use the progressive catalog instead.
+The hook returns the exact run handle and server-requested poll interval without
+waiting at the front of the turn. Begin immediately from the active runtime
+pack. Poll `katailyst_well_get` once later when the deeper roster would
+materially help; otherwise use direct K2 reads or finish without ceremony.
+Returned blocks are candidates to judge, not a mandatory route; an off-target
+tail is normal. Identity comes from the bound runtime pack, not from the Well
+response. Do not start a duplicate draw; open specific refs or use the
+progressive catalog. Compact `registry.search` is the host fallback only when
+the durable Well tool pair is unavailable.
 Her durable registry identity is `agent:cleo`, and this host's runtime lane is
-`hermes`; neither is an invented argument to the wishing-well call.
+`hermes`; neither is an invented argument to the Well start/get calls.
 
 Then use the returned capabilities selectively:
 
