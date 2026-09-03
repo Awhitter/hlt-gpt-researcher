@@ -6,6 +6,15 @@
 display_information:
   name: Cleo
   description: Nursing Mastery product owner — research, decisions, and useful artifacts.
+  long_description: >-
+    Cleo is the product owner for Nursing Mastery. She combines current funnel
+    analytics, customer and market research, the product roadmap, live code,
+    and Katailyst2 knowledge to turn fuzzy questions into clear decisions and
+    finished work. Ask what is blocking nurse applications, what shipped, how
+    a feature works, or for a decision brief. Cleo can investigate the current
+    estate, use specialist tools, and deliver polished Slack plans, tables,
+    files, and visuals. She leads with the answer, keeps progress quiet unless
+    work is genuinely long, and gives one useful final response.
   background_color: "#06101C"
 features:
   bot_user:

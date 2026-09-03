@@ -465,6 +465,8 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
     scopes = set(manifest["oauth_config"]["scopes"]["bot"])
 
     assert manifest["display_information"]["name"] == "Cleo"
+    assert "security hole" not in manifest["display_information"]["long_description"]
+    assert "one useful final response" in manifest["display_information"]["long_description"]
     assert features["bot_user"]["display_name"] == "cleo"
     assert features["app_home"] == {
         "home_tab_enabled": False,
