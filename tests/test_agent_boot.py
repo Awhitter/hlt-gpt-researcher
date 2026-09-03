@@ -3594,6 +3594,40 @@ def test_cleo_fast_paths_named_k2_sources_and_governed_funnel_readout():
     assert "Funnel performance → PostHog" not in cleo_briefing
 
 
+def test_cleo_keyed_funnel_pulse_stays_inline_and_keeps_the_native_table():
+    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
+    cleo_briefing = (
+        SERVICE_DIR / "grounding" / "cleo" / "AGENTS.md"
+    ).read_text(encoding="utf-8")
+    readme = (SERVICE_DIR / "README.md").read_text(encoding="utf-8")
+    contracts = (hint, cleo_briefing, readme)
+
+    for contract in contracts:
+        assert "humans,walk_started,email_given,applications" in contract
+        assert "one parallel" in contract
+        assert (
+            "one same-key retry" in contract
+            or "retry that same keyed window once" in contract
+            or "Retry a window once" in contract
+        )
+        assert "do not reconstruct" in contract
+
+    assert "skip discovery and tool_describe" in hint
+    assert "output.readouts" in hint
+    assert "How many nurses were on the site?" in hint
+    assert "How many answered an opening question?" in hint
+    assert "How many gave us an email?" in hint
+    assert "How many nurse applications did we receive?" in hint
+
+    table_header = (
+        "| Window | Site nurses | Walk answers | Emails | Applications | Read state |"
+    )
+    assert table_header in hint
+    assert table_header in cleo_briefing
+    assert "exactly 7d and 28d rows" in hint
+    assert "Do not replace this requested table with prose" in cleo_briefing
+
+
 # --- talking to the team, not about the plumbing ----------------------------
 
 

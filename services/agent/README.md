@@ -276,9 +276,13 @@ executes that exact K2 route before polling the pending Well, searching the
 catalog or registry, or loading adjacent skills; one focused recovery search is
 available if the direct route fails. Standard Nursing Mastery funnel pulses use
 the HLT-org `tool:nm-analytics-readout` for the current 7-day and 28-day
-decision readout. Raw PostHog remains available for deeper custom behavior
-analysis, but do not reconstruct the standard readout from it when the governed
-tool reports a gap.
+decision readout. Cleo skips discovery for this known route and executes both
+windows in one parallel round with the bounded key set
+`humans,walk_started,email_given,applications`; a requested unreadable window
+gets one same-key retry. The response keeps the requested unfenced 7d/28d Slack
+table, measured zeroes, and explicit unreadable states. Raw PostHog remains
+available for deeper custom behavior analysis, but do not reconstruct the
+standard readout from it when the governed tool reports a gap.
 
 An MCP result over 16,000 characters is kept in full under Hermes' durable
 spillover store and replaced in the prompt by a short preview. The restricted
