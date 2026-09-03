@@ -140,11 +140,21 @@ key route joins first as an OAuth recovery hop. `model_route_readiness` checks
 each route's credential without exposing tokens. `gateway.observed_model_route`
 remains empty until a successful model call, then names the provider/model that
 really answered — including a fallback. Cleo caps one generated provider reply
-at 32,768 tokens, caps a run at 24 model iterations, and compacts the working
-prompt at 80,000 tokens. These provider-independent limits keep a useful run
-from consuming a whole subscription rate window without reducing the models'
-readable context or Cleo's tool access. `/health.config.max_turns` and
+at 32,768 tokens and keeps 24 model iterations available for long-running
+API/K2 work. Interactive Slack turns have a stricter seven-iteration ceiling
+plus five tool-calling rounds; after that, the plugin blocks further tools and
+tells the model to synthesize from completed evidence with missing values
+labeled unknown. This preserves parallel reads and the full catalog while
+preventing a routine funnel question from becoming an open-ended research run.
+The working prompt still compacts at 80,000 tokens.
+`/health.config.max_turns`, `/health.config.slack_max_turns`,
+`/health.config.slack_tool_round_limit`, and
 `/health.config.compression_threshold_tokens` expose the active limits.
+
+For Slack tables, the prompt contract requires plain Markdown pipe syntax with
+a header and separator row. Hermes can then render the table as native Slack
+blocks; fenced monospace tables are explicitly disallowed, with compact bullets
+as the fallback for data that is too wide.
 
 `/health.config.k2_agent_readiness` is deliberately stricter than
 `mcp_mounted`. It verifies the `x-katailyst-repo: katailyst2` response header,

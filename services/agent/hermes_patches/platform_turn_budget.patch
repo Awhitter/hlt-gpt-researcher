@@ -1,0 +1,63 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index e2f8de0..7dd3b9e 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -2419,6 +2419,36 @@ def _current_max_iterations() -> int:
+     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
+ 
+ 
++def _current_max_iterations_for_platform(config: Any, platform_key: str) -> int:
++    """Apply an optional per-platform cap without widening the global budget.
++
++    ``agent.max_turns`` remains the authoritative ceiling for every surface.
++    Managed messaging profiles may additionally set
++    ``agent.platform_max_turns.<platform>`` when an interactive channel needs a
++    faster fail-safe than long-running API or local work. Invalid values are
++    ignored rather than taking the gateway down.
++    """
++    global_limit = _current_max_iterations()
++    if not isinstance(config, dict):
++        return global_limit
++    agent_config = config.get("agent")
++    if not isinstance(agent_config, dict):
++        return global_limit
++    platform_limits = agent_config.get("platform_max_turns")
++    if not isinstance(platform_limits, dict):
++        return global_limit
++    raw_limit = platform_limits.get(str(platform_key or "").strip().lower())
++    if raw_limit is None or isinstance(raw_limit, bool):
++        return global_limit
++    try:
++        platform_limit = int(raw_limit)
++    except (TypeError, ValueError):
++        return global_limit
++    if platform_limit < 1:
++        return global_limit
++    return min(global_limit, platform_limit)
++
++
+ from contextlib import contextmanager as _contextmanager
+ 
+ 
+@@ -5824,7 +5854,9 @@ class TurnRunner:
+         if cfg_channel_prompt:
+             combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
+ 
+-        max_iterations = _current_max_iterations()
++        max_iterations = _current_max_iterations_for_platform(
++            ctx.user_config, platform_key
++        )
+ 
+         try:
+             model, runtime_kwargs = self._runner._resolve_session_agent_runtime(
+@@ -24485,7 +24517,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+             disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
+ 
+             pr = self._provider_routing
+-            max_iterations = _current_max_iterations()
++            max_iterations = _current_max_iterations_for_platform(
++                user_config, platform_key
++            )
+             reasoning_config = self._resolve_session_reasoning_config(
+                 source=source, model=model
+             )
