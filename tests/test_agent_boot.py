@@ -1106,6 +1106,29 @@ def test_codex_readiness_requires_a_logged_in_selectable_pool_entry():
     assert "owner" not in str(result)
 
 
+def test_subscription_readiness_does_not_publish_xai_pool_labels(monkeypatch):
+    health_gateway = _load_health_gateway()
+
+    import sys
+    import types
+
+    auth = types.ModuleType("hermes_cli.auth")
+    auth.get_xai_oauth_auth_status = lambda: {
+        "logged_in": True,
+        "source": "pool:private-operator-label",
+    }
+    hermes_cli = types.ModuleType("hermes_cli")
+    hermes_cli.__path__ = []
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.auth", auth)
+
+    result = health_gateway.subscription_auth_readiness("xai-oauth")
+
+    assert result["usable"] is True
+    assert "source" not in result
+    assert "private-operator-label" not in str(result)
+
+
 def test_missing_active_subscription_auth_degrades_the_gateway(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)

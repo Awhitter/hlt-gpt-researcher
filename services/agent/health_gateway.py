@@ -1432,9 +1432,13 @@ def subscription_auth_readiness(provider: str) -> dict[str, Any]:
         result["usable"] = bool(
             result["logged_in"] and not result["rate_limited"]
         )
-    for key in ("source", "error_code", "credential_pool"):
-        if key in status:
-            result[key] = status[key]
+    if provider == "openai-codex":
+        # `_codex_subscription_auth_readiness` normalizes the source to a
+        # store kind. Other upstream status helpers may include an operator's
+        # pool label, which does not belong on this public endpoint.
+        for key in ("source", "error_code", "credential_pool"):
+            if key in status:
+                result[key] = status[key]
     return result
 
 
