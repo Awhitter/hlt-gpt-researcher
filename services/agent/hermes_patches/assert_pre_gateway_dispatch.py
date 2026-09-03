@@ -48,9 +48,13 @@ def assert_pretyping_contract(hermes_root: Path) -> None:
         "self._message_handler(event)"
     )
     assert '"_hermes_pre_gateway_dispatch_done"' in handle_message
+    assert '"channel_context" in _result' in handle_message
+    assert 'dataclasses.replace(event, **_changes)' in handle_message
     assert '"_hermes_pre_gateway_dispatch_done"' in runner_hook
     assert '"pre_gateway_dispatch"' in plugin_source
     assert 'event["_hermes_sender_is_bot"] = True' in slack_source
+    assert "bare_agent_transfer = not bool(mention_stripped)" in slack_source
+    assert 'if bare_agent_transfer:\n                watermark_ts = ""' in slack_source
 
 
 if __name__ == "__main__":

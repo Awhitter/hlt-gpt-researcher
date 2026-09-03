@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -57,6 +58,8 @@ SLACK_AGENT_LEAD_PARTICIPANT_REFS = frozenset(
     {"agent:victoria", "agent:lila", "agent:julius", "agent:cleo"}
 )
 SLACK_AGENT_LEAD_NONPARTICIPANT_REFS = frozenset({"agent:brian"})
+RUNTIME_REVISION_VERSION = "agent_runtime_revision.v1"
+_RUNTIME_REVISION_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _slack_agent_lead_readiness(
@@ -283,6 +286,274 @@ def _runtime_refs(rows: Any) -> list[str]:
     return refs
 
 
+def _js_utf16_sort_key(value: str) -> bytes:
+    """Match JavaScript's `<` ordering for strings, including non-BMP text."""
+    return value.encode("utf-16-be", errors="surrogatepass")
+
+
+def _js_object_key_order(values: Mapping[str, Any]) -> list[str]:
+    """Match Object.fromEntries(...sorted) followed by JSON.stringify.
+
+    JavaScript always enumerates canonical uint32 index properties first in
+    numeric order, even when they were inserted in a different order. All
+    other keys retain the UTF-16 order established by K2's sortKeysDeep.
+    """
+    indexes: list[tuple[int, str]] = []
+    ordinary: list[str] = []
+    for key in values:
+        if re.fullmatch(r"(?:0|[1-9][0-9]*)", key):
+            integer = int(key)
+            if integer <= 4_294_967_294:
+                indexes.append((integer, key))
+                continue
+        ordinary.append(key)
+    return [key for _, key in sorted(indexes)] + sorted(
+        ordinary, key=_js_utf16_sort_key
+    )
+
+
+def _js_number_string(value: int | float) -> str:
+    """Render one Python number with JSON.stringify's Number spelling.
+
+    CPython and V8 both derive a shortest round-trippable IEEE-754 decimal,
+    but choose different display thresholds. Rebuilding fixed/scientific form
+    from Python's shortest digits preserves that value while matching the
+    ECMAScript 1e-6/1e21 boundary and exponent spelling.
+    """
+    number = float(value)
+    if not math.isfinite(number):
+        return "null"
+    if number == 0:
+        return "0"
+
+    negative = number < 0
+    raw = repr(abs(number)).lower()
+    if "e" in raw:
+        mantissa, exponent_text = raw.split("e", 1)
+        exponent = int(exponent_text)
+        digits = mantissa.replace(".", "").rstrip("0") or "0"
+        decimal_position = 1 + exponent
+    else:
+        integer, _, fraction = raw.partition(".")
+        digits = (integer + fraction).rstrip("0").lstrip("0") or "0"
+        if integer.lstrip("0"):
+            decimal_position = len(integer)
+        else:
+            leading_fraction_zeroes = len(fraction) - len(fraction.lstrip("0"))
+            decimal_position = -leading_fraction_zeroes
+
+    absolute = abs(number)
+    if 1e-6 <= absolute < 1e21:
+        if decimal_position <= 0:
+            rendered = "0." + ("0" * -decimal_position) + digits
+        elif decimal_position >= len(digits):
+            rendered = digits + ("0" * (decimal_position - len(digits)))
+        else:
+            rendered = digits[:decimal_position] + "." + digits[decimal_position:]
+    else:
+        significant = digits.rstrip("0") or "0"
+        mantissa = significant[0]
+        if len(significant) > 1:
+            mantissa += "." + significant[1:]
+        exponent = decimal_position - 1
+        rendered = f"{mantissa}e{'+' if exponent >= 0 else ''}{exponent}"
+
+    return f"-{rendered}" if negative else rendered
+
+
+def _js_json_string(value: str) -> str:
+    """Quote one JSON string while preserving JS's UTF-8 Unicode output."""
+    # Well-formed JSON.stringify escapes isolated UTF-16 surrogates but emits
+    # valid pairs as their scalar Unicode value. Python may retain surrogate
+    # pairs after json.loads, so normalize pairs before applying its otherwise
+    # matching JSON string escaping.
+    escaped: list[str] = ['"']
+    index = 0
+    while index < len(value):
+        code = ord(value[index])
+        if 0xD800 <= code <= 0xDBFF and index + 1 < len(value):
+            low = ord(value[index + 1])
+            if 0xDC00 <= low <= 0xDFFF:
+                escaped.append(chr(0x10000 + ((code - 0xD800) << 10) + low - 0xDC00))
+                index += 2
+                continue
+        if 0xD800 <= code <= 0xDFFF:
+            escaped.append(f"\\u{code:04x}")
+        elif value[index] == '"':
+            escaped.append('\\"')
+        elif value[index] == "\\":
+            escaped.append("\\\\")
+        elif value[index] == "\b":
+            escaped.append("\\b")
+        elif value[index] == "\f":
+            escaped.append("\\f")
+        elif value[index] == "\n":
+            escaped.append("\\n")
+        elif value[index] == "\r":
+            escaped.append("\\r")
+        elif value[index] == "\t":
+            escaped.append("\\t")
+        elif code < 0x20:
+            escaped.append(f"\\u{code:04x}")
+        else:
+            escaped.append(value[index])
+        index += 1
+    escaped.append('"')
+    return "".join(escaped)
+
+
+def _js_stable_json(value: Any) -> str:
+    """Pure-Python parity with K2's deep-sort + JSON.stringify stableJson."""
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        return _js_number_string(value)
+    if isinstance(value, str):
+        return _js_json_string(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_js_stable_json(child) for child in value) + "]"
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("K2 canonical JSON object keys must be strings")
+        return "{" + ",".join(
+            _js_json_string(key) + ":" + _js_stable_json(value[key])
+            for key in _js_object_key_order(value)
+        ) + "}"
+    raise TypeError(f"K2 canonical JSON does not support {type(value).__name__}")
+
+
+def runtime_revision_from_pack(runtime_pack: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve K2's runtime-only revision without hashing presentation state.
+
+    New K2 packs carry the canonical ``runtimeRevision`` written from the same
+    behavioral inputs used by activation. Older packs remain usable through a
+    deterministic compatibility slice. The legacy slice intentionally omits
+    activation, card/portrait fields, owner tuning, and generic agentVersion;
+    changing any of those must not deactivate an otherwise identical agent.
+    """
+    canonical = runtime_pack.get("runtimeRevision")
+    if canonical is not None:
+        canonical = canonical if isinstance(canonical, Mapping) else {}
+        version_value = canonical.get("version")
+        digest_value = canonical.get("digest")
+        version = version_value if isinstance(version_value, str) else ""
+        digest = digest_value if isinstance(digest_value, str) else ""
+        if (
+            version != RUNTIME_REVISION_VERSION
+            or not _RUNTIME_REVISION_DIGEST_RE.fullmatch(digest)
+        ):
+            return {
+                "version": version,
+                "digest": "",
+                "source": "canonical_invalid",
+                "inputs": None,
+                "error": "runtimeRevision must be agent_runtime_revision.v1 with a 64-hex digest",
+            }
+        return {
+            "version": version,
+            "digest": digest,
+            "source": "canonical",
+            "inputs": None,
+            "error": "",
+        }
+
+    identity = runtime_pack.get("identity")
+    identity = dict(identity) if isinstance(identity, Mapping) else {}
+    identity.pop("promise", None)
+    identity.pop("avatarUrl", None)
+    shell = runtime_pack.get("shellConfig")
+    shell = dict(shell) if isinstance(shell, Mapping) else {}
+    shell.pop("agentVersion", None)
+    shell.pop("avatarUrl", None)
+    shell.pop("tier", None)
+    capability = runtime_pack.get("capability")
+    capability = dict(capability) if isinstance(capability, Mapping) else {}
+    policies = runtime_pack.get("policies")
+    policies = dict(policies) if isinstance(policies, Mapping) else {}
+    routing = policies.get("routing")
+    if isinstance(routing, Mapping):
+        policies["routing"] = {
+            key: value
+            for key, value in routing.items()
+            if key
+            not in {
+                "slackProofAt",
+                "slackProofReceiptId",
+                "activationReceiptId",
+            }
+        }
+    else:
+        # K2's ownerTuningRoutingConfig(null) is represented as an empty
+        # object in the canonical payload. Preserve that cross-language shape
+        # for legacy packs that predate an embedded runtimeRevision.
+        policies["routing"] = {}
+
+    # This payload mirrors K2 computeAgentRuntimeRevision exactly. Legacy hosts
+    # may derive it only because old v1 packs predate runtimeRevision; current
+    # writers provide the canonical revision directly.
+    inputs = {
+        "contractVersion": runtime_pack.get("version"),
+        "agentRef": _text(runtime_pack.get("agentRef")),
+        "identity": identity,
+        "shellConfig": shell,
+        "doctrineRefs": [
+            {"ref": value.get("ref"), "linkType": value.get("linkType")}
+            for value in runtime_pack.get("doctrineRefs", [])
+            if isinstance(value, Mapping)
+        ],
+        "capability": capability,
+        "policies": policies,
+        "bindings": runtime_pack.get("bindings")
+        if isinstance(runtime_pack.get("bindings"), Mapping)
+        else {},
+        "toolBindings": sorted(
+            (
+                dict(value)
+                for value in runtime_pack.get("toolBindings", [])
+                if isinstance(value, Mapping)
+            ),
+            key=lambda value: _js_utf16_sort_key(
+                "\u0000".join(
+                    (
+                        _text(value.get("orgId")),
+                        _text(value.get("agentRef")),
+                        _text(value.get("toolRef")),
+                        _text(value.get("credentialRef")),
+                    )
+                )
+            ),
+        ),
+        "delegation": runtime_pack.get("delegation")
+        if isinstance(runtime_pack.get("delegation"), Mapping)
+        else {},
+    }
+    # K2 deep-sorts by JavaScript UTF-16 code units and serializes with
+    # JSON.stringify. Python's normal key ordering and float spelling differ
+    # for legal values such as emoji keys and 0.000001, so use the exact
+    # cross-language encoder rather than json.dumps.
+    try:
+        encoded = _js_stable_json(inputs).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        return {
+            "version": RUNTIME_REVISION_VERSION,
+            "digest": "",
+            "source": "legacy_k2_canonical_invalid",
+            "inputs": inputs,
+            "error": f"legacy runtime pack is not canonical JSON: {exc}",
+        }
+    return {
+        "version": RUNTIME_REVISION_VERSION,
+        "digest": hashlib.sha256(encoded).hexdigest(),
+        "source": "legacy_k2_canonical_derivation",
+        "inputs": inputs,
+        "error": "",
+    }
+
+
 def _runtime_doc_sections(
     rows: Any,
     *,
@@ -375,6 +646,9 @@ def install_runtime_pack(
         "runtime_pack_agent_version": None,
         "runtime_pack_activation": "",
         "runtime_pack_digest": "",
+        "runtime_revision_version": "",
+        "runtime_revision_digest": "",
+        "runtime_revision_source": "",
         "runtime_pack_soul_chars": 0,
         "runtime_pack_agents_chars": 0,
         "runtime_pack_error": "",
@@ -438,6 +712,11 @@ def install_runtime_pack(
         return result
     if shell.get("agentVersion") != runtime_pack.get("agentVersion"):
         result["runtime_pack_error"] = "shellConfig version does not match runtime pack"
+        return result
+
+    runtime_revision = runtime_revision_from_pack(runtime_pack)
+    if not runtime_revision["digest"]:
+        result["runtime_pack_error"] = str(runtime_revision["error"])
         return result
 
     identity = runtime_pack.get("identity")
@@ -605,13 +884,15 @@ def install_runtime_pack(
     with _runtime_pack_write_lock(home_path):
         _atomic_managed_write(soul_path, soul)
         _atomic_managed_write(agents_path, agents)
-    digest = hashlib.sha256(
-        json.dumps(runtime_pack, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     result.update(
         {
             "runtime_pack_applied": True,
-            "runtime_pack_digest": f"sha256:{digest}",
+            # Compatibility alias for older health consumers. It now carries
+            # the runtime-only revision, never a hash of the whole K2 pack.
+            "runtime_pack_digest": f"sha256:{runtime_revision['digest']}",
+            "runtime_revision_version": runtime_revision["version"],
+            "runtime_revision_digest": runtime_revision["digest"],
+            "runtime_revision_source": runtime_revision["source"],
             "runtime_pack_soul_chars": len(soul),
             "runtime_pack_agents_chars": len(agents),
             "runtime_pack_error": "",

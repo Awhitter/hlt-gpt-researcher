@@ -74,8 +74,8 @@ def test_canonical_manifest_matches_the_runtime_contract():
         (
             lambda value: value["settings"]["event_subscriptions"][
                 "bot_events"
-            ].append("agent_session_stopped"),
-            "outside the implemented contract: agent_session_stopped",
+            ].remove("agent_session_stopped"),
+            "agent_session_stopped",
         ),
         (
             lambda value: value["oauth_config"]["scopes"]["bot"].remove(

@@ -49,7 +49,96 @@ class SlackLeadLedger:
             ON slack_agent_lead_tombstones (created_at_unix)
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS slack_thread_participants (
+                workspace_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                thread_ts TEXT NOT NULL,
+                agent_refs_json TEXT NOT NULL,
+                mention_message_ts TEXT NOT NULL,
+                updated_at_unix REAL NOT NULL,
+                PRIMARY KEY (workspace_id, channel_id, thread_ts)
+            )
+            """
+        )
         return connection
+
+    def thread_participants(
+        self, *, workspace_id: str, channel_id: str, thread_ts: str
+    ) -> tuple[str, ...]:
+        """Return the latest human-invited participant set for one thread."""
+        if not workspace_id or not channel_id or not thread_ts:
+            return ()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT agent_refs_json
+                FROM slack_thread_participants
+                WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?
+                """,
+                (workspace_id, channel_id, thread_ts),
+            ).fetchone()
+        if row is None:
+            return ()
+        decoded = json.loads(str(row["agent_refs_json"] or "[]"))
+        if not isinstance(decoded, list) or not all(
+            isinstance(value, str) and value.startswith("agent:")
+            for value in decoded
+        ):
+            raise ValueError("stored thread participants have an invalid shape")
+        return tuple(dict.fromkeys(decoded))
+
+    def assign_thread_participants(
+        self,
+        *,
+        workspace_id: str,
+        channel_id: str,
+        thread_ts: str,
+        agent_refs: tuple[str, ...],
+        mention_message_ts: str,
+    ) -> None:
+        """Persist the latest explicit human invitation set for follow-ups.
+
+        Slack timestamps are fixed-width epoch-second strings in this
+        workspace, so lexical order is chronological. The conditional upsert
+        prevents a late Socket Mode retry from rolling participation backward.
+        A later human mention replaces (and therefore may narrow) the set.
+        Bot messages never call this method.
+        """
+        normalized = tuple(
+            dict.fromkeys(str(value or "").strip().lower() for value in agent_refs)
+        )
+        if not all((workspace_id, channel_id, thread_ts, mention_message_ts)):
+            raise ValueError("workspace/channel/thread/message ts are required")
+        if not normalized or not all(value.startswith("agent:") for value in normalized):
+            raise ValueError("at least one valid agent participant is required")
+        encoded = json.dumps(normalized, separators=(",", ":"))
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO slack_thread_participants (
+                    workspace_id, channel_id, thread_ts, agent_refs_json,
+                    mention_message_ts, updated_at_unix
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id, channel_id, thread_ts) DO UPDATE SET
+                    agent_refs_json = excluded.agent_refs_json,
+                    mention_message_ts = excluded.mention_message_ts,
+                    updated_at_unix = excluded.updated_at_unix
+                WHERE excluded.mention_message_ts >= slack_thread_participants.mention_message_ts
+                """,
+                (
+                    workspace_id,
+                    channel_id,
+                    thread_ts,
+                    encoded,
+                    mention_message_ts,
+                    now,
+                ),
+            )
+            connection.commit()
 
     def record_once(
         self,

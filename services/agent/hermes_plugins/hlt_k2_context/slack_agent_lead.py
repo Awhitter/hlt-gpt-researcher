@@ -1,4 +1,4 @@
-"""Deterministic ownership for Slack messages addressed to HLT agents.
+"""Deterministic participation for Slack messages addressed to HLT agents.
 
 The selector in this module is deliberately pure: it reads only Slack's raw
 message payload plus a ready roster and returns a decision.  Durable replay
@@ -173,7 +173,7 @@ def _mentions_from_rich_node(node: Any, known_ids: set[str]) -> list[str]:
 def recognized_mentions(
     raw_message: Mapping[str, Any], roster: AgentRoster
 ) -> tuple[str, ...]:
-    """Return recognized agent refs in authored, nonquoted mention order."""
+    """Return the exact deduplicated human-authored mention set in order."""
     by_user_id = roster.by_user_id
     known_ids = set(by_user_id)
     blocks = raw_message.get("blocks")
@@ -186,7 +186,9 @@ def recognized_mentions(
                 user_ids.extend(_mentions_from_rich_node(block, known_ids))
     if not structured:
         user_ids = _mentions_from_text(str(raw_message.get("text") or ""), known_ids)
-    return tuple(by_user_id[user_id].agent_ref for user_id in user_ids)
+    return tuple(
+        dict.fromkeys(by_user_id[user_id].agent_ref for user_id in user_ids)
+    )
 
 
 def _channel_kind(raw_message: Mapping[str, Any]) -> str:
@@ -241,21 +243,50 @@ def _is_bot_sender(raw_message: Mapping[str, Any]) -> bool:
     return bool(raw_message.get("_hermes_sender_is_bot"))
 
 
+def is_human_authored_message(
+    raw_message: Mapping[str, Any] | Any, roster: AgentRoster
+) -> bool:
+    """Return True only when Slack attributes the message to a human.
+
+    A known HLT agent user id is a bot even when Slack omits ``bot_id`` from
+    that event shape. Verified installed-app relays remain human-authored.
+    This predicate is shared by selection and the participant ledger so a
+    suppressed bot event can never recruit agents for a later human follow-up.
+    """
+    if not isinstance(raw_message, Mapping):
+        return False
+    sender_user_id = str(raw_message.get("user") or "").strip().upper()
+    return bool(
+        sender_user_id
+        and sender_user_id not in roster.by_user_id
+        and not _is_bot_sender(raw_message)
+    )
+
+
 def select_slack_agent_lead(
     raw_message: Mapping[str, Any] | Any,
     *,
     local_agent_ref: str,
     roster: AgentRoster,
+    thread_participant_agent_refs: Sequence[str] = (),
 ) -> SlackLeadDecision:
     """Choose one local outcome for a normalized raw Slack message.
 
-    One-to-one human DMs belong to the DM'd agent. MPIMs and all channel
-    surfaces require a fresh recognized mention; the first nonquoted mention
-    wins. Bot peers must themselves be recognized and explicitly mention the
-    target. Edits never reopen a frozen decision.
+    One-to-one human DMs belong to the DM'd agent. In shared surfaces, the
+    fresh nonquoted mention invites every named agent; unmentioned agents stay
+    silent. That human-invited participant set remains conversational for later
+    unmentioned human follow-ups until another explicit human mention replaces
+    it. Bot-authored messages never inherit, expand, or recruit participation.
+    Edits never reopen a frozen decision.
     """
 
     local_ref = str(local_agent_ref or "").strip().lower()
+    participant_refs = tuple(
+        dict.fromkeys(
+            str(value or "").strip().lower()
+            for value in thread_participant_agent_refs
+        )
+    )
     if not isinstance(raw_message, Mapping):
         raw_message = {}
     kind = _channel_kind(raw_message)
@@ -286,30 +317,49 @@ def select_slack_agent_lead(
         and roster.by_user_id[sender_user_id].agent_ref == local_ref
     ):
         return SlackLeadDecision(action="suppress", reason="self_bot_sender", **base)
-    if sender_is_bot and not sender_is_recognized_peer:
-        return SlackLeadDecision(
-            action="suppress", reason="unrecognized_bot_sender", **base
-        )
     if sender_is_bot:
-        if not mentions:
-            return SlackLeadDecision(
-                action="suppress", reason="peer_request_requires_mention", **base
-            )
-        if mentions[0] != local_ref:
-            return SlackLeadDecision(
-                action="suppress", reason="another_agent_mentioned_first", **base
-            )
-        return SlackLeadDecision(action="allow", reason="explicit_peer_request", **base)
+        return SlackLeadDecision(
+            action="suppress", reason="bot_authored_message", **base
+        )
 
     if kind == "dm":
         return SlackLeadDecision(action="allow", reason="owned_dm", **base)
     if not mentions:
+        valid_participants = tuple(
+            value for value in participant_refs if value in roster.by_agent_ref
+        )
+        if valid_participants:
+            return SlackLeadDecision(
+                action=("allow" if local_ref in valid_participants else "suppress"),
+                reason=(
+                    "thread_participant_continuation"
+                    if local_ref in valid_participants
+                    else "not_a_thread_participant"
+                ),
+                channel_kind=kind,
+                local_agent_ref=local_ref,
+                selected_agent_ref=(
+                    local_ref if local_ref in valid_participants else valid_participants[0]
+                ),
+                recognized_mentions=mentions,
+                roster_sha256=roster.sha256,
+            )
         return SlackLeadDecision(
             action="suppress", reason="shared_surface_requires_fresh_mention", **base
         )
-    if mentions[0] == local_ref:
+    if local_ref in mentions:
         return SlackLeadDecision(
-            action="allow", reason="first_recognized_mention", **base
+            action="allow",
+            reason=(
+                "first_recognized_mention"
+                if mentions[0] == local_ref
+                else "explicit_human_invitation"
+            ),
+            channel_kind=kind,
+            local_agent_ref=local_ref,
+            selected_agent_ref=local_ref,
+            recognized_mentions=mentions,
+            roster_sha256=roster.sha256,
         )
     return SlackLeadDecision(
         action="suppress", reason="another_agent_mentioned_first", **base

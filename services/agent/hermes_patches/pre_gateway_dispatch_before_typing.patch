@@ -2,7 +2,7 @@ diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
 index 3ad1ea1..e03ebc2 100644
 --- a/gateway/platforms/base.py
 +++ b/gateway/platforms/base.py
-@@ -6253,6 +6253,49 @@ class BasePlatformAdapter(ABC):
+@@ -6253,6 +6253,56 @@ class BasePlatformAdapter(ABC):
          if not self._message_handler:
              return
  
@@ -41,9 +41,16 @@ index 3ad1ea1..e03ebc2 100644
 +                    )
 +                    return
 +                if _action == "rewrite":
++                    _changes = {}
 +                    _new_text = _result.get("text")
 +                    if isinstance(_new_text, str):
-+                        event = dataclasses.replace(event, text=_new_text)
++                        _changes["text"] = _new_text
++                    if "channel_context" in _result:
++                        _new_context = _result.get("channel_context")
++                        if _new_context is None or isinstance(_new_context, str):
++                            _changes["channel_context"] = _new_context
++                    if _changes:
++                        event = dataclasses.replace(event, **_changes)
 +                    break
 +                if _action == "allow":
 +                    break

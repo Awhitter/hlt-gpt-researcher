@@ -1,0 +1,25 @@
+diff --git a/agent/credential_pool.py b/agent/credential_pool.py
+index 8eca174..c18aa1a 100644
+--- a/agent/credential_pool.py
++++ b/agent/credential_pool.py
+@@ -763,5 +763,20 @@ class CredentialPool:
+             available, _pending = self._available_entries()
+             return bool(available)
+ 
++    def readiness_counts(self) -> Dict[str, int]:
++        """Return non-secret pool size/selectability counts for host health.
++
++        This deliberately exposes neither credential ids nor labels. Running
++        under the pool lock reuses the exact selector Hermes uses for a model
++        call, so a host can require redundant profiles without guessing from
++        persisted status strings or token metadata.
++        """
++        with self._lock:
++            available, _pending = self._available_entries()
++            return {
++                "profile_count": len(self._entries),
++                "selectable_count": len(available),
++            }
++
+     def next_available_at(self) -> Optional[float]:
+         """Earliest epoch time (seconds) any entry re-enters rotation.

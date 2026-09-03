@@ -28,6 +28,7 @@ SUPPORTED_EVENTS = {
     "app_mention",
     "app_context_changed",
     "app_home_opened",
+    "agent_session_stopped",
     "message.channels",
     "message.groups",
     "message.im",
