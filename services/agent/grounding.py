@@ -559,10 +559,12 @@ def install_runtime_pack(
 
     agents_parts.append(
         "## Mission context\n\n"
-        "The `hlt-k2-context` Hermes hook draws from `katailyst.well` once for "
-        "each substantive turn and injects those candidates ephemerally. Judge, "
-        "open, use, tweak, or ignore them; the model remains the composer. Do not "
-        "repeat the well call unless the user explicitly asks for a refresh."
+        "The `hlt-k2-context` Hermes hook starts one durable "
+        "`katailyst.well.start` draw for each substantive turn and gives you its "
+        "exact `katailyst.well.get` handle without waiting. Poll it once later "
+        "when its deeper judgment is worth it; otherwise keep moving from the "
+        "active pack and direct K2 tools. Judge, open, use, tweak, or ignore the "
+        "result; you remain the composer. Do not start a duplicate draw."
     )
     agents = (
         f"{MARKER}\n<!-- source: katailyst2 agents.runtime_pack "

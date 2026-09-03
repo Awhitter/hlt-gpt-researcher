@@ -301,7 +301,7 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     assert render_config.runtime_lane({"AGENT_ID": "cleo"}) == "hermes"
     assert "agent:cleo" in hint
     assert "wishing-well draw" in hint
-    assert "do not repeat" in hint
+    assert "do not start a duplicate draw" in hint
     assert "registry_agent_context" not in hint
     assert "full K2 catalog" in soul
     assert "not exclusive lanes" in soul
@@ -462,12 +462,13 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
     features = manifest["features"]
     agent_view = features["agent_view"]
     events = set(manifest["settings"]["event_subscriptions"]["bot_events"])
-    scopes = set(manifest["oauth_config"]["scopes"]["bot"])
+    bot_scopes = set(manifest["oauth_config"]["scopes"]["bot"])
+    user_scopes = set(manifest["oauth_config"]["scopes"]["user"])
 
     assert manifest["display_information"]["name"] == "Cleo"
     assert "security hole" not in manifest["display_information"]["long_description"]
     assert "one useful final response" in manifest["display_information"]["long_description"]
-    assert features["bot_user"]["display_name"] == "cleo"
+    assert features["bot_user"]["display_name"] == "Cleo"
     assert features["app_home"] == {
         "home_tab_enabled": False,
         "messages_tab_enabled": True,
@@ -507,8 +508,48 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
         "assistant_thread_started",
         "assistant_thread_context_changed",
     }.isdisjoint(events)
-    assert "assistant:write" in scopes
-    assert {"canvases:read", "canvases:write"}.isdisjoint(scopes)
+    assert bot_scopes == {
+        "app_mentions:read",
+        "assistant:write",
+        "canvases:read",
+        "canvases:write",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "chat:write.customize",
+        "commands",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "incoming-webhook",
+        "links.embed:write",
+        "lists:read",
+        "mcp:connect",
+        "mpim:history",
+        "mpim:read",
+        "reactions:read",
+        "reactions:write",
+        "search:read.public",
+        "users:read",
+    }
+    assert user_scopes == {
+        "canvases:read",
+        "canvases:write",
+        "emoji:read",
+        "links:write",
+        "lists:write",
+        "reactions:read",
+        "reactions:write",
+        "reminders:read",
+        "search:read.public",
+        "users.profile:read",
+    }
+    assert manifest["oauth_config"]["pkce_enabled"] is False
+    assert manifest["settings"]["is_mcp_enabled"] is False
 
 
 def test_slack_sends_one_final_answer_without_permanent_progress_bubbles(tmp_path):
@@ -1121,11 +1162,18 @@ def _cleo_runtime_pack():
             "persona": {"name": "Cleo", "role": "Product owner"},
             "systemPrompt": "Own the Nursing Mastery outcome.",
             "doctrineMd": "Finish the useful artifact and show the evidence.",
-            "sharedDoctrine": [],
+            "sharedDoctrine": [
+                {
+                    "ref": "agent_doc:fleet-kickoff-doctrine",
+                    "name": "Fleet Kickoff Doctrine",
+                    "body": "# Fleet kickoff\n\nUse K2 with judgment and answer first.",
+                    "linkType": "governed_by",
+                }
+            ],
             "referenceDocs": [],
             "directives": ["Use K2 as capability context, not a rigid pipeline."],
             "preferredSkills": ["skill:nursing-mastery-facilitate-product-work"],
-            "preferredTools": ["katailyst.well"],
+            "preferredTools": ["katailyst.well.start", "katailyst.well.get"],
             "hubs": [],
             "recipes": [],
             "tools": [],
@@ -1201,6 +1249,8 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert "source: katailyst2 agents.runtime_pack agent:cleo@7" in soul
     assert "Nursing Mastery product owner" in soul
     assert "Finish the useful artifact" in doctrine
+    assert "Fleet Kickoff Doctrine" in doctrine
+    assert "Use K2 with judgment" in doctrine
     assert "hlt-k2-context" in doctrine
     assert "never form an allowlist" in doctrine
 
@@ -1238,6 +1288,7 @@ def test_runtime_pack_fences_registry_authored_doctrine(tmp_path):
 def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch):
     health_gateway = _load_health_gateway()
     calls = []
+    run_id = "22222222-2222-4222-8222-222222222222"
     responses = iter(
         [
             (
@@ -1251,7 +1302,8 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
                         "tools": [
                             {"name": "registry_search"},
                             {"name": "agents_runtime_pack"},
-                            {"name": "katailyst_well"},
+                            {"name": "katailyst_well_start"},
+                            {"name": "katailyst_well_get"},
                         ]
                     }
                 },
@@ -1273,11 +1325,22 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
                 {
                     "result": {
                         "structuredContent": {
-                            "mission": "Show me one useful block",
-                            "dives": [],
-                            "gaps": [],
-                            "degraded": False,
-                            "timings": {"totalMs": 80},
+                            "runId": run_id,
+                            "status": "queued",
+                            "result": None,
+                        }
+                    }
+                },
+                "session-1",
+                {},
+            ),
+            (
+                {
+                    "result": {
+                        "structuredContent": {
+                            "runId": run_id,
+                            "status": "running",
+                            "result": None,
                         }
                     }
                 },
@@ -1292,7 +1355,6 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
         return next(responses)
 
     monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
-
     result = health_gateway.k2_agent_readiness(
         "https://katailyst2.vercel.app/mcp",
         "k2-secret",
@@ -1307,7 +1369,8 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
     assert result["runtime_pack_callable"] is True
     assert result["well_tool_listed"] is True
     assert result["well_callable"] is True
-    assert result["well_status"] == "loaded"
+    assert result["well_status"] == "running"
+    assert result["well_mode"] == "async"
     assert result["well_outage_declared"] is False
     assert result["agent_block_found"] is True
     assert result["agent_bound_token"] is True
@@ -1316,19 +1379,30 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
     assert result["contract_status"] == "loaded"
     assert result["resolved_agent_ref"] == "agent:cleo"
     assert result["identity_matches"] is True
+    assert result["shared_doctrine_refs"] == [
+        "agent_doc:fleet-kickoff-doctrine"
+    ]
+    assert result["shared_doctrine_body_chars"] > 0
     pack_arguments = calls[2][2]["params"]["arguments"]
     assert "agentRef" not in pack_arguments, "omission proves the bearer is agent-bound"
     assert pack_arguments == {
         "hostProfile": health_gateway.K2_HERMES_HOST_PROFILE,
         "requireActive": True,
     }
-    assert calls[-1][2]["params"]["arguments"] == {
+    tool_calls = [call[2]["params"] for call in calls if call[2]["method"] == "tools/call"]
+    assert [call["name"] for call in tool_calls] == [
+        "agents_runtime_pack",
+        "katailyst_well_start",
+        "katailyst_well_get",
+    ]
+    assert tool_calls[1]["arguments"] == {
         "mission": "Show me one useful block for a Nursing Mastery product mission.",
         "facets": ["Nursing Mastery product work"],
         "budget": 1,
         "thoughts": False,
         "traverse": False,
     }
+    assert tool_calls[2]["arguments"] == {"runId": run_id}
     assert result["_runtime_pack"]["agentRef"] == "agent:cleo"
 
 
@@ -1614,7 +1688,12 @@ def test_mission_context_hook_skips_small_talk_and_draws_once(monkeypatch):
     monkeypatch.setattr(plugin, "draw_mission_context", fake_draw)
 
     assert plugin._pre_llm_call(user_message="thanks") is None
-    assert plugin._pre_llm_call(user_message="Where is the funnel leaking?") == {
+    assert plugin._pre_llm_call(
+        user_message="Where is the funnel leaking?",
+        platform="slack",
+        session_id="session-1",
+        turn_id="turn-1",
+    ) == {
         "context": "one useful K2 packet"
     }
     assert calls == [
@@ -1624,6 +1703,12 @@ def test_mission_context_hook_skips_small_talk_and_draws_once(monkeypatch):
             {
                 "mission": "Where is the funnel leaking?",
                 "agent_ref": "agent:cleo",
+                "idempotency_key": plugin.mission_idempotency_key(
+                    agent_ref="agent:cleo",
+                    mission="Where is the funnel leaking?",
+                    session_id="session-1",
+                    turn_id="turn-1",
+                ),
             },
         )
     ]
@@ -1652,7 +1737,9 @@ def test_hosted_k2_mission_uses_supplied_handoff_without_a_second_well(monkeypat
     assert "return a useful final before the deadline" in result["context"]
 
 
-def test_mission_context_draw_calls_the_well_once_and_bounds_the_packet(monkeypatch):
+def test_mission_context_uses_bounded_sync_compatibility_when_async_is_absent(
+    monkeypatch,
+):
     runtime_context = _load(
         "hlt_k2_runtime_context_test",
         SERVICE_DIR / "hermes_plugins" / "hlt_k2_context" / "runtime_context.py",
@@ -1713,6 +1800,7 @@ def test_mission_context_draw_calls_the_well_once_and_bounds_the_packet(monkeypa
         if call[0][2].get("method") == "tools/call"
     ]
     assert result["status"] == "loaded"
+    assert result["mode"] == "sync_compat"
     assert result["well_calls"] == 1
     assert result["block_count"] == 1
     assert len(result["context"]) <= runtime_context.MAX_CONTEXT_CHARS
@@ -1726,16 +1814,138 @@ def test_mission_context_draw_calls_the_well_once_and_bounds_the_packet(monkeypa
     }
 
 
+def test_mission_context_starts_async_well_without_premature_poll(monkeypatch):
+    runtime_context = _load(
+        "hlt_k2_runtime_context_async_test",
+        SERVICE_DIR / "hermes_plugins" / "hlt_k2_context" / "runtime_context.py",
+    )
+    runtime_context._reset_tool_cache_for_tests()
+    calls = []
+    run_id = "33333333-3333-4333-8333-333333333333"
+    def fake_post(url, token, payload, **kwargs):
+        calls.append(payload)
+        if payload["method"] == "initialize":
+            return {"result": {}}, "session-1", {"x-katailyst-repo": "katailyst2"}
+        if payload["method"] == "tools/list":
+            names = ["katailyst.well.start", "katailyst.well.get", "registry.search"]
+            return {"result": {"tools": [{"name": name} for name in names]}}, "session-1", {}
+        return {
+            "result": {
+                "structuredContent": {
+                    "runId": run_id,
+                    "status": "queued",
+                    "pollAfterSeconds": 2,
+                    "result": None,
+                }
+            }
+        }, "session-1", {}
+
+    monkeypatch.setattr(runtime_context, "_post", fake_post)
+
+    result = runtime_context.draw_mission_context(
+        "https://katailyst2.vercel.app/mcp",
+        "bound-token",
+        mission="Find the Nursing Mastery funnel leak",
+        agent_ref="agent:cleo",
+        idempotency_key="hermes:one-turn",
+    )
+
+    tool_calls = [
+        call["params"] for call in calls if call.get("method") == "tools/call"
+    ]
+    assert [call["name"] for call in tool_calls] == ["katailyst.well.start"]
+    assert tool_calls[0]["arguments"] == {
+        "mission": "Find the Nursing Mastery funnel leak",
+        "budget": 8,
+        "thoughts": True,
+        "traverse": False,
+        "idempotencyKey": "hermes:one-turn",
+    }
+    assert result["status"] == "pending"
+    assert result["mode"] == "async_pending"
+    assert result["well_calls"] == 1
+    assert result["block_count"] == 0
+    assert "Do not start another draw" in result["context"]
+    assert "after about 2s" in result["context"]
+    assert "mcp__katailyst2__katailyst_well_get" in result["context"]
+
+
+def test_mission_context_formats_durable_well_angles():
+    runtime_context = _load(
+        "hlt_k2_runtime_context_async_complete_test",
+        SERVICE_DIR / "hermes_plugins" / "hlt_k2_context" / "runtime_context.py",
+    )
+    context, block_count = runtime_context._format_context(
+        {
+            "angles": [
+                {
+                    "facet": "Nursing Mastery",
+                    "blocks": [{"typedRef": "skill:nm-funnel-brief", "name": "Funnel brief"}],
+                }
+            ]
+        },
+        agent_ref="agent:cleo",
+    )
+    assert block_count == 1
+    assert "skill:nm-funnel-brief" in context
+
+
+@pytest.mark.parametrize("async_error", [False, True])
+def test_mission_context_uses_registry_fallback_when_needed(monkeypatch, async_error):
+    runtime_context = _load(
+        "hlt_k2_runtime_context_registry_fallback_test",
+        SERVICE_DIR / "hermes_plugins" / "hlt_k2_context" / "runtime_context.py",
+    )
+    runtime_context._reset_tool_cache_for_tests()
+    calls = []
+    def fake_post(url, token, payload, **kwargs):
+        calls.append(payload)
+        if payload["method"] == "initialize":
+            return {"result": {}}, "session-1", {"x-katailyst-repo": "katailyst2"}
+        if payload["method"] == "tools/list":
+            names = ["registry.search"]
+            if async_error:
+                names += ["katailyst.well.start", "katailyst.well.get"]
+            return {"result": {"tools": [{"name": name} for name in names]}}, "session-1", {}
+        name = payload["params"]["name"]
+        if name == "katailyst.well.start":
+            return {"result": {"isError": True}}, "session-1", {}
+        candidate = {"typedRef": "skill:nm-funnel-brief", "name": "Funnel brief"}
+        return {"result": {"structuredContent": {"candidates": [candidate]}}}, "session-1", {}
+
+    monkeypatch.setattr(runtime_context, "_post", fake_post)
+
+    result = runtime_context.draw_mission_context(
+        "https://katailyst2.vercel.app/mcp",
+        "bound-token",
+        mission="Find the Nursing Mastery funnel leak",
+        agent_ref="agent:cleo",
+    )
+
+    tool_calls = [
+        call["params"] for call in calls if call.get("method") == "tools/call"
+    ]
+    expected = ["katailyst.well.start", "registry.search"] if async_error else ["registry.search"]
+    assert [call["name"] for call in tool_calls] == expected
+    assert result["status"] == "loaded"
+    assert result["mode"] == "registry_search_fallback"
+    assert result["well_calls"] == int(async_error)
+    assert result["block_count"] == 1
+    assert "skill:nm-funnel-brief" in result["context"]
+
+
 def test_mission_context_outage_fails_open_without_inventing_blocks(monkeypatch):
     runtime_context = _load(
         "hlt_k2_runtime_context_outage_test",
         SERVICE_DIR / "hermes_plugins" / "hlt_k2_context" / "runtime_context.py",
     )
-    monkeypatch.setattr(
-        runtime_context,
-        "_post",
-        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("K2 slow")),
-    )
+    timeouts = []
+
+    def timeout(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        raise TimeoutError("K2 slow")
+
+    monkeypatch.setattr(runtime_context, "_post", timeout)
 
     result = runtime_context.draw_mission_context(
         "https://katailyst2.vercel.app/mcp",
@@ -1748,6 +1958,7 @@ def test_mission_context_outage_fails_open_without_inventing_blocks(monkeypatch)
     assert result["well_calls"] == 0
     assert result["block_count"] == 0
     assert "do not claim K2 returned" in result["context"]
+    assert timeouts and 0 < timeouts[0] <= runtime_context.MISSION_CONTEXT_TIMEOUT_SECONDS
 
 
 K2_RUN_ID = "11111111-1111-4111-8111-111111111111"

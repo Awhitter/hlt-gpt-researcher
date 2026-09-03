@@ -35,7 +35,7 @@ reports the reversible retirement state of the old recurring briefs.
    ([`render_config.py`](./render_config.py)),
 3. asks canonical Katailyst2 for the bearer-bound `agent:cleo` runtime pack,
    installs that pack into Hermes' real prompt files only when it is active,
-   and proves the independent mission-time wishing well,
+   and proves the independent async mission-time Well door,
 4. selects one addressed HLT Slack agent before Hermes can type or call a model,
 5. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
 6. serves operator health plus authenticated K2 activation/dispatch routes on
@@ -79,13 +79,14 @@ Two env vars matter as much as the toolset:
 |---|---|---|
 | Katailyst2 `agents.runtime_pack` for `agent:cleo` | active identity, doctrine, proclivities, bindings and policies | canonical brain, resolved for `paperclip_hermes` with the agent-bound token |
 | [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) + bundled AGENTS files | reviewed snapshot | used only during a declared K2 service/transport outage, never for a missing agent or bad token |
-| `hlt-k2-context` Hermes plugin | choose one Slack lead, then draw one bounded `katailyst.well` packet for each substantive turn | lead decisions are private local receipts; mission context is ephemeral and never persisted into transcript or memory |
+| `hlt-k2-context` Hermes plugin | choose one Slack lead, then start one durable `katailyst.well.start` draw for each substantive turn and hand its exact `get` handle to the model without waiting | lead decisions are private local receipts; compact registry search is the fallback for an incomplete Well tool surface; injected mission context is ephemeral and never persisted into transcript or memory |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
 Cleo's durable registry identity is the unversioned `agent:cleo`; K2 owns the
 current revision. This hosted body reports `runtime_lane: hermes`. At boot it
-discovers either MCP dialect (`agents.runtime_pack`/`agents_runtime_pack` and
-`katailyst.well`/`katailyst_well`) from `tools/list`; the model-facing Hermes
+discovers either MCP dialect (`agents.runtime_pack`/`agents_runtime_pack`,
+`katailyst.well.start`/`katailyst_well_start`, and their `get`/compatibility
+forms) from `tools/list`; the model-facing Hermes
 names are separately prefixed `mcp__katailyst2__...`. Mounting the MCP is not
 identity proof, so the runtime-pack call deliberately omits `agentRef`: only an
 agent-bound token can return Cleo.
@@ -146,12 +147,14 @@ readable context or Cleo's tool access. `/health.config.max_turns` and
 
 `/health.config.k2_agent_readiness` is deliberately stricter than
 `mcp_mounted`. It verifies the `x-katailyst-repo: katailyst2` response header,
-the runtime-pack and well tools, an agent-bound `agent:cleo` pack, the
+the runtime-pack and async Well start/get tools, an agent-bound `agent:cleo` pack, the
 `paperclip_hermes` compatibility decision, active/online state, the applied
-pack digest, and an actual well call. A legacy v1 bridge, broad/misbound token,
+pack digest, resolved shared-doctrine refs/body size, and an actual durable Well
+start plus immediate get. A legacy v1 bridge, broad/misbound token,
 inactive pack, or unavailable well is named separately. Once the canonical pack
 is verified, `contract_status` remains `pack_loaded` if only the optional Well
-probe fails; `well_status` and `well_outage_declared` carry that narrower truth.
+probe fails; `well_mode`, `well_status`, and
+`well_outage_declared` carry that narrower truth.
 
 K2 activation has two stages. Authenticated `GET /activationz` returns the
 versioned `agent_host_activation_readiness.v1` contract and its exact 21
@@ -159,7 +162,7 @@ non-circular checks: hosted body, durable admission ledger, credentials,
 dependencies, exact token-bound Cleo pack and host compatibility, without
 requiring Cleo to already be online. K2 can then activate the agent; the bounded
 watcher repeats `agents.runtime_pack` with `requireActive:true`, installs it,
-proves the well and starts Hermes. If the canonical active pack succeeds but
+proves the async Well door and starts Hermes. If the canonical active pack succeeds but
 the independent Well probe times out, Hermes keeps that K2 brain, starts
 with a visible optional-enrichment advisory, and retries K2 on ordinary Slack
 turns instead of replacing the current doctrine with a bundled fallback. That
@@ -198,8 +201,10 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
   K2-selected context refs directly, and allow at most one focused recovery
   search. Because K2's handoff already carries the canonical mission reading
   and selected refs, `hook:k2:*` API runs skip the plugin's second automatic
-  Wishing Well draw; ordinary Slack turns keep the one-draw `pre_llm_call`
-  behavior.
+  Wishing Well draw; ordinary Slack turns start one idempotent async draw and
+  give the model its exact run handle and server-requested poll interval instead
+  of blocking the model loop. Compact registry search remains the fallback when
+  the durable Well tool pair is not available.
 - Before that surface may emit `run.completed`, the HLT overlay reconciles each
   factual business count, rate, dollar value, and percentage against the
   current request and successful current-run tool results. Explicitly labelled

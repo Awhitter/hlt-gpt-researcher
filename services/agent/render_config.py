@@ -139,27 +139,19 @@ SLACK_TOOLSETS: tuple[str, ...] = (
     "tts",
 )
 
-# One-tap starters at the Agent/Assistant entry point (Slack caps this at 4).
-# Written as a new hire would ask them, not as an insider would.
+# One-tap Nursing Mastery product starters at the Agent/Assistant entry point.
 SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
     {
-        "title": "What shipped this week?",
-        "message": "What shipped in Nursing Mastery this week, and what's still in flight?",
+        "title": "Choose the next product bet",
+        "message": "What should Nursing Mastery build or change next? Use current evidence and make the call.",
     },
     {
-        "title": "Explain a subsystem",
-        "message": "I'm new here. Explain how the job board gets its jobs, and point me at the files.",
+        "title": "Read the funnel",
+        "message": "Read the Nursing Mastery funnel. Name the bottleneck and the one decision I should make.",
     },
     {
-        "title": "Where do I start?",
-        "message": "I just joined. What are the three things I should understand first about this codebase, and what will confuse me?",
-    },
-    {
-        "title": "Take a product task",
-        "message": (
-            "Pick one high-leverage Nursing Mastery product question we can answer "
-            "today, do the research, and bring back the useful artifact or decision."
-        ),
+        "title": "Take a product mission",
+        "message": "Take one high-leverage Nursing Mastery mission through research, decision, and a finished artifact.",
     },
 )
 
@@ -513,8 +505,9 @@ def build_config(
     if registry_ref:
         runtime_hint += (
             f" Your registry identity is {registry_ref}. The host injects one "
-            "Katailyst2 wishing-well draw for each substantive turn; judge its "
-            "candidates freely and do not repeat the draw unless the user asks. "
+            "Katailyst2 wishing-well draw for each substantive turn through its "
+            "durable start/get door; judge the live candidates freely and do not "
+            "start a duplicate draw. "
             "Your canonical runtime pack is already installed; do not fetch it "
             "again inside a turn. For registry.get, start with card or concise "
             "and load one full body only when the task actually needs it."
@@ -680,7 +673,7 @@ def build_config(
         # the image and are meant to persist.
         "curator": {"prune_builtins": False},
         # A user plugin is the pinned runtime's supported turn-context seam.
-        # It performs one bounded K2 wishing-well draw before the model loop;
+        # It draws one bounded K2 packet and injects it ephemerally per mission;
         # no Hermes fork and no Slack transport interception are involved.
         "plugins": {"enabled": ["hlt-k2-context"]},
     }

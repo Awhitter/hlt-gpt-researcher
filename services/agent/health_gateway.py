@@ -489,6 +489,8 @@ def _mcp_tool_data(result: dict[str, Any]) -> dict[str, Any]:
 
 
 K2_RUNTIME_PACK_NAMES = ("agents.runtime_pack", "agents_runtime_pack")
+K2_WELL_START_NAMES = ("katailyst.well.start", "katailyst_well_start")
+K2_WELL_GET_NAMES = ("katailyst.well.get", "katailyst_well_get")
 K2_WELL_NAMES = ("katailyst.well", "katailyst_well")
 K2_HERMES_HOST_PROFILE: dict[str, Any] = {
     "version": "agent_host_profile.v1",
@@ -577,6 +579,7 @@ def k2_agent_readiness(
     is probed separately as task-time capability, never as identity.
     """
     started = time.monotonic()
+    deadline = started + max(0.5, timeout)
     result: dict[str, Any] = {
         "mounted": bool(url),
         "bearer_present": bool(token),
@@ -589,12 +592,15 @@ def k2_agent_readiness(
         "well_tool_listed": False,
         "well_callable": False,
         "well_status": "not_checked",
+        "well_mode": "not_checked",
         "well_outage_declared": False,
         "agent_block_found": False,
         "agent_bound_token": False,
         "host_profile_compatible": False,
         "runtime_pack_version": "",
         "agent_version": None,
+        "shared_doctrine_refs": [],
+        "shared_doctrine_body_chars": 0,
         "activation_status": "",
         "activation_online": None,
         "activation_ready": False,
@@ -619,13 +625,16 @@ def k2_agent_readiness(
 
     def rpc(method: str, params: dict[str, Any], session_id: str = ""):
         nonlocal request_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Katailyst2 readiness deadline expired")
         request_id += 1
         return _mcp_post(
             url,
             token,
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
             session_id=session_id,
-            timeout=timeout,
+            timeout=max(0.05, remaining),
         )
 
     try:
@@ -655,10 +664,17 @@ def k2_agent_readiness(
         ]
         result["visible_tools"] = len(names)
         pack_tool = next((name for name in names if name in K2_RUNTIME_PACK_NAMES), "")
-        well_tool = next((name for name in names if name in K2_WELL_NAMES), "")
+        well_start_tool = next(
+            (name for name in names if name in K2_WELL_START_NAMES), ""
+        )
+        well_get_tool = next(
+            (name for name in names if name in K2_WELL_GET_NAMES), ""
+        )
+        well_sync_tool = next((name for name in names if name in K2_WELL_NAMES), "")
+        async_well_listed = bool(well_start_tool and well_get_tool)
         result["runtime_pack_tool_listed"] = bool(pack_tool)
-        result["well_tool_listed"] = bool(well_tool)
-        if not pack_tool or not well_tool:
+        result["well_tool_listed"] = async_well_listed or bool(well_sync_tool)
+        if not pack_tool or not result["well_tool_listed"]:
             result["contract_status"] = "tool_surface_incomplete"
             return result
         if not expected_agent_ref:
@@ -693,6 +709,22 @@ def k2_agent_readiness(
         activation = activation if isinstance(activation, Mapping) else {}
         policies = runtime_pack.get("policies")
         policies = policies if isinstance(policies, Mapping) else {}
+        shell_config = runtime_pack.get("shellConfig")
+        shell_config = shell_config if isinstance(shell_config, Mapping) else {}
+        shared_doctrine = shell_config.get("sharedDoctrine")
+        shared_doctrine = (
+            shared_doctrine if isinstance(shared_doctrine, list) else []
+        )
+        shared_doctrine_refs = [
+            str(row.get("ref") or "")
+            for row in shared_doctrine
+            if isinstance(row, Mapping) and str(row.get("ref") or "").strip()
+        ]
+        shared_doctrine_body_chars = sum(
+            len(str(row.get("body") or ""))
+            for row in shared_doctrine
+            if isinstance(row, Mapping)
+        )
         shell_scopes = policies.get("shellScopes")
         shell_scopes = shell_scopes if isinstance(shell_scopes, list) else []
         identity_matches = resolved_ref == expected_agent_ref
@@ -708,6 +740,8 @@ def k2_agent_readiness(
                 "host_profile_compatible": host_compatible,
                 "runtime_pack_version": str(runtime_pack.get("version") or ""),
                 "agent_version": runtime_pack.get("agentVersion"),
+                "shared_doctrine_refs": shared_doctrine_refs,
+                "shared_doctrine_body_chars": shared_doctrine_body_chars,
                 "activation_status": str(activation.get("status") or ""),
                 "activation_online": activation.get("isOnline"),
                 "activation_ready": active,
@@ -738,23 +772,57 @@ def k2_agent_readiness(
             result["contract_status"] = "pack_loaded"
             return result
 
-        well_call, _, _ = rpc(
-            "tools/call",
-            {
-                "name": well_tool,
-                "arguments": {
-                    "mission": "Show me one useful block for a Nursing Mastery product mission.",
-                    "facets": ["Nursing Mastery product work"],
-                    "budget": 1,
-                    "thoughts": False,
-                    "traverse": False,
+        well_arguments = {
+            "mission": "Show me one useful block for a Nursing Mastery product mission.",
+            "facets": ["Nursing Mastery product work"],
+            "budget": 1,
+            "thoughts": False,
+            "traverse": False,
+        }
+        if async_well_listed:
+            start_call, _, _ = rpc(
+                "tools/call",
+                {
+                    "name": well_start_tool,
+                    "arguments": well_arguments,
                 },
-            },
-            session_id,
-        )
-        _raise_for_rpc_error(well_call, operation="katailyst.well")
+                session_id,
+            )
+            _raise_for_rpc_error(start_call, operation="katailyst.well.start")
+            started_run = _mcp_tool_data(start_call.get("result") or {})
+            run_id = str(started_run.get("runId") or "").strip()
+            if not run_id:
+                raise K2ReadinessError(
+                    "contract_rejected", "katailyst.well.start returned no runId"
+                )
+            get_call, _, _ = rpc(
+                "tools/call",
+                {"name": well_get_tool, "arguments": {"runId": run_id}},
+                session_id,
+            )
+            _raise_for_rpc_error(get_call, operation="katailyst.well.get")
+            polled_run = _mcp_tool_data(get_call.get("result") or {})
+            run_status = str(
+                polled_run.get("status") or started_run.get("status") or "queued"
+            ).strip().lower()
+            if run_status in {"failed", "cancelled"}:
+                raise K2ReadinessError(
+                    "outage",
+                    "katailyst.well async run "
+                    f"{run_status}: {str(polled_run.get('error') or '')[:180]}",
+                )
+            result["well_mode"] = "async"
+            result["well_status"] = run_status
+        else:
+            well_call, _, _ = rpc(
+                "tools/call",
+                {"name": well_sync_tool, "arguments": well_arguments},
+                session_id,
+            )
+            _raise_for_rpc_error(well_call, operation="katailyst.well")
+            result["well_mode"] = "sync_compat"
+            result["well_status"] = "succeeded"
         result["well_callable"] = True
-        result["well_status"] = "loaded"
         result["contract_status"] = "loaded"
         return result
     except Exception as exc:

@@ -15,8 +15,10 @@ questions.
 
 For a substantial task:
 
-1. The host supplies one bounded Katailyst wishing-well draw using the user's
-   request. Judge it; do not repeat it unless the user asks for a refresh.
+1. The host starts one durable Katailyst Well draw using the user's request and
+   hands you its exact run handle without waiting. Begin from the active pack;
+   poll once later only when deeper context would materially help. Judge what
+   helps; do not start a duplicate draw.
 2. Use what it returns as a strong starting point, then search the
    full K2 catalog as widely as the task merits. Research, codegraph, K2 tools,
    Linear, PostHog, media, and delegation are means to an outcome—not an
