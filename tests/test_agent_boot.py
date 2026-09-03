@@ -382,13 +382,13 @@ def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
     """Provider-name strings are silently discarded by pinned Hermes.
 
     The recovery chain must therefore contain a provider and an exact model at
-    every hop, in owner-approved order: subscription routes before the paid
-    OpenRouter safety net.
+    every hop. Durable defaults contain only credentials this service can
+    refresh without a human device-code ceremony; Codex remains an explicit
+    operator override.
     """
     config = render_config.build_config(FULL_ENV)
 
     assert config["fallback_providers"] == [
-        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
         {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
         {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
         {
@@ -409,6 +409,10 @@ def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
         "role": "primary",
     }
     assert summary["configured_model_route"][1]["role"] == "fallback-1"
+    assert all(
+        route["provider"] != "openai-codex"
+        for route in summary["configured_model_route"]
+    )
 
 
 def test_fallback_override_accepts_json_and_compact_routes():
@@ -1030,6 +1034,76 @@ def test_a_rate_limited_codex_profile_is_not_called_an_available_fallback(monkey
     assert ready[1]["available"] is False
     assert ready[1]["detail"]["logged_in"] is True
     assert ready[1]["detail"]["rate_limited"] is True
+
+
+def test_codex_legacy_login_cannot_mask_an_unusable_credential_pool(monkeypatch):
+    """Exact live incident: refresh 401, then legacy status said logged in."""
+    health_gateway = _load_health_gateway()
+
+    class _UnusablePool:
+        def has_credentials(self):
+            return True
+
+        def has_available(self):
+            return False
+
+    result = health_gateway._codex_subscription_auth_readiness(
+        status_getter=lambda: {
+            "logged_in": True,
+            "source": "hermes-auth-store",
+            "api_key": "must-never-leak",
+        },
+        pool_loader=lambda provider: _UnusablePool(),
+    )
+
+    assert result["logged_in"] is True
+    assert result["usable"] is False
+    assert result["credential_pool"] == {
+        "has_credentials": True,
+        "has_available": False,
+    }
+    assert result["source"] == "hermes-auth-store"
+    assert "api_key" not in result
+    assert "must-never-leak" not in str(result)
+    monkeypatch.setattr(
+        health_gateway, "subscription_auth_readiness", lambda provider: result
+    )
+    route = health_gateway.model_route_readiness(
+        [
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.6-sol",
+                "role": "fallback-1",
+            }
+        ],
+        {},
+    )[0]
+    assert route["available"] is False
+
+
+def test_codex_readiness_requires_a_logged_in_selectable_pool_entry():
+    health_gateway = _load_health_gateway()
+
+    class _ReadyPool:
+        def has_credentials(self):
+            return True
+
+        def has_available(self):
+            return True
+
+    result = health_gateway._codex_subscription_auth_readiness(
+        status_getter=lambda: {
+            "logged_in": True,
+            "source": "pool:owner",
+            "last_refresh": "2026-09-03T00:00:00Z",
+        },
+        pool_loader=lambda provider: _ReadyPool(),
+    )
+
+    assert result["usable"] is True
+    assert result["credential_pool"]["has_available"] is True
+    assert result["source"] == "credential_pool"
+    assert "owner" not in str(result)
 
 
 def test_missing_active_subscription_auth_degrades_the_gateway(monkeypatch):
@@ -3812,5 +3886,5 @@ def test_xai_api_key_joins_recovery_first_only_when_present():
     )
 
     assert with_key[0] == {"provider": "xai", "model": "grok-4.6"}
-    assert with_key[1]["provider"] == "openai-codex"
+    assert with_key[1]["provider"] == "openrouter"
     assert all(route["provider"] != "xai" for route in without_key)

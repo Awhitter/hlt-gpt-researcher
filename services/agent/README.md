@@ -109,7 +109,7 @@ leave your file alone and say so in `/health`.
 | Var | Purpose |
 |-----|---------|
 | SuperGrok / Premium+ OAuth | Primary Grok 4.6 credentials, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
-| ChatGPT subscription OAuth | First recovery route, stored by `hermes auth add openai-codex` in the persistent Hermes auth store |
+| ChatGPT subscription OAuth | Optional operator-enabled recovery route; add it to `HERMES_FALLBACK_PROVIDERS` only after a fresh `hermes auth add openai-codex` login and private canary |
 | `OPENROUTER_API_KEY` | Independent Kimi/Qwen/DeepSeek recovery routes |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
@@ -322,20 +322,24 @@ Agent View migration above for her. This section is for a new agent app.
 ### Connect the model subscription
 
 Cleo's primary model uses the owner's SuperGrok / Premium+ entitlement through
-Hermes' xAI device-code OAuth provider. Her first fallback uses ChatGPT
-subscription OAuth. From a Render shell run both:
+Hermes' xAI device-code OAuth provider. OpenRouter supplies the durable default
+recovery chain. From a Render shell, connect the primary:
 
 ```bash
 hermes auth add xai-oauth
-hermes auth add openai-codex
 ```
 
-Open each displayed URL, approve its code, then verify both subscription routes
+Open the displayed URL, approve its code, then verify the subscription route
 under `/health.config.model_route_readiness`. Refresh tokens stay in the
 service's persistent `HERMES_HOME`; they are never Render environment variables
-or Slack messages. A successful login is not the final proof: run a real Slack
-task and read `gateway.observed_model_route`, because a provider can still deny
-inference after issuing OAuth tokens.
+or Slack messages.
+
+ChatGPT OAuth is available as an explicit, supervised recovery route, not a
+durable default. Its refresh token needs a human device-code renewal when it is
+revoked or consumed by another client. Run `hermes auth add openai-codex`, add
+`openai-codex:gpt-5.6-sol` to `HERMES_FALLBACK_PROVIDERS`, and keep it there only
+after `/health` shows a selectable credential-pool entry and a bounded private
+canary succeeds. A login flag alone is not proof that inference works.
 
 ## Smoke
 
