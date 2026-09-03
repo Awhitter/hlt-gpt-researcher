@@ -212,18 +212,18 @@ managed source marker as a cache epoch, so an existing Slack conversation picks
 up the new SOUL and doctrine on its next turn without restarting the socket or
 discarding history.
 
-Slack token streaming stays off: pre-tool model text must not become permanent
-thread fragments. Keep per-tool, interim, and routine compaction posts off; the
-ephemeral Assistant status is the working-state surface and only the finished
-answer becomes a Slack message.
+Slack uses one native evolving stream per turn. Open it immediately with a short
+acknowledgement, add polished human-readable progress there whenever useful,
+and seal it once with the final. Keep raw tool names, commands, paths, provider
+warnings, private reasoning, and separate progress bubbles out of Slack.
 
 Five rules that exist because each was once a silent no-op:
 
-1. **`platform_toolsets.slack` is a security control, not a preference.**
-   Upstream's default Slack toolset is "full access for workspace use" —
-   terminal, execute_code, cronjob, computer_use. Cleo is reachable by the
-   whole workspace and reads untrusted web pages. Never widen that list without
-   reading `tests/test_agent_boot.py::test_slack_toolset_excludes_host_access`.
+1. **Capability and effect permission are separate.** `platform_toolsets.slack`
+   gives Cleo the practical web, file, code, browser, computer, schedule, media,
+   and MCP workbench needed to finish work. The K2 context hook asks only at the
+   real outward or irreversible boundary: send, publish, spend, delete,
+   credential/access change, or protected production change.
 2. **Company facts go in `services/agent/grounding/shared/AGENTS.md`** and
    agent-specific routing in `services/agent/grounding/<agent>/AGENTS.md`, loaded from
    `terminal.cwd`. Not `MEMORY.md` — that is ~2200 chars, frozen per session and

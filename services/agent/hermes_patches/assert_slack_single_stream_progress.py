@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 
@@ -22,8 +23,74 @@ def main(root: Path) -> None:
     slack_source = (
         root / "plugins" / "platforms" / "slack" / "adapter.py"
     ).read_text(encoding="utf-8")
+    run_source = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+    base_source = (root / "gateway" / "platforms" / "base.py").read_text(
+        encoding="utf-8"
+    )
+    slash_source = (root / "gateway" / "slash_commands.py").read_text(
+        encoding="utf-8"
+    )
+    approval_source = (root / "tools" / "approval.py").read_text(
+        encoding="utf-8"
+    )
     assert "draft_stream_is_message = True" in slack_source
     assert 'initial_stream_ack = "On it' in slack_source
+    assert 'self._app.event("agent_session_stopped")' in slack_source
+    assert "gateway_run_generation" in slack_source
+    assert "agents.sessions.setStatus" in slack_source
+    assert "_finalized_streams" in slack_source
+    assert "_uncertain_stream_starts" in slack_source
+    assert "require_completion=True" in slack_source
+    assert "_pending_agent_stop_tasks" in slack_source
+    assert "_confirmed_agent_stop_workers" in slack_source
+    assert "append_attempted = False" in slack_source
+    assert "if append_attempted:" in slack_source
+    assert "thread_active = [" in slack_source
+    assert "if stopped_ts and thread_active and not candidates:" in slack_source
+    assert "if finalized_match:" in slack_source
+    assert "_slack_safe_stream_failure" in run_source
+    assert "HLT_MANAGED_MODEL_ROUTE" in run_source
+    assert "_register_managed_turn_control" in run_source
+    assert "_prime_managed_slack_turn_stream" in run_source
+    assert "_finish_managed_slack_admission_failure" in run_source
+    assert "_request_and_confirm_managed_turn_stop" in run_source
+    assert "managed_turn_control: Optional[Dict[str, Any]] = None" in run_source
+    assert "if not _managed_slack_stream:" in run_source
+    assert 'model = "gpt-5.6-sol"' in run_source
+    assert 'provider = "xai-oauth"' in run_source
+    assert 'model = "grok-4.6"' in run_source
+    assert "def _managed_fallback_chain()" in run_source
+    assert "_publish_managed_slack_stream_progress" in run_source
+    assert run_source.count("await self._send_slack_lifecycle_notice(") == 5
+    assert "_should_send_trailing_runtime_footer" in run_source
+    assert "_managed_slack_status_progress_message" in run_source
+    assert "HLT_MANAGED_MODEL_ROUTE" in slash_source
+    assert "require_completion: bool = False" in base_source
+    assert "return cancellation_confirmed" in base_source
+    assert "_EXTERNAL_WRITE_PATTERNS" in approval_source
+    assert "send data to an external service (curl)" in approval_source
+    assert "def _managed_execute_code_effect" in approval_source
+    assert 'pattern_key = f"execute_code:{effect_kind}"' in approval_source
+    # The sole acknowledgement stream opens immediately after admission,
+    # before even session/history lookup or attachment preprocessing. The
+    # exact executor worker is then published so Stop can wait for real work,
+    # not merely its asyncio wrapper.
+    handle_start = run_source.index("async def _handle_message_with_agent")
+    prime_at = run_source.index(
+        "consumer = await self._prime_managed_slack_turn_stream(",
+        handle_start,
+    )
+    session_lookup_at = run_source.index("# Get or create session", prime_at)
+    assert prime_at < session_lookup_at
+    worker_stop_at = slack_source.index("worker_stopped = await confirm_worker_stop(")
+    wrapper_stop_at = slack_source.index(
+        "cancellation_completed = await self.cancel_session_processing(",
+        worker_stop_at,
+    )
+    invalidate_at = slack_source.index(
+        "await runner._interrupt_and_clear_session(", wrapper_stop_at
+    )
+    assert worker_stop_at < wrapper_stop_at < invalidate_at
 
     class RecordingStreamAdapter(BasePlatformAdapter):
         draft_stream_is_message = True
@@ -88,8 +155,21 @@ def main(root: Path) -> None:
             metadata={"thread_id": "1787140000.000100"},
             initial_reply_to_id="1787140000.000100",
         )
+        # Provider selection is deliberately still blocked while the admitted
+        # Slack turn gets its first visible chunk. The threshold matches the
+        # human-facing two-second contract without performing model inference.
+        provider = asyncio.create_task(asyncio.sleep(3))
+        started = time.monotonic()
+        await consumer.prime()
+        assert time.monotonic() - started < 2
+        assert not provider.done()
+        provider.cancel()
+        try:
+            await provider
+        except asyncio.CancelledError:
+            pass
+
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
         consumer.on_commentary("Checking the current Drive assets and site.")
         await asyncio.sleep(0.05)
         consumer.on_delta("The package is ready for staged review.")

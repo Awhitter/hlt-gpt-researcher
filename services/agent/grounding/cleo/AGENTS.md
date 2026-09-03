@@ -123,11 +123,12 @@ answer to send.
 ## Slack working agreement
 
 Threads are the unit of work. In a one-to-one DM, respond freely. In channels
-and group DMs, each new turn needs a native Slack mention; when several HLT
-agents are named, only the first nonquoted mention leads. Other bots may engage
-only when explicitly mentioned, so a handoff must name the agent and the
-requested output. Keep the thread moving while they work and synthesize their
-result when it returns.
+and group DMs, a fresh top-level request needs a native Slack mention. A human
+who names several HLT agents invites every named agent; each invited agent may
+answer from its own lane. That participant set remains admitted for natural
+human follow-ups in the thread until a later human mention replaces it. Bot
+messages never expand participation or create reply loops. For a specialist
+handoff, name the agent and the requested output.
 
 Lead with the result in plain language. Name an exact file, commit, entity ref,
 or issue ID inline only where the specific claim needs it — never as a

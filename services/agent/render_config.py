@@ -10,9 +10,9 @@ Secrets are written as ``${VAR}`` references rather than literal values —
 Hermes expands them at load time, so the persistent Render disk never holds a
 token in plaintext.
 
-The security posture here is deliberate and is the reason this file is long.
-These agents are reachable by a whole Slack workspace AND read untrusted web pages.
-Those two facts together make the upstream defaults unsafe: see SLACK_TOOLSETS.
+The teammate posture here is deliberate: broad practical capability, natural
+Slack participation, and one execution-time approval boundary for outward or
+irreversible effects. See SLACK_TOOLSETS and the hlt-k2-context effect policy.
 """
 
 from __future__ import annotations
@@ -28,13 +28,13 @@ import yaml
 # human, so we leave it alone rather than overwriting their work on next boot.
 GENERATED_BY = "hlt-render-boot"
 HOST_RUNTIME_CONTRACT_VERSION = "cleo-hermes-host.v2"
-K2_CONTEXT_PLUGIN_VERSION = "1.5.0"
+K2_CONTEXT_PLUGIN_VERSION = "1.6.0"
 
 # Cleo's primary route is the managed Codex credential pool. Hermes rotates
 # pool entries before advancing to the provider fallback, so subscription
 # capacity is shared without copying credentials into this config. Grok 4.6 is
-# the one independent recovery route. ``HERMES_INFERENCE_PROVIDER`` remains an
-# explicit operator override for a deliberate cutover.
+# the one independent recovery route. Environment aliases cannot silently put
+# a weaker or unreviewed model in front of teammates.
 DEFAULT_PROVIDER = "openai-codex"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_MAX_TOKENS = 32_768
@@ -60,11 +60,6 @@ DEFAULT_MCP_RESULT_SIZE_CHARS = 16_000
 DEFAULT_TOOL_SEARCH_LIMIT = 3
 MAX_TOOL_SEARCH_LIMIT = 8
 TOOL_LISTING_MAX_TOKENS = 2_000
-PROVIDER_DEFAULT_MODELS: dict[str, str] = {
-    "xai-oauth": "grok-4.6",
-    "openai-codex": DEFAULT_MODEL,
-}
-
 # Recovery order, not a second policy engine. Hermes walks this list only when
 # the active route fails after its bounded retry. Every entry is a real model
 # id from the provider's current catalog; provider-only strings are not a valid
@@ -91,38 +86,22 @@ AGENT_REFS: dict[str, str] = {"cleo": "agent:cleo"}
 # a made-up ``runtimeLane`` parameter.
 AGENT_RUNTIME_LANES: dict[str, str] = {"cleo": "hermes", "brian": "hermes"}
 
-# THE most important setting in this file.
-#
-# Upstream's default Slack toolset is `hermes-slack`, whose own description is
-# "full access for workspace use" and which resolves to _HERMES_CORE_TOOLS —
-# terminal, execute_code, write_file, patch, cronjob, computer_use, browser_cdp.
-# Left at the default, anyone who can @mention the agent in Slack gets arbitrary
-# code execution on this container.
-#
-# These agents additionally read untrusted third-party web pages, so shell
-# access would make one a textbook confused deputy: a hostile page talks the
-# model into running a command. Upstream constrains its own webhook toolset for
-# exactly this reason.
-#
-# Excluded on purpose: terminal, execute_code, cronjob, computer_use, browser,
-# and `file` (there is no read-only variant — it grants write_file and patch).
-#
-# `cronjob` stays out even though it is tempting for the weekly brief: a
-# scheduled job runs UNATTENDED with the agent's whole toolset, so anyone who
-# can @mention her could leave something running that files Linear issues with
-# nobody watching. Schedule briefs from the operator side instead.
-#
-# `delegation` is in, and it is safe here for a specific reason —
-# `tools/delegate_tool.py`: "Subagents inherit the parent's toolsets", with
-# child-blocked tools and `delegation` itself stripped. A child therefore gets
-# THIS narrow list, not the full CLI toolset, so it is not an escape hatch.
-# Verify that still holds before trusting it after an upstream bump.
-#
-# `search` was dropped as redundant: it is web_search alone, and `web` already
-# bundles web_search + web_extract.
+# Slack teammates get the same practical workbench Cleo needs to finish real
+# missions: source reads, files, code, browser/computer work, and schedules.
+# Capability is not permission for every effect. The hlt-k2-context
+# ``pre_tool_call`` hook applies one execution-time policy: research, drafts,
+# staging, and reversible internal configuration continue automatically;
+# external send/publish/delete/spend, credential rotation, and access grants
+# pause at Hermes' native approval surface.
 SLACK_TOOLSETS: tuple[str, ...] = (
     "web",
     "vision",
+    "terminal",
+    "file",
+    "browser",
+    "computer_use",
+    "cronjob",
+    "code_execution",
     "skills",
     "todo",
     "memory",
@@ -296,11 +275,9 @@ def fallback_providers(
 ) -> list[dict[str, str]]:
     """Return the reviewed recovery ladder with no environment expansion.
 
-    The primary provider remains an intentional operator cutover, but recovery
-    is a code-reviewed reliability contract rather than another mutable flag.
-    Removing the active primary prevents a loop when the operator deliberately
-    cuts over to Grok. No environment value can add Kimi, Qwen, DeepSeek,
-    OpenRouter, or an unproved paid route behind the readiness gate.
+    Primary and recovery are a code-reviewed reliability contract rather than
+    mutable environment flags. No environment value can add Kimi, Qwen,
+    DeepSeek, OpenRouter, or an unproved paid route behind the readiness gate.
     """
     del env
     primary = (primary_provider.strip().lower(), primary_model.strip().lower())
@@ -409,9 +386,9 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
         # everyone but a named list — so DMs and channels are opened explicitly
         # here, and GATEWAY_ALLOW_ALL_USERS carries the matching env opt-in.
         #
-        # This is only safe because the toolset above is locked to read-only
-        # research tools and privileged slash commands are admin-gated. Do not
-        # open these without both.
+        # Effect approvals happen at execution rather than by hiding the
+        # workbench from teammates. Privileged slash commands remain
+        # admin-gated independently.
         "dm_policy": "open",
         "group_policy": "open",
         # Real Block Kit: section headers, native tables, nested lists.
@@ -429,13 +406,11 @@ def build_platforms(env: Mapping[str, str]) -> dict[str, Any]:
         # "is thinking...", which says nothing about a bot that may be doing a
         # multi-minute read across five repos.
         "typing_status_text": "is digging through the estate…",
-        # "none" ignores every bot; "mentions" accepts a bot message only when
-        # that message itself @mentions her. Agents posting on a human's behalf
-        # (the Claude Slack app, other HLT bots) carry an app id and are
-        # otherwise dropped in silence — which is exactly what made her look
-        # dead during setup while she was working fine. "mentions" is upstream's
-        # documented safest bot-to-bot mode: it cannot loop, because a reply
-        # without an explicit mention is still ignored.
+        # Keep upstream's mention event visible long enough for the HLT
+        # pre-dispatch hook to classify it. The hook then suppresses every
+        # bot-authored turn: bots cannot recruit participants, transfer thread
+        # ownership, or trigger a reply loop. Human-authored explicit mentions
+        # and human follow-ups are the only participant inputs.
         "allow_bots": "mentions",
     }
     admins = _csv(env, "SLACK_ADMIN_USERS")
@@ -509,12 +484,16 @@ def build_config(
     registry_ref = agent_ref(env)
     host_runtime_lane = runtime_lane(env)
     runtime_hint = (
-        "You run as a hosted Slack bot on Render without direct shell, file "
-        "writes, or browser control. Reach the estate and hosted artifact tools "
-        f"through MCP and K2. Your runtime lane is {host_runtime_lane}. Long work "
-        "is fine; acknowledge immediately, keep meaningful progress in the one "
-        "native evolving Slack stream, and complete that same stream with the "
-        "finished answer."
+        "You run as a capable hosted Slack teammate on Render with terminal, "
+        "file, browser, computer, schedule, MCP, and K2 tools. Reads, research, "
+        "drafts, staging, and reversible internal configuration proceed "
+        "automatically; ask at the moment of any external send, publish, delete, "
+        "spend, credential rotation, or access grant. "
+        f"Your runtime lane is {host_runtime_lane}. Long work is fine; open one "
+        "native evolving Slack stream immediately, acknowledge in its first "
+        "chunk, add useful human-readable progress there as often as warranted, "
+        "and seal that same stream once with the finished answer. Never expose "
+        "raw tool, command, path, provider, or retry narration."
     )
     if registry_ref:
         runtime_hint += (
@@ -527,18 +506,8 @@ def build_config(
             "and load one full body only when the task actually needs it."
         )
 
-    model_provider = (
-        _clean(env, "HERMES_INFERENCE_PROVIDER") or DEFAULT_PROVIDER
-    ).lower()
-    model_name = _clean(env, "HERMES_MODEL")
-    if not model_name and model_provider == "openrouter":
-        model_name = _clean(env, "OPENROUTER_MODEL")
-    model_name = model_name or PROVIDER_DEFAULT_MODELS.get(model_provider)
-    if not model_name:
-        raise ValueError(
-            "HERMES_MODEL is required when HERMES_INFERENCE_PROVIDER has no "
-            "reviewed default"
-        )
+    model_provider = DEFAULT_PROVIDER
+    model_name = DEFAULT_MODEL
 
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
@@ -561,11 +530,15 @@ def build_config(
             # Default 180s posts "still working" into a shared channel every
             # three minutes.
             "gateway_notify_interval": 900,
+            # The upstream inactivity warning is a separate permanent message
+            # containing tool/config diagnostics. Native Slack progress already
+            # lives in the one evolving stream, so disable that second bubble.
+            "gateway_timeout_warning": 0,
             # Fast failover to the fallback provider rather than slow retries.
             "api_max_retries": 1,
             # High is the pinned Hermes recommendation for Codex-backed Slack:
             # xhigh can consume the turn in hidden thought without visible text.
-            # The chosen xAI/OpenAI/OpenRouter routes all support high.
+            # Both reviewed Sol and Grok routes support high.
             "reasoning_effort": "high",
             "environment_hint": runtime_hint,
         },
@@ -597,10 +570,10 @@ def build_config(
                     # acknowledgement, carries meaningful commentary, and is
                     # sealed exactly once with the final response.
                     "streaming": True,
-                    # Pinned Hermes supports full|verb|off here. `verb` keeps
-                    # a useful live cue without leaking arguments, filenames,
-                    # commands, or other tool detail into a shared channel.
-                    "live_status": "verb",
+                    # Progress comes from concise phase=commentary chunks in
+                    # the same native stream. Tool lifecycle verbs are kept
+                    # off so internal tool names never become presentation.
+                    "live_status": "off",
                     "tool_progress": "off",
                     "interim_assistant_messages": True,
                     "long_running_notifications": False,
@@ -615,7 +588,7 @@ def build_config(
         # must not be able to ask. Upstream already defaults to deny; pinning it
         # means a future default flip cannot quietly hand an unattended job the
         # ability to approve its own dangerous call.
-        "approvals": {"cron_mode": "deny"},
+        "approvals": {"mode": "manual", "cron_mode": "deny"},
         # Upstream default is `edge`, and having ELEVENLABS_API_KEY set is
         # deliberately NOT enough — "Inference credentials do not imply consent
         # to paid speech generation" (tools/tts_tool.py). So the tool gate

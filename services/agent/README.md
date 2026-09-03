@@ -36,7 +36,8 @@ reports the reversible retirement state of the old recurring briefs.
 3. asks canonical Katailyst2 for the bearer-bound `agent:cleo` runtime pack,
    installs that pack into Hermes' real prompt files only when it is active,
    and proves the independent async mission-time Well door,
-4. selects one addressed HLT Slack agent before Hermes can type or call a model,
+4. resolves the exact human-invited HLT agent participant set before Hermes can
+   type or call a model,
 5. supervises `hermes gateway` as a child when `AGENT_ENABLE_GATEWAY=1`,
 6. serves operator health plus authenticated K2 activation/dispatch routes on
    `$PORT`.
@@ -46,22 +47,20 @@ Mode**, an outbound WebSocket. It never binds a port. Render runs this as a *web
 service* with a health check, so if `hermes gateway` were the main process
 nothing would answer on `$PORT` and every deploy would roll back.
 
-## Security posture — read before widening anything
+## Capability and effect boundary
 
-Upstream's default Slack toolset is `hermes-slack`, whose own description is
-*"full access for workspace use"*: `terminal`, `execute_code`, `write_file`,
-`patch`, `cronjob`, `computer_use`, `browser_cdp`. Left at that default, anyone
-who can @mention the agent gets arbitrary code execution on this container.
+Slack agents receive the practical workbench required to finish real missions:
+web and vision, files and code, browser/computer work, schedules, delegation,
+media, and progressively discovered MCP/K2 tools. Access to a capable tool is
+not itself a reason to stop. Reads, research, reasoning, drafts, staging, and
+reversible internal configuration proceed automatically.
 
-These agents also read untrusted third-party web pages. Shell access plus untrusted
-input is a confused deputy: a hostile page talks the model into running a
-command. Upstream constrains its own webhook toolset for exactly this reason.
-
-So `render_config.SLACK_TOOLSETS` pins a narrow list — web, search, vision,
-skills, todo, memory, session_search, clarify — and
-`tests/test_agent_boot.py::test_slack_toolset_excludes_host_access` fails the
-build if a host-access tool creeps back in. **Do not widen it without reading
-that test.**
+The `hlt-k2-context` pre-tool hook applies one shared effect contract. It asks
+at external send/publish, paid generation, deletion, credential/access changes,
+and protected production changes. AgentMail identity is resolved per agent;
+reads and draft work remain automatic while send/reply/forward/schedule cross
+the approval boundary. Browser/computer observation stays automatic and
+effectful input is classified at execution time.
 
 Two env vars matter as much as the toolset:
 
@@ -79,7 +78,7 @@ Two env vars matter as much as the toolset:
 |---|---|---|
 | Katailyst2 `agents.runtime_pack` for `agent:cleo` | active identity, doctrine, proclivities, bindings and policies | canonical brain, resolved for `paperclip_hermes` with the agent-bound token |
 | [`grounding/cleo/SOUL.md`](./grounding/cleo/SOUL.md) + bundled AGENTS files | reviewed snapshot | used only during a declared K2 service/transport outage, never for a missing agent or bad token |
-| `hlt-k2-context` Hermes plugin | choose one Slack lead, then start one durable `katailyst.well.start` draw for each substantive turn and hand its exact `get` handle to the model without waiting | lead decisions are private local receipts; compact registry search is the fallback for an incomplete Well tool surface; injected mission context is ephemeral and never persisted into transcript or memory |
+| `hlt-k2-context` Hermes plugin | resolve the exact human-invited Slack participant set, then start one durable `katailyst.well.start` draw for each substantive turn and hand its exact `get` handle to the model without waiting | participation decisions are private local receipts; compact registry search is the fallback for an incomplete Well tool surface; injected mission context is ephemeral and never persisted into transcript or memory |
 | `$HERMES_HOME/memories/MEMORY.md` | genuinely learned deltas | agent-written, approval-gated, ~2200 chars |
 
 Cleo's durable registry identity is the unversioned `agent:cleo`; K2 owns the
@@ -110,14 +109,11 @@ leave your file alone and say so in `/health`.
 |-----|---------|
 | ChatGPT subscription OAuth | Primary GPT-5.6 Sol credentials. Readiness requires at least three present and selectable `openai-codex` profiles; Hermes rotates the pool before falling back. |
 | SuperGrok / Premium+ OAuth | The one independent Grok 4.6 recovery route, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
-| `OPENROUTER_API_KEY` | Available only for a deliberate exact provider/model override; never part of Cleo's agentic recovery ladder |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
 | `SLACK_ADMIN_USERS` | CSV Slack user IDs allowed privileged slash commands |
 | `SLACK_ALLOWED_CHANNELS` | CSV channel allowlist |
-| `HERMES_INFERENCE_PROVIDER` | Provider override; default `openai-codex` |
-| `HERMES_MODEL` | Model override; default `gpt-5.6-sol` |
 | `FIRECRAWL_API_KEY` | Selects Firecrawl for Hermes web search; the image bakes the matching SDK extra |
 | `WEB_SEARCH_BACKEND` | Explicit Hermes web backend override; keyless default is DDGS |
 | `GPTR_MCP_URL` / `GPTR_MCP_TOKEN` | Hosted researcher MCP |
@@ -254,11 +250,12 @@ turn-final answer seals it exactly once. Raw tool progress, commands, paths,
 provider warnings, logs, and private reasoning remain off. The model does not
 use a Slack send tool to duplicate its own response.
 
-The checked-in manifest uses Slack's current Agent View. Pinned Hermes handles
-`app_home_opened`, `app_context_changed`, the active-view context, and
-threadless suggested prompts. Agent Sessions and their native Stop event are a
-newer Slack lifecycle that this Hermes pin does not implement, so the manifest
-does not subscribe to them. Native task cards remain off by default because
+The checked-in manifest uses Slack's current Agent View and Agent Sessions.
+Pinned Hermes handles `app_home_opened`, `app_context_changed`, active-view
+context, threadless suggested prompts, and `agent_session_stopped`. Stop first
+confirms the exact model/tool task has ended, then suppresses every late frame
+and returns the native session to active without another message. Native task
+cards remain off by default because
 ordinary work belongs in the one response stream; they are reserved for
 genuinely structured multi-step work after a focused lifecycle proof. The Home
 tab also remains disabled because this runtime does not publish a Home view.
@@ -293,9 +290,9 @@ available for deeper custom behavior analysis, but do not reconstruct the
 standard readout from it when the governed tool reports a gap.
 
 An MCP result over 16,000 characters is kept in full under Hermes' durable
-spillover store and replaced in the prompt by a short preview. The restricted
-Slack surface can page that exact saved result with a session-bound
-`read_spillover` byte cursor; it never receives the general file/write toolset,
+spillover store and replaced in the prompt by a short preview. Slack can page
+that exact saved result with a session-bound `read_spillover` byte cursor; the
+cursor prevents a giant tool payload from crowding out the original request,
 and the external API hook never receives the reader.
 `/health.config.mcp_result_size_chars` and `/health.config.tool_search` expose
 the deployed limits. Automatic Hermes background review is disabled for this
@@ -307,9 +304,8 @@ require a fresh native Slack mention; every explicitly named Victoria, Lila,
 Julius, or Cleo is invited to answer, while unmentioned agents stay silent. The
 human-invited participant set remains admitted for ordinary unmentioned human
 follow-ups in that thread. A later explicit human mention replaces and may
-narrow the set. Bot replies never inherit or expand participation, and a
-bot-to-bot handoff works only when a recognized peer explicitly mentions its
-target. Edits never reopen the choice. A
+narrow the set. Bot-authored replies never inherit, replace, or expand human
+participation—even if they mention another agent. Edits never reopen the choice. A
 hash-pinned local roster is the bounded v1 fallback until K2 publishes a typed
 roster projection. Every decision is written privately to
 `$HERMES_HOME/slack-agent-lead.sqlite3` as
@@ -363,7 +359,8 @@ cannot substitute for it.
    starters, switch views once to exercise `app_context_changed`, and send one
    real read-only task. Expect an immediate acknowledgement, meaningful updates
    inside one evolving native stream, and the polished final sealing that same
-   stream. Do not treat native Stop as available at this Hermes pin.
+   stream. Press Stop during a second task and require confirmed cancellation
+   with no later output.
 
 Official references: [Agent View and Agent Sessions](https://docs.slack.dev/changelog/2026/08/20/agent-updates/),
 [app manifest fields](https://docs.slack.dev/reference/app-manifest/), and

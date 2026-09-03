@@ -12,6 +12,10 @@ WORKDIR /app
 # imported by patched upstream code, so make its application directory part of
 # every Python process' import path rather than only the build-time assertions.
 ENV PYTHONPATH=/app
+# This HLT image owns one reviewed model ladder. The upstream overlay uses the
+# marker to ignore durable /model and channel overrides: Sol through the
+# managed Codex profile pool, then authenticated Grok 4.6 only.
+ENV HLT_MANAGED_MODEL_ROUTE=1
 
 # Hermes agent from upstream WITH every extra this agent actually uses.
 # Upstream ships these as OPTIONAL extras, and every one of them fails the
@@ -65,6 +69,8 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes apply /tmp/hermes-patches/progressive_tool_result_compaction.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/platform_turn_budget.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/platform_turn_budget.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \

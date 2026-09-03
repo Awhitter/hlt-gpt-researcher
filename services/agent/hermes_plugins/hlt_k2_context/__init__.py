@@ -20,6 +20,7 @@ from .runtime_context import (
 )
 from .slack_agent_lead import (
     ROSTER_NONPARTICIPANT_REFS,
+    is_human_authored_message,
     load_fallback_roster,
     select_slack_agent_lead,
 )
@@ -31,6 +32,7 @@ SPILLOVER_DEFAULT_PAGE_CHARS = 8_000
 SPILLOVER_MAX_PAGE_CHARS = 12_000
 _SAFE_SPILLOVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,220}\.txt")
 SLACK_TOOL_ROUND_LIMIT = 5
+EFFECT_POLICY_VERSION = "agent_effect_policy.v1"
 _TOOL_BUDGET_TTL_SECONDS = 60 * 60
 _TOOL_BUDGET_MAX_TURNS = 256
 _TOOL_BUDGET_LOCK = threading.Lock()
@@ -40,6 +42,312 @@ _TOOL_BUDGET_BLOCK_MESSAGE = (
     "Do not call another tool in this turn. Return one useful final answer now "
     "from the evidence already collected, and label any missing value unknown."
 )
+
+_EFFECT_APPROVAL_WORDS = frozenset(
+    {
+        "send",
+        "sent",
+        "postmessage",
+        "sendmessage",
+        "deliver",
+        "upload",
+        "share",
+        "publish",
+        "published",
+        "delete",
+        "destroy",
+        "purchase",
+        "buy",
+        "charge",
+        "spend",
+        "rotate",
+        "revoke",
+        "grant",
+        "invite",
+    }
+)
+_EFFECT_ARGUMENT_KEYS = frozenset(
+    {"action", "operation", "method", "verb", "tool", "toolref", "target", "label"}
+)
+_EFFECT_OPERATION_KEYS = frozenset({"action", "operation", "method", "verb"})
+_COMPUTER_READ_ONLY_ACTIONS = frozenset(
+    {"capture", "wait", "listapps", "listwindows"}
+)
+_COMPUTER_MUTATING_ACTIONS = frozenset(
+    {
+        "click",
+        "doubleclick",
+        "rightclick",
+        "middleclick",
+        "drag",
+        "scroll",
+        "type",
+        "key",
+        "setvalue",
+        "focusapp",
+    }
+)
+_SHELL_EFFECT_RE = re.compile(
+    r"(?:\brm\b|\bgit\b[^\n;&|]*\bpush\b|\bgh\b[^\n;&|]*\bpr\b[^\n;&|]*\bmerge\b|"
+    r"\bgh\b[^\n;&|]*\bapi\b[^\n;&|]*(?:--method|-X)\s*(?:POST|PUT|PATCH|DELETE)\b|"
+    r"\bcurl\b[^\n]*(?:--request|-X)\s*(?:POST|PUT|PATCH|DELETE)\b|"
+    r"\bdoppler\b[^\n]*(?:set|delete|rotate)\b)",
+    re.IGNORECASE,
+)
+_NETWORK_SEND_RE = re.compile(
+    r"(?:\bcurl\b[^\n;&|]*(?:"
+    r"\s(?:-d|-F|-T)(?:\s|=|[^\s]*)|"
+    r"\s--(?:data(?:-[a-z-]+)?|form(?:-[a-z-]+)?|json|upload-file)(?:\s|=))|"
+    r"\bwget\b[^\n;&|]*\s--(?:post-data|post-file|body-data|body-file)(?:\s|=)|"
+    r"\bwget\b[^\n;&|]*\s--method(?:\s|=)(?:POST|PUT|PATCH|DELETE)\b)",
+)
+_GH_PUBLISH_RE = re.compile(
+    r"\bgh\b[^\n;&|]*\b(?:issue|pr|release)\b[^\n;&|]*\bcreate\b",
+    re.IGNORECASE,
+)
+_GH_SEND_RE = re.compile(
+    r"\bgh\b[^\n;&|]*\b(?:issue|pr)\b[^\n;&|]*\b(?:comment|review)\b",
+    re.IGNORECASE,
+)
+_PRODUCTION_COMMAND_RE = re.compile(
+    r"(?:\bvercel\b[^\n;&|]*\bdeploy\b|\brender\b[^\n;&|]*\bdeploy\b|"
+    r"\b(?:npm|pnpm)\b[^\n;&|]*\bpublish\b|"
+    r"\bkubectl\b[^\n;&|]*\b(?:apply|delete|rollout)\b|"
+    r"\b(?:fly|railway|heroku)\b[^\n]*(?:deploy|up|release|promote)\b)",
+    re.IGNORECASE,
+)
+
+_AGENTMAIL_READ_ACTIONS = frozenset(
+    {
+        "status",
+        "authme",
+        "listinboxes",
+        "listmessages",
+        "searchmessages",
+        "getmessage",
+        "listthreads",
+        "searchthreads",
+        "getthread",
+        "getattachment",
+        "listdrafts",
+        "getdraft",
+    }
+)
+_AGENTMAIL_DRAFT_ACTIONS = frozenset({"createdraft", "updatedraft"})
+_AGENTMAIL_REVERSIBLE_ACTIONS = frozenset(
+    {"updatemessagelabels", "updatethreadlabels", "unscheduledraft"}
+)
+_AGENTMAIL_SEND_ACTIONS = frozenset(
+    {"scheduledraft", "senddraft", "send", "reply", "forward"}
+)
+
+
+def _effect_words(value: Any) -> set[str]:
+    return {
+        word
+        for word in re.split(r"[^a-z0-9]+", str(value or "").lower())
+        if word
+    }
+
+
+def effect_policy_decision(tool_name: str, args: Any = None) -> dict[str, str] | None:
+    """Require approval for the effect, not for access to a capable tool.
+
+    Reads, research, drafts, staging, file/code work, and reversible internal
+    configuration remain automatic. The decision is intentionally based on
+    the concrete tool plus its requested operation so K2 discovery or an
+    AgentMail draft cannot be mistaken for an external send.
+    """
+    normalized_tool = str(tool_name or "").strip().lower()
+    values = args if isinstance(args, Mapping) else {}
+    tool_words = _effect_words(normalized_tool)
+
+    action_words: set[str] = set()
+    operation_words: set[str] = set()
+    operation_names: set[str] = set()
+    for key, value in values.items():
+        normalized_key = str(key).lower()
+        if normalized_key in _EFFECT_ARGUMENT_KEYS and isinstance(
+            value, (str, int, float, bool)
+        ):
+            action_words.update(_effect_words(value))
+            if normalized_key in _EFFECT_OPERATION_KEYS:
+                operation_words.update(_effect_words(value))
+                operation_names.add(re.sub(r"[^a-z0-9]", "", str(value).lower()))
+    # Progressive K2 execution carries the real provider tool and operation in
+    # nested arguments. Inspect only action/identity fields, never free-form
+    # prompt prose ("draft an email to send later" is still just a draft).
+    nested = values.get("args")
+    if isinstance(nested, Mapping):
+        for key, value in nested.items():
+            normalized_key = str(key).lower()
+            if normalized_key in _EFFECT_ARGUMENT_KEYS and isinstance(
+                value, (str, int, float, bool)
+            ):
+                action_words.update(_effect_words(value))
+                if normalized_key in _EFFECT_OPERATION_KEYS:
+                    operation_words.update(_effect_words(value))
+                    operation_names.add(
+                        re.sub(r"[^a-z0-9]", "", str(value).lower())
+                    )
+
+    category = ""
+    risky_words = (tool_words | action_words) & _EFFECT_APPROVAL_WORDS
+    if risky_words:
+        if risky_words & {
+            "send",
+            "sent",
+            "postmessage",
+            "sendmessage",
+            "deliver",
+            "upload",
+            "share",
+        }:
+            category = "external_send"
+        elif risky_words & {"publish", "published"}:
+            category = "external_publish"
+        elif risky_words & {"delete", "destroy"}:
+            category = "delete"
+        elif risky_words & {"purchase", "buy", "charge", "spend"}:
+            category = "spend"
+        elif risky_words & {"rotate", "revoke"}:
+            category = "credential_change"
+        elif risky_words & {"grant", "invite"}:
+            category = "access_grant"
+
+    if normalized_tool in {
+        "image_generate",
+        "video_generate",
+        "text_to_speech",
+        "tts",
+    }:
+        category = "spend"
+
+    agentmail_seam = "agentmail" in tool_words or "agentmail" in action_words
+    if agentmail_seam:
+        agentmail_actions = set(operation_names)
+        compact_tool = re.sub(r"[^a-z0-9]", "", normalized_tool)
+        # Direct MCP tools encode the operation in their registered name;
+        # governed K2 execution carries it in args.action/operation.
+        direct_action_aliases = {
+            "status": "status",
+            "authme": "authme",
+            "inboxeslist": "listinboxes",
+            "messageslist": "listmessages",
+            "messagessearch": "searchmessages",
+            "messagesget": "getmessage",
+            "messagesupdatelabels": "updatemessagelabels",
+            "threadslist": "listthreads",
+            "threadssearch": "searchthreads",
+            "threadsget": "getthread",
+            "threadsupdatelabels": "updatethreadlabels",
+            "attachmentsget": "getattachment",
+            "draftslist": "listdrafts",
+            "draftsget": "getdraft",
+            "draftscreate": "createdraft",
+            "draftsupdate": "updatedraft",
+            "draftsdelete": "deletedraft",
+            "draftsschedule": "scheduledraft",
+            "draftsunschedule": "unscheduledraft",
+            "draftssend": "senddraft",
+            "messagesreply": "reply",
+            "messagesforward": "forward",
+            "messagessend": "send",
+        }
+        for suffix, canonical_action in direct_action_aliases.items():
+            if compact_tool.endswith(suffix):
+                agentmail_actions.add(canonical_action)
+        if agentmail_actions & _AGENTMAIL_SEND_ACTIONS:
+            category = "external_send"
+        elif "deletedraft" in agentmail_actions:
+            category = "delete"
+        elif agentmail_actions & (
+            _AGENTMAIL_READ_ACTIONS
+            | _AGENTMAIL_DRAFT_ACTIONS
+            | _AGENTMAIL_REVERSIBLE_ACTIONS
+        ):
+            # Reads, drafts, and reversible label/schedule state are automatic.
+            category = ""
+        elif agentmail_actions or agentmail_seam:
+            # Unknown AgentMail effects fail closed at this provider boundary;
+            # do not guess that a future verb is merely a draft.
+            category = "protected_production_change"
+    if normalized_tool == "cronjob":
+        if action_words & {"remove", "delete"}:
+            category = "delete"
+        elif action_words & {"create", "resume", "run", "trigger"}:
+            category = "spend"
+    if normalized_tool == "computer_use":
+        if operation_names & _COMPUTER_MUTATING_ACTIONS:
+            category = "protected_production_change"
+        elif operation_names and not operation_names.issubset(
+            _COMPUTER_READ_ONLY_ACTIONS
+        ):
+            # The computer tool's own contract treats every non-observational
+            # action as effectful. Unknown future actions therefore fail closed.
+            category = "protected_production_change"
+    if normalized_tool in {"browser_click", "browser_console"}:
+        category = "protected_production_change"
+    if normalized_tool == "browser_press":
+        pressed = _effect_words(values.get("key") or values.get("keys") or "")
+        observational_keys = {
+            "escape",
+            "esc",
+            "tab",
+            "shift",
+            "arrowup",
+            "arrowdown",
+            "arrowleft",
+            "arrowright",
+            "pageup",
+            "pagedown",
+            "home",
+            "end",
+        }
+        if pressed and not pressed.issubset(observational_keys):
+            category = "protected_production_change"
+    if normalized_tool in {"terminal", "execute_code", "code_execution"}:
+        command = str(values.get("command") or values.get("code") or "")
+        if _GH_PUBLISH_RE.search(command):
+            category = "external_publish"
+        elif _GH_SEND_RE.search(command) or _NETWORK_SEND_RE.search(command):
+            category = "external_send"
+        elif _PRODUCTION_COMMAND_RE.search(command) or _SHELL_EFFECT_RE.search(command):
+            category = "protected_production_change"
+
+    production_words = {"production", "prod", "live"}
+    change_words = {"deploy", "promote", "release"}
+    if (tool_words | action_words) & change_words and (
+        tool_words & {"vercel", "render", "deploy"}
+        or action_words & production_words
+    ):
+        category = "protected_production_change"
+
+    provider_effect_seam = (
+        "tool_execute_effect" in normalized_tool
+        or "tool.execute.effect" in normalized_tool
+    )
+    if provider_effect_seam and not category:
+        category = "protected_production_change"
+
+    if not category:
+        return None
+    labels = {
+        "external_send": "send this outside the working draft",
+        "external_publish": "publish this externally",
+        "delete": "delete data or configuration",
+        "spend": "start work that can create new spend",
+        "credential_change": "rotate or revoke a credential",
+        "access_grant": "grant another person or service access",
+        "protected_production_change": (
+            "make this protected or user-visible production change"
+        ),
+    }
+    return {
+        "action": "approve",
+        "message": f"Approval needed before Cleo can {labels[category]}.",
+        "rule_key": f"{EFFECT_POLICY_VERSION}:{category}",
+    }
 
 HOSTED_K2_CONTEXT = (
     "[Katailyst2 hosted mission — bounded handoff already supplied] "
@@ -94,13 +402,17 @@ def _start_slack_tool_budget(*, turn_id: str = "", session_id: str = "") -> None
 
 def _pre_tool_call(
     tool_name: str = "",
+    args: Any = None,
     session_id: str = "",
     turn_id: str = "",
     api_request_id: str = "",
     tool_call_id: str = "",
     **_: Any,
 ) -> dict[str, str] | None:
-    """Bound Slack tool rounds while preserving parallel calls in each round."""
+    """Apply effect approval, then bound Slack tool rounds."""
+    effect_decision = effect_policy_decision(tool_name, args)
+    if effect_decision is not None:
+        return effect_decision
     key = _tool_budget_key(turn_id=turn_id, session_id=session_id)
     round_id = str(api_request_id or tool_call_id or "").strip()
     if not key or not round_id:
@@ -130,12 +442,11 @@ def _pre_tool_call(
 def _read_spillover(args: Any = None, **context: Any) -> str:
     """Read one bounded page from a Hermes-owned persisted tool result.
 
-    Slack intentionally has no general file toolset because that also grants
-    writes. Oversized MCP results are nevertheless stored under
-    ``$HERMES_HOME/cache/spillover``. This narrow reader accepts only a saved
-    result's basename (or the exact path shown in ``persisted-output``), cannot
-    traverse elsewhere, requires the originating session, and never mutates
-    the file.
+    Oversized MCP results are stored under ``$HERMES_HOME/cache/spillover``.
+    This narrow reader lets the model page its own prior result without using
+    a new terminal/file round: it accepts only a saved result's basename (or
+    the exact path shown in ``persisted-output``), cannot traverse elsewhere,
+    requires the originating session, and never mutates the file.
     """
     values = args if isinstance(args, Mapping) else {}
     raw_handle = str(values.get("handle") or "").strip()
@@ -367,11 +678,9 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, Any] | None:
         return {"action": "skip", "reason": "lead_selection_unavailable"}
 
     try:
-        sender_user_id = str(raw_message.get("user") or "").strip().upper()
-        sender_is_agent = sender_user_id in roster.by_user_id
         if (
             decision.recognized_mentions
-            and not sender_is_agent
+            and is_human_authored_message(raw_message, roster)
             and decision.reason != "edited_message_frozen"
         ):
             # Every runtime observes the same explicit human invitation,

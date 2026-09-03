@@ -259,7 +259,7 @@ def test_explicit_slack_bot_shape_cannot_masquerade_as_an_app_relay(
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "unrecognized_bot_sender"
+    assert decision.reason == "bot_authored_message"
 
 
 def test_mpim_is_shared_and_requires_a_fresh_mention(lead):
@@ -450,7 +450,7 @@ def test_message_edits_never_reopen_lead_selection_even_in_a_dm(lead):
     assert decision.reason == "edited_message_frozen"
 
 
-def test_recognized_bot_peer_must_explicitly_mention_the_target(lead):
+def test_recognized_bot_peer_never_recruits_another_agent(lead):
     no_handoff = _decision(
         lead,
         _raw(
@@ -471,9 +471,9 @@ def test_recognized_bot_peer_must_explicitly_mention_the_target(lead):
     )
 
     assert no_handoff.action == "suppress"
-    assert no_handoff.reason == "peer_request_requires_mention"
-    assert handoff.action == "allow"
-    assert handoff.reason == "explicit_peer_request"
+    assert no_handoff.reason == "bot_authored_message"
+    assert handoff.action == "suppress"
+    assert handoff.reason == "bot_authored_message"
 
 
 def test_recognized_peer_user_id_stays_a_bot_without_raw_bot_markers(lead):
@@ -489,7 +489,7 @@ def test_recognized_peer_user_id_stays_a_bot_without_raw_bot_markers(lead):
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "peer_request_requires_mention"
+    assert decision.reason == "bot_authored_message"
 
 
 def test_unrecognized_bot_cannot_dispatch_even_when_it_mentions_cleo(lead):
@@ -504,7 +504,7 @@ def test_unrecognized_bot_cannot_dispatch_even_when_it_mentions_cleo(lead):
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "unrecognized_bot_sender"
+    assert decision.reason == "bot_authored_message"
 
 
 @pytest.mark.parametrize(
@@ -527,7 +527,7 @@ def test_adapter_resolved_markerless_bot_cannot_dispatch(
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "unrecognized_bot_sender"
+    assert decision.reason == "bot_authored_message"
 
 
 def test_app_event_without_a_human_user_cannot_dispatch_in_a_dm(lead):
@@ -544,7 +544,7 @@ def test_app_event_without_a_human_user_cannot_dispatch_in_a_dm(lead):
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "unrecognized_bot_sender"
+    assert decision.reason == "bot_authored_message"
 
 
 def test_unverified_app_event_with_a_user_still_fails_closed_in_a_dm(lead):
@@ -562,7 +562,7 @@ def test_unverified_app_event_with_a_user_still_fails_closed_in_a_dm(lead):
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "unrecognized_bot_sender"
+    assert decision.reason == "bot_authored_message"
 
 
 def test_app_event_cannot_spoof_a_human_by_adding_client_msg_id(lead):
@@ -580,7 +580,7 @@ def test_app_event_cannot_spoof_a_human_by_adding_client_msg_id(lead):
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == "unrecognized_bot_sender"
+    assert decision.reason == "bot_authored_message"
 
 
 def test_selector_is_pure_and_does_not_mutate_slack_payload(lead):
@@ -692,7 +692,18 @@ def test_multi_agent_invitation_keeps_every_invited_agent_conversational(
     assert plugin._pre_gateway_dispatch(event=followup) is None
 
 
-def test_peer_handoff_does_not_expand_the_human_participant_set(
+def test_repeated_human_mentions_form_one_exact_participant_set(lead):
+    raw = _raw(
+        "<@U0AHLTX283E> and <@U0BM3ULM210> — Victoria, <@U0AHLTX283E> lead"
+    )
+
+    assert lead.recognized_mentions(raw, lead.load_fallback_roster()) == (
+        "agent:victoria",
+        "agent:cleo",
+    )
+
+
+def test_bot_message_cannot_recruit_or_expand_the_human_participant_set(
     monkeypatch, tmp_path
 ):
     plugin = _load_plugin()
@@ -717,7 +728,10 @@ def test_peer_handoff_does_not_expand_the_human_participant_set(
             ts="1787141352.524009",
         )
     )
-    assert plugin._pre_gateway_dispatch(event=peer_handoff) is None
+    assert plugin._pre_gateway_dispatch(event=peer_handoff) == {
+        "action": "skip",
+        "reason": "bot_authored_message",
+    }
 
     ledger = plugin.SlackLeadLedger(tmp_path / "slack-agent-lead.sqlite3")
     assert ledger.thread_participants(
@@ -1015,6 +1029,13 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
         / "hermes_patches"
         / "assert_slack_single_stream_progress.py"
     ).read_text(encoding="utf-8")
+    lifecycle_patch = (
+        ROOT
+        / "services"
+        / "agent"
+        / "hermes_patches"
+        / "slack_native_agent_lifecycle_recovery.patch"
+    ).read_text(encoding="utf-8")
     failover_assertion = (
         ROOT
         / "services"
@@ -1024,7 +1045,7 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     ).read_text(encoding="utf-8")
 
     assert "- pre_gateway_dispatch" in manifest
-    assert manifest["version"] == "1.5.0"
+    assert "version: 1.6.0" in manifest
     assert "hermes_cli/plugins.py" in dockerfile
     assert "pre_gateway_dispatch skip" in dockerfile
     assert "ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile
@@ -1042,6 +1063,7 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     assert "slack_bare_transfer_full_context.patch" in dockerfile
     assert "quiet_slack_provider_failover.patch" in dockerfile
     assert "slack_single_stream_progress.patch" in dockerfile
+    assert "slack_native_agent_lifecycle_recovery.patch" in dockerfile
     assert "assert_provider_failover_request_contract.py /opt/hermes" in dockerfile
     assert "assert_slack_single_stream_progress.py /opt/hermes" in dockerfile
     assert "bare_agent_transfer" in bare_transfer_patch
@@ -1055,6 +1077,9 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     assert 'initial_stream_ack = "On it' in single_stream_patch
     assert "meaningful progress" in single_stream_patch
     assert "len(draft_ids) == 1" in single_stream_assertion
+    assert 'self._app.event("agent_session_stopped")' in lifecycle_patch
+    assert "await _early_consumer.prime()" in lifecycle_patch
+    assert "_finalized_streams" in lifecycle_patch
 
 
 def test_single_line_fence_does_not_swallow_the_mention_after_it(lead):

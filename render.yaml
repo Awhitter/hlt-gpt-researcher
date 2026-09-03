@@ -71,8 +71,6 @@ services:
         value: "8080"
       - key: HERMES_HOME
         value: /data/hermes
-      - key: OPENROUTER_API_KEY
-        sync: false
       # First-class web research backend. The Docker image bakes Hermes'
       # matching Firecrawl extra because lazy dependency installs are disabled.
       - key: FIRECRAWL_API_KEY
@@ -153,12 +151,4 @@ services:
       - key: FAL_KEY
         sync: false
       - key: ELEVENLABS_API_KEY
-        sync: false
-      # Optional Hermes provider override. Cleo defaults to the managed Codex
-      # profile pool; readiness requires three present/selectable profiles.
-      # Set another provider only for an intentional cutover.
-      - key: HERMES_INFERENCE_PROVIDER
-        sync: false
-      # Optional model override; defaults to gpt-5.6-sol on openai-codex.
-      - key: HERMES_MODEL
         sync: false

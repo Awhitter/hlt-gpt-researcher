@@ -62,31 +62,21 @@ FULL_ENV = {
 }
 
 
-# --- the security perimeter -------------------------------------------------
+# --- capable workbench + execution-time effect policy ----------------------
 
-# Upstream's `hermes-slack` preset resolves to _HERMES_CORE_TOOLS, which is
-# "full access for workspace use". Any of these reaching a Slack-reachable
-# research agent is a remote code execution path.
-FORBIDDEN_TOOLS = (
+CAPABLE_TOOLSETS = (
     "terminal",
-    "process",
-    "execute_code",
     "code_execution",
     "computer_use",
     "cronjob",
     "browser",
-    "file",  # grants write_file + patch; there is no read-only variant
-    "write_file",
-    "patch",
-    "skill_manage",
+    "file",
 )
 
 
-@pytest.mark.parametrize("tool", FORBIDDEN_TOOLS)
-def test_slack_toolset_excludes_host_access(tool):
-    assert tool not in render_config.SLACK_TOOLSETS, (
-        f"{tool} would give anyone who can @mention Brian host access"
-    )
+@pytest.mark.parametrize("toolset", CAPABLE_TOOLSETS)
+def test_slack_workbench_exposes_tools_needed_to_finish_real_work(toolset):
+    assert toolset in render_config.SLACK_TOOLSETS
 
 
 def test_slack_toolset_is_pinned_in_the_config_hermes_reads():
@@ -327,7 +317,7 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     assert summary["deploy_commit"] == "abc123"
     assert summary["hermes_upstream_ref"] == "upstream123"
     assert summary["host_runtime_contract_version"] == "cleo-hermes-host.v2"
-    assert summary["k2_context_plugin"]["version"] == "1.5.0"
+    assert summary["k2_context_plugin"]["version"] == "1.6.0"
 
 
 def test_product_work_skill_is_a_small_k2_activation_shim(tmp_path):
@@ -364,27 +354,29 @@ def test_every_declared_agent_has_a_soul(tmp_path):
         assert "shared" in summary["briefing_sections"]
 
 
-def test_model_override_precedence(tmp_path):
+def test_environment_cannot_override_the_reviewed_primary_route(tmp_path):
     assert render_config.render(env={}, home=tmp_path)["model"] == render_config.DEFAULT_MODEL
     env = {
         "HERMES_INFERENCE_PROVIDER": "openrouter",
         "HERMES_MODEL": "anthropic/claude-opus-5",
         "OPENROUTER_MODEL": "ignored/model",
     }
-    assert render_config.render(env=env, home=tmp_path)["model"] == "anthropic/claude-opus-5"
+    summary = render_config.render(env=env, home=tmp_path)
+    assert summary["model_provider"] == "openai-codex"
+    assert summary["model"] == "gpt-5.6-sol"
 
 
-def test_subscription_provider_is_default_but_can_be_overridden(tmp_path):
+def test_subscription_provider_and_model_are_the_pinned_primary(tmp_path):
     default = render_config.render(env={}, home=tmp_path)
     assert default["model_provider"] == "openai-codex"
     assert default["model"] == "gpt-5.6-sol"
     assert default["reasoning_effort"] == "high"
 
-    openrouter = render_config.build_config(
+    attempted_override = render_config.build_config(
         {"HERMES_INFERENCE_PROVIDER": "openrouter", "OPENROUTER_MODEL": "anthropic/claude-sonnet-5"}
     )
-    assert openrouter["model"]["provider"] == "openrouter"
-    assert openrouter["model"]["default"] == "anthropic/claude-sonnet-5"
+    assert attempted_override["model"]["provider"] == "openai-codex"
+    assert attempted_override["model"]["default"] == "gpt-5.6-sol"
 
 
 def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
@@ -447,7 +439,12 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
 
     assert manifest["display_information"]["name"] == "Cleo"
     assert "security hole" not in manifest["display_information"]["long_description"]
-    assert "one useful final response" in manifest["display_information"]["long_description"]
+    assert "one evolving response whenever it helps" in manifest[
+        "display_information"
+    ]["long_description"]
+    assert "seals that response once" in manifest["display_information"][
+        "long_description"
+    ]
     assert features["bot_user"]["display_name"] == "Cleo"
     assert features["app_home"] == {
         "home_tab_enabled": False,
@@ -477,13 +474,12 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
     assert agent_view["suggested_prompts"] == list(render_config.SUGGESTED_PROMPTS)
     assert agent_view["actions"] == list(render_config.AGENT_VIEW_ACTIONS)
 
-    # Pinned Hermes 29112bef handles these Agent View lifecycle events and
-    # threadless suggested prompts. Its Slack adapter does not yet implement
-    # Agent Sessions/native Stop or Canvas, so the manifest must not advertise
-    # those capabilities until the runtime does.
+    # Pinned Hermes 29112bef plus the checked-in lifecycle patch handles native
+    # Stop and the Agent View events below. Unsupported lifecycle/Canvas events
+    # remain absent until their runtime path is implemented.
     assert {"app_context_changed", "app_home_opened", "message.im"} <= events
+    assert "agent_session_stopped" in events
     assert {
-        "agent_session_stopped",
         "agent_session_title_changed",
         "assistant_thread_started",
         "assistant_thread_context_changed",
@@ -548,33 +544,31 @@ def test_slack_uses_one_native_evolving_stream_for_progress_and_final(tmp_path):
     assert slack_display["tool_progress"] == "off"
     assert slack_display["interim_assistant_messages"] is True
     assert slack_display["show_reasoning"] is False
+    assert config["agent"]["gateway_timeout_warning"] == 0
 
     # Placement is the contract here. `show_commentary` is read by agent_init
     # from the TOP-LEVEL display section only — a per-platform copy is silently
     # ignored, which would let Codex-failover narration return. Pinned Hermes'
-    # Slack display accepts full|verb|off; `verb` keeps its live cue discreet.
+    # Slack display accepts full|verb|off; `off` keeps raw tool verbs out while
+    # human-readable commentary continues in the native stream.
     assert config["display"]["show_commentary"] is True
     assert "show_commentary" not in slack_display
-    assert slack_display["live_status"] == "verb"
+    assert slack_display["live_status"] == "off"
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
     assert summary["slack_presentation"] == {
         "one_message_stream": True,
         "transport": "native_stream",
         "tool_progress": "off",
-        "live_status": "verb",
+        "live_status": "off",
         "assistant_status": True,
         "show_commentary": True,
     }
 
-    assert (
-        "acknowledge immediately, keep meaningful progress in the one native "
-        "evolving Slack stream"
-        in config["agent"]["environment_hint"]
-    )
-    assert "complete that same stream with the finished answer" in config["agent"][
-        "environment_hint"
-    ]
+    hint = config["agent"]["environment_hint"]
+    assert "open one native evolving Slack stream immediately" in hint
+    assert "add useful human-readable progress there as often as warranted" in hint
+    assert "seal that same stream once" in hint
     assert "canonical runtime pack is already installed" in config["agent"][
         "environment_hint"
     ]
@@ -1406,6 +1400,10 @@ def _cleo_runtime_pack():
         "version": "agent_runtime_pack.v1",
         "agentRef": "agent:cleo",
         "agentVersion": 7,
+        "runtimeRevision": {
+            "version": "agent_runtime_revision.v1",
+            "digest": "a" * 64,
+        },
         "identity": {
             "kind": "bounded_specialist",
             "displayName": "Cleo",
@@ -1505,6 +1503,8 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert result["runtime_pack_applied"] is True
     assert result["brain_source"] == "katailyst2_runtime_pack"
     assert result["runtime_pack_digest"].startswith("sha256:")
+    assert result["runtime_revision_digest"] == "a" * 64
+    assert result["runtime_revision_source"] == "canonical"
     assert "source: katailyst2 agents.runtime_pack agent:cleo@7" in soul
     assert "Nursing Mastery product owner" in soul
     assert "Finish the useful artifact" in doctrine
@@ -1512,6 +1512,282 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert "Use K2 with judgment" in doctrine
     assert "hlt-k2-context" in doctrine
     assert "never form an allowlist" in doctrine
+
+
+def test_legacy_runtime_revision_ignores_presentation_but_tracks_behavior():
+    pack = _cleo_runtime_pack()
+    pack.pop("runtimeRevision")
+    pack["doctrineRefs"] = [
+        {"ref": "agent_doc:cleo", "name": "Cleo", "linkType": "governed_by"}
+    ]
+    pack["toolBindings"] = [
+        {
+            "orgId": "11111111-1111-4111-8111-111111111111",
+            "agentRef": "agent:cleo",
+            "toolRef": "tool:agentmail",
+            "credentialRef": "22222222-2222-4222-8222-222222222222",
+            "providerIdentity": {
+                "provider": "agentmail",
+                "inboxId": "inbox_cleo",
+                "email": "cleo@example.com",
+            },
+            "status": "active",
+        }
+    ]
+    pack["evaluationSuite"] = [
+        {"ref": "eval_case:cleo-1", "name": "Cleo one", "summary": "presentation"}
+    ]
+    pack["policies"]["routing"] = {
+        "mode": "high_agency",
+        "slackProofAt": "2026-09-03T00:00:00Z",
+        "slackProofReceiptId": "receipt-old",
+        "activationReceiptId": "activation-old",
+    }
+    baseline = grounding.runtime_revision_from_pack(pack)
+
+    presentation = json.loads(json.dumps(pack))
+    presentation["agentVersion"] = 99
+    presentation["shellConfig"]["agentVersion"] = 99
+    presentation["identity"]["avatarUrl"] = "https://images.example/new.png"
+    presentation["identity"]["promise"] = "A sharper card promise."
+    presentation["shellConfig"]["avatarUrl"] = "https://images.example/new.png"
+    presentation["shellConfig"]["tier"] = "superagent"
+    presentation["evaluationSuite"][0]["summary"] = "new display summary"
+    presentation["policies"]["routing"].update(
+        {
+            "slackProofAt": "2026-09-04T00:00:00Z",
+            "slackProofReceiptId": "receipt-new",
+            "activationReceiptId": "activation-new",
+        }
+    )
+    presentation["activation"] = {
+        "status": "inactive",
+        "isOnline": False,
+        "ownerTuning": "needs_review",
+    }
+    doctrine = json.loads(json.dumps(pack))
+    doctrine["shellConfig"]["doctrineMd"] += "\nUse the verified source."
+    identity = json.loads(json.dumps(pack))
+    identity["identity"]["displayName"] = "Cleo, materially renamed"
+    tools = json.loads(json.dumps(pack))
+    tools["shellConfig"]["preferredTools"].append("agentmail.threads.list")
+    binding = json.loads(json.dumps(pack))
+    binding["toolBindings"][0]["credentialRef"] = (
+        "33333333-3333-4333-8333-333333333333"
+    )
+
+    assert baseline["source"] == "legacy_k2_canonical_derivation"
+    assert baseline["digest"] == grounding.runtime_revision_from_pack(presentation)[
+        "digest"
+    ]
+    assert baseline["digest"] != grounding.runtime_revision_from_pack(doctrine)[
+        "digest"
+    ]
+    assert baseline["digest"] != grounding.runtime_revision_from_pack(identity)[
+        "digest"
+    ]
+    assert baseline["digest"] != grounding.runtime_revision_from_pack(tools)["digest"]
+    assert baseline["digest"] != grounding.runtime_revision_from_pack(binding)[
+        "digest"
+    ]
+
+
+def test_legacy_runtime_revision_matches_k2_unicode_canonical_digest():
+    """Pin Python's legacy fallback to K2 stableJson/JSON.stringify semantics."""
+    pack = {
+        "version": "agent_runtime_pack.v1",
+        "agentRef": "agent:cleo",
+        "identity": {
+            "displayName": "Cléo — Research",
+            "role": "research",
+            "promise": "Card only",
+            "avatarUrl": "https://example/avatar.png",
+        },
+        "shellConfig": {
+            "systemPrompt": "Use “verified” sources — always.",
+            "agentVersion": 3,
+            "avatarUrl": "https://example/avatar.png",
+            "tier": "teammate",
+        },
+        "doctrineRefs": [
+            {
+                "ref": "doctrine:α",
+                "linkType": "governed_by",
+                "name": "Ignored",
+            }
+        ],
+        "capability": {"toolRefs": ["tool:β"], "skillRefs": []},
+        "policies": {"routing": None, "effectPolicyRef": "policy:one"},
+        "bindings": {"internalSystemRef": "internal_system:one"},
+        "toolBindings": [
+            {
+                "orgId": "z",
+                "agentRef": "agent:cleo",
+                "toolRef": "tool:z",
+                "credentialRef": "cred:2",
+                "providerIdentity": {"email": "cleo@example.com"},
+            },
+            {
+                "orgId": "a",
+                "agentRef": "agent:cleo",
+                "toolRef": "tool:a",
+                "credentialRef": "cred:1",
+                "providerIdentity": {"email": "cléo@example.com"},
+            },
+        ],
+        "delegation": {"canDelegate": True},
+    }
+
+    revision = grounding.runtime_revision_from_pack(pack)
+
+    # Produced by K2 computeAgentRuntimeRevision using stableJson on this exact
+    # fixture. Non-ASCII text and null routing catch Python/JS parity drift.
+    assert revision["digest"] == (
+        "01e059934a2796493449d55ced97ce690e46d95c435204b983db710ae0435d66"
+    )
+    assert revision["inputs"]["policies"]["routing"] == {}
+
+
+def test_legacy_runtime_revision_matches_k2_utf16_and_number_semantics():
+    """Pin adversarial cases where Python's JSON defaults differ from V8."""
+    pack = {
+        "version": "agent_runtime_pack.v1",
+        "agentRef": "agent:cleo",
+        "identity": {
+            "displayName": "Cléo — Research",
+            "promise": "card",
+            "avatarUrl": None,
+        },
+        "shellConfig": {
+            "systemPrompt": "Exact 😀",
+            "agentVersion": 2,
+            "avatarUrl": None,
+            "tier": "teammate",
+        },
+        "doctrineRefs": [],
+        "capability": {"spendCapDefaultUsd": 0.000001},
+        "policies": {"routing": {"\ue000": "private", "😀": "astral"}},
+        "bindings": {},
+        "toolBindings": [
+            {
+                "orgId": "org",
+                "agentRef": "agent:cleo",
+                "toolRef": "tool:\ue000",
+                "credentialRef": "cred",
+            },
+            {
+                "orgId": "org",
+                "agentRef": "agent:cleo",
+                "toolRef": "tool:😀",
+                "credentialRef": "cred",
+            },
+        ],
+        "delegation": {},
+    }
+
+    revision = grounding.runtime_revision_from_pack(pack)
+
+    # Produced by K2's computeAgentRuntimeRevision on this exact fixture. It
+    # catches JS UTF-16 ordering (astral before private-use) and JSON.stringify
+    # fixed notation at the inclusive 1e-6 boundary.
+    assert revision["digest"] == (
+        "a93fe184e61f522d0a1f9232f55a0a014c29a7c61c78d052d33c2c700e6b0e61"
+    )
+    assert [
+        binding["toolRef"] for binding in revision["inputs"]["toolBindings"]
+    ] == ["tool:😀", "tool:\ue000"]
+
+
+def test_k2_canonical_string_encoding_distinguishes_surrogates_from_literal_text():
+    assert grounding._js_stable_json(
+        {
+            "isolated": chr(0xD800),
+            "literal": r"\ud800",
+            "pair": chr(0xD83D) + chr(0xDE00),
+        }
+    ) == '{"isolated":"\\ud800","literal":"\\\\ud800","pair":"😀"}'
+
+
+def test_k2_canonical_object_encoding_matches_js_array_index_enumeration():
+    value = {
+        "10": "ten",
+        "2": "two",
+        "01": "one",
+        "4294967294": "max-index",
+        "4294967295": "not-index",
+        "a": "a",
+    }
+
+    # K2 first inserts UTF-16-sorted entries into a plain object. JavaScript's
+    # JSON.stringify then enumerates canonical array-index keys numerically
+    # before the remaining insertion-ordered keys.
+    assert grounding._js_stable_json(value) == (
+        '{"2":"two","10":"ten","4294967294":"max-index",'
+        '"01":"one","4294967295":"not-index","a":"a"}'
+    )
+
+
+def test_legacy_tool_bindings_use_k2s_exact_joined_utf16_sort_key():
+    pack = _cleo_runtime_pack()
+    pack.pop("runtimeRevision")
+    pack["doctrineRefs"] = []
+    pack["toolBindings"] = [
+        {
+            "orgId": "org",
+            "agentRef": "agent:cleo",
+            "toolRef": "tool:a",
+            "credentialRef": "cred",
+        },
+        {
+            "orgId": "org",
+            "agentRef": "agent:cleo",
+            "toolRef": "tool:a\0",
+            "credentialRef": "cred",
+        },
+    ]
+
+    revision = grounding.runtime_revision_from_pack(pack)
+
+    assert [
+        binding["toolRef"] for binding in revision["inputs"]["toolBindings"]
+    ] == ["tool:a\0", "tool:a"]
+
+
+def test_invalid_canonical_runtime_revision_never_falls_back_silently(tmp_path):
+    pack = _cleo_runtime_pack()
+    pack["runtimeRevision"]["digest"] = "not-a-sha"
+
+    revision = grounding.runtime_revision_from_pack(pack)
+    installed = grounding.install_runtime_pack(
+        pack,
+        expected_agent_ref="agent:cleo",
+        home=tmp_path,
+    )
+
+    assert revision["source"] == "canonical_invalid"
+    assert revision["digest"] == ""
+    assert installed["runtime_pack_applied"] is False
+    assert "runtimeRevision" in installed["runtime_pack_error"]
+
+
+@pytest.mark.parametrize(
+    "runtime_revision",
+    [
+        {"version": "agent_runtime_revision.v1", "digest": "A" * 64},
+        {"version": " agent_runtime_revision.v1", "digest": "a" * 64},
+        {"version": "agent_runtime_revision.v1", "digest": "a" * 64 + " "},
+    ],
+)
+def test_canonical_runtime_revision_requires_k2s_exact_lowercase_shape(
+    runtime_revision,
+):
+    pack = _cleo_runtime_pack()
+    pack["runtimeRevision"] = runtime_revision
+
+    revision = grounding.runtime_revision_from_pack(pack)
+
+    assert revision["source"] == "canonical_invalid"
+    assert revision["digest"] == ""
 
 
 def test_runtime_pack_holds_one_exclusive_lock_across_both_managed_writes(
@@ -2050,6 +2326,329 @@ def test_slack_tool_budget_preserves_parallelism_then_forces_synthesis():
     ) is None
 
 
+def test_effect_policy_allows_work_and_asks_at_the_risky_effect_boundary():
+    plugin = _load_k2_plugin()
+
+    assert plugin.effect_policy_decision(
+        "read_file", {"path": "/work/nursing-mastery/README.md"}
+    ) is None
+    assert plugin.effect_policy_decision(
+        "mcp__katailyst2__tool_execute",
+        {
+            "toolRef": "tool:nm-analytics-readout",
+            "args": {"action": "readout", "days": 7},
+        },
+    ) is None
+    assert plugin.effect_policy_decision(
+        "write_file", {"path": "/work/brief.md", "content": "draft"}
+    ) is None
+    assert plugin.effect_policy_decision(
+        "mcp__agentmail__drafts_create",
+        {"inboxId": "inbox_cleo", "subject": "Ready for review"},
+    ) is None
+
+    send = plugin.effect_policy_decision(
+        "mcp__agentmail__messages_send",
+        {"inboxId": "inbox_victoria", "messageId": "draft_1"},
+    )
+    assert send == {
+        "action": "approve",
+        "message": "Approval needed before Cleo can send this outside the working draft.",
+        "rule_key": "agent_effect_policy.v1:external_send",
+    }
+    slack_send = plugin.effect_policy_decision(
+        "chat_postMessage", {"channel": "C_AGENT_LOGS", "text": "done"}
+    )
+    assert slack_send["rule_key"] == "agent_effect_policy.v1:external_send"
+    delete = plugin.effect_policy_decision("terminal", {"command": "rm old.txt"})
+    assert delete["action"] == "approve"
+    assert delete["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["capture", "wait", "list_apps", "list_windows"],
+)
+def test_effect_policy_keeps_observational_computer_work_automatic(action):
+    plugin = _load_k2_plugin()
+
+    assert plugin.effect_policy_decision(
+        "computer_use", {"action": action}
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "click",
+        "double_click",
+        "right_click",
+        "middle_click",
+        "drag",
+        "scroll",
+        "type",
+        "key",
+        "set_value",
+        "focus_app",
+    ],
+)
+def test_effect_policy_asks_before_effectful_computer_actions(action):
+    plugin = _load_k2_plugin()
+
+    decision = plugin.effect_policy_decision("computer_use", {"action": action})
+
+    assert decision["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+
+
+def test_effect_policy_covers_paid_media_and_browser_effects():
+    plugin = _load_k2_plugin()
+
+    assert plugin.effect_policy_decision(
+        "text_to_speech", {"text": "Draft narration"}
+    )["rule_key"] == "agent_effect_policy.v1:spend"
+    assert plugin.effect_policy_decision(
+        "browser_click", {"ref": "button-12"}
+    )["rule_key"] == "agent_effect_policy.v1:protected_production_change"
+    assert plugin.effect_policy_decision(
+        "browser_console", {"expression": "document.body.dataset.ready = 'yes'"}
+    )["rule_key"] == "agent_effect_policy.v1:protected_production_change"
+    assert plugin.effect_policy_decision(
+        "browser_press", {"key": "Enter"}
+    )["rule_key"] == "agent_effect_policy.v1:protected_production_change"
+    assert plugin.effect_policy_decision(
+        "browser_press", {"key": "Space"}
+    )["rule_key"] == "agent_effect_policy.v1:protected_production_change"
+    assert plugin.effect_policy_decision("browser_press", {"key": "Escape"}) is None
+    assert plugin.effect_policy_decision(
+        "browser_press", {"key": "Shift+Tab"}
+    ) is None
+    assert plugin.effect_policy_decision(
+        "browser_type", {"ref": "field-2", "text": "staged draft"}
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin main",
+        "gh pr merge 42",
+        "vercel deploy --prod",
+        "render deploy srv-123",
+        "pnpm publish",
+    ],
+)
+def test_effect_policy_asks_before_protected_command_changes(command):
+    plugin = _load_k2_plugin()
+
+    decision = plugin.effect_policy_decision("terminal", {"command": command})
+
+    assert decision["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+
+
+def test_effect_policy_fails_closed_for_unknown_provider_effects():
+    plugin = _load_k2_plugin()
+
+    decision = plugin.effect_policy_decision(
+        "mcp__katailyst2__tool_execute_effect",
+        {
+            "toolRef": "tool:provider-admin",
+            "args": {"action": "frobnicate", "target": "production"},
+        },
+    )
+    promote = plugin.effect_policy_decision(
+        "mcp__katailyst2__tool_execute",
+        {
+            "toolRef": "tool:render",
+            "args": {"action": "promote", "target": "production"},
+        },
+    )
+
+    assert decision["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+    assert promote["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+
+
+def test_effect_policy_keeps_governed_k2_reasoning_and_staging_automatic():
+    plugin = _load_k2_plugin()
+
+    assert plugin.effect_policy_decision(
+        "mcp__katailyst2__tool_execute",
+        {
+            "toolRef": "tool:compare-synthesize",
+            "args": {"action": "compare.synthesize"},
+        },
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["schedule_draft", "send_draft", "send", "reply", "forward"],
+)
+def test_effect_policy_matches_k2_agentmail_external_send_actions(action):
+    plugin = _load_k2_plugin()
+
+    decision = plugin.effect_policy_decision(
+        "mcp__katailyst2__tool_execute",
+        {
+            "toolRef": "tool:agentmail",
+            "args": {"action": action, "inboxId": "inbox_cleo"},
+        },
+    )
+
+    assert decision["rule_key"] == "agent_effect_policy.v1:external_send"
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "status",
+        "auth_me",
+        "list_messages",
+        "get_thread",
+        "create_draft",
+        "update_draft",
+        "update_message_labels",
+        "unschedule_draft",
+    ],
+)
+def test_effect_policy_keeps_agentmail_reads_drafts_and_reversible_work_automatic(
+    action,
+):
+    plugin = _load_k2_plugin()
+
+    assert plugin.effect_policy_decision(
+        "mcp__katailyst2__tool_execute",
+        {"toolRef": "tool:agentmail", "args": {"action": action}},
+    ) is None
+
+
+def test_effect_policy_fails_closed_for_unknown_agentmail_action_in_live_hook():
+    plugin = _load_k2_plugin()
+
+    decision = plugin._pre_tool_call(
+        tool_name="mcp__katailyst2__tool_execute",
+        args={
+            "toolRef": "tool:agentmail",
+            "args": {"action": "future_effect"},
+        },
+        turn_id="turn-agentmail-effect",
+        api_request_id="request-1",
+    )
+
+    assert decision["action"] == "approve"
+    assert decision["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C /repo push origin main",
+        'bash -lc "git push origin main"',
+        "env RELEASE=1 pnpm publish",
+        "sudo git push origin main",
+        "command git push origin main",
+        "gh api --method POST repos/Awhitter/example/dispatches",
+    ],
+)
+def test_live_effect_hook_catches_wrapped_protected_commands(command):
+    plugin = _load_k2_plugin()
+
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": command},
+        turn_id="turn-terminal-effect",
+        api_request_id=f"request-{hash(command)}",
+    )
+
+    assert decision["action"] == "approve"
+    assert decision["rule_key"] == (
+        "agent_effect_policy.v1:protected_production_change"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl https://example.test/hook -d text=hello",
+        "curl --data-raw='{}' https://example.test/hook",
+        "curl -F file=@brief.pdf https://example.test/upload",
+        "curl --json '{}' https://example.test/hook",
+        "curl -T artifact.zip https://example.test/upload",
+        "wget --post-data='text=hello' https://example.test/hook",
+        "wget --body-file payload.json --method=PATCH https://example.test/hook",
+    ],
+)
+def test_live_effect_hook_asks_before_implicit_network_sends(command):
+    plugin = _load_k2_plugin()
+
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": command},
+        turn_id="turn-network-effect",
+        api_request_id=f"request-{hash(command)}",
+    )
+
+    assert decision["action"] == "approve"
+    assert decision["rule_key"] == "agent_effect_policy.v1:external_send"
+
+
+def test_effect_policy_keeps_read_only_curl_fetch_automatic():
+    plugin = _load_k2_plugin()
+
+    assert plugin.effect_policy_decision(
+        "terminal", {"command": "curl -fsSL https://example.test/status"}
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "rule_key"),
+    [
+        ("gh issue create --title Bug --body details", "external_publish"),
+        ("gh pr create --title Fix --body ready", "external_publish"),
+        ("gh release create v1.2.3", "external_publish"),
+        ("gh pr comment 42 --body ready", "external_send"),
+        ("gh pr review 42 --approve", "external_send"),
+    ],
+)
+def test_live_effect_hook_asks_before_github_outbound_changes(command, rule_key):
+    plugin = _load_k2_plugin()
+
+    decision = plugin._pre_tool_call(
+        tool_name="terminal",
+        args={"command": command},
+        turn_id="turn-github-effect",
+        api_request_id=f"request-{hash(command)}",
+    )
+
+    assert decision["action"] == "approve"
+    assert decision["rule_key"] == f"agent_effect_policy.v1:{rule_key}"
+
+
+def test_live_effect_hook_asks_before_cron_removal():
+    plugin = _load_k2_plugin()
+
+    decision = plugin._pre_tool_call(
+        tool_name="cronjob",
+        args={"action": "remove", "job_id": "daily-canary"},
+        turn_id="turn-cron-effect",
+        api_request_id="request-cron-remove",
+    )
+
+    assert decision["action"] == "approve"
+    assert decision["rule_key"] == "agent_effect_policy.v1:delete"
+
+
 def test_nonparticipant_brian_keeps_gateway_readiness_without_joining_election(
     tmp_path,
 ):
@@ -2450,6 +3049,25 @@ def _hook_payload(*, message="Produce the Nursing Mastery funnel brief."):
     }
 
 
+def _set_hook_runtime_ready(monkeypatch, health_gateway, *, applied=True):
+    """Keep dispatch-ledger tests focused on dispatch, not OAuth fixtures."""
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {"agent_ref": "agent:cleo", "runtime_pack_applied": applied}
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "authenticated_model_route_gate",
+        lambda routes=None: {
+            "ready": True,
+            "contractReady": True,
+            "primaryReady": True,
+            "fallbackReady": True,
+            "routes": [],
+        },
+    )
+
+
 def test_hosted_k2_instructions_reserve_the_final_and_use_explicit_refs_directly():
     health_gateway = _load_health_gateway()
     payload = _hook_payload()
@@ -2497,8 +3115,7 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
     scheduled = []
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
-    health_gateway.BOOT.clear()
-    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
 
     def fake_hermes(path, **kwargs):
         calls.append((path, kwargs))
@@ -2547,8 +3164,7 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
 def test_agent_hook_is_authenticated_and_requires_the_canonical_pack(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
-    health_gateway.BOOT.clear()
-    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": False})
+    _set_hook_runtime_ready(monkeypatch, health_gateway, applied=False)
 
     unauthorized = health_gateway.agent_hook(_hook_payload(), authorization=None)
     inactive = health_gateway.agent_hook(
@@ -2563,8 +3179,7 @@ def test_agent_hook_is_authenticated_and_requires_the_canonical_pack(monkeypatch
 def test_agent_hook_rejects_a_session_that_does_not_match_the_k2_run(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
-    health_gateway.BOOT.clear()
-    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
     payload = _hook_payload()
     payload["sessionKey"] = "hook:k2:22222222-2222-4222-8222-222222222222"
 
@@ -2587,8 +3202,7 @@ def test_concurrent_exact_replays_cross_the_provider_boundary_once(
         "HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3")
     )
     health_gateway = _load_health_gateway()
-    health_gateway.BOOT.clear()
-    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
     provider_started = Event()
     release_provider = Event()
     calls = 0
@@ -2633,8 +3247,7 @@ def test_ambiguous_provider_admission_survives_restart_without_redispatch(
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
     first = _load_health_gateway()
-    first.BOOT.clear()
-    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, first)
     provider_calls = []
 
     def response_lost(*args, **kwargs):
@@ -2666,8 +3279,7 @@ def test_ambiguous_provider_admission_survives_restart_without_redispatch(
     # A fresh wrapper module simulates process restart. The durable dispatching
     # row wins over any temptation to retry the provider POST.
     restarted = _load_health_gateway()
-    restarted.BOOT.clear()
-    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, restarted)
     monkeypatch.setattr(
         restarted,
         "_hermes_api_json",
@@ -2693,8 +3305,7 @@ def test_crash_after_provider_acceptance_keeps_the_dispatch_ambiguous(
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
     first = _load_health_gateway()
-    first.BOOT.clear()
-    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, first)
     provider_calls = []
 
     def accepted_by_provider(*args, **kwargs):
@@ -2718,8 +3329,7 @@ def test_crash_after_provider_acceptance_keeps_the_dispatch_ambiguous(
     assert len(provider_calls) == 1
 
     restarted = _load_health_gateway()
-    restarted.BOOT.clear()
-    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, restarted)
     monkeypatch.setattr(
         restarted,
         "_hermes_api_json",
@@ -2742,8 +3352,7 @@ def test_queued_admission_can_resume_safely_after_restart(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
     first = _load_health_gateway()
-    first.BOOT.clear()
-    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, first)
     normalized = first._validate_hook_payload(_hook_payload())
     first.get_agent_run_ledger().admit(
         k2_run_id=normalized["k2_run_id"],
@@ -2754,8 +3363,7 @@ def test_queued_admission_can_resume_safely_after_restart(monkeypatch, tmp_path)
     )
 
     restarted = _load_health_gateway()
-    restarted.BOOT.clear()
-    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, restarted)
     provider_calls = []
 
     def fake_provider(*args, **kwargs):
@@ -2779,8 +3387,7 @@ def test_replay_with_changed_semantics_is_a_conflict(monkeypatch, tmp_path):
         "HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3")
     )
     health_gateway = _load_health_gateway()
-    health_gateway.BOOT.clear()
-    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
     provider_calls = []
     monkeypatch.setattr(
         health_gateway,
@@ -2823,8 +3430,7 @@ def test_agent_hook_poll_preserves_terminal_truth(
     run_id = "run_" + "b" * 32
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
-    health_gateway.BOOT.clear()
-    health_gateway.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
     calls = []
 
     def fake_hermes(path, **kwargs):
@@ -2874,8 +3480,7 @@ def test_terminal_receipt_is_redacted_bounded_and_survives_restart(
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(ledger_path))
     first = _load_health_gateway()
-    first.BOOT.clear()
-    first.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, first)
     provider_run_id = "run_" + "e" * 32
     secret = "sk-or-v1-" + "s" * 80
     provider_calls = []
@@ -2911,8 +3516,7 @@ def test_terminal_receipt_is_redacted_bounded_and_survives_restart(
     assert body["usage"] == {"total_tokens": 42, "access_token": "[redacted]"}
 
     restarted = _load_health_gateway()
-    restarted.BOOT.clear()
-    restarted.BOOT.update({"agent_ref": "agent:cleo", "runtime_pack_applied": True})
+    _set_hook_runtime_ready(monkeypatch, restarted)
     monkeypatch.setattr(
         restarted,
         "_hermes_api_json",
@@ -2944,6 +3548,9 @@ def _preactivation_boot_state():
             },
         ],
         "reasoning_effort": "high",
+        "runtime_revision_version": "agent_runtime_revision.v1",
+        "runtime_revision_digest": "a" * 64,
+        "runtime_revision_source": "canonical",
         "model_route_readiness": [
             {
                 "provider": "openai-codex",
@@ -2977,6 +3584,7 @@ def _preactivation_boot_state():
             "runtime_pack_tool_listed": True,
             "well_tool_listed": True,
             "runtime_pack_callable": True,
+            "runtime_revision_ready": True,
             "agent_bound_token": True,
             "identity_matches": True,
             "host_profile_compatible": True,
@@ -2993,8 +3601,6 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
         {
             "hermes_upstream_ref": "29112bef",
             "host_runtime_contract_version": "cleo-hermes-host.v2",
-            "runtime_pack_digest": "sha256:pack-a",
-            "runtime_pack_agent_version": 6,
             "slack_toolsets": ["web", "mcp-katailyst2"],
             "slack_conversation": {
                 "top_level_requires_mention": True,
@@ -3007,13 +3613,14 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
             "k2_context_plugin": {
                 "installed": True,
                 "enabled": True,
-                "version": "1.5.0",
+                "version": "1.6.0",
             },
             "mcp_mounted": ["katailyst2"],
             "deploy_commit": "commit-a",
             "portrait_url": "https://images.example/cleo-a.png",
             "slack_card_copy": "Cleo card A",
             "owner_tuning": "approved",
+            "runtime_pack_agent_version": 6,
         }
     )
 
@@ -3025,6 +3632,11 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
             "portrait_url": "https://images.example/cleo-b.png",
             "slack_card_copy": "Cleo card B",
             "owner_tuning": "needs_review",
+            "runtime_pack_agent_version": 41,
+            "slack_presentation": {
+                "one_message_stream": False,
+                "transport": "new-card-copy",
+            },
         }
     )
     changed_route = health_gateway.runtime_input_proof(
@@ -3040,7 +3652,7 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
         }
     )
     changed_pack = health_gateway.runtime_input_proof(
-        {**state, "runtime_pack_digest": "sha256:pack-b"}
+        {**state, "runtime_revision_digest": "b" * 64}
     )
     changed_slack_runtime = health_gateway.runtime_input_proof(
         {
@@ -3051,14 +3663,20 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
             },
         }
     )
+    changed_revision_provenance = health_gateway.runtime_input_proof(
+        {**state, "runtime_revision_source": "legacy_k2_canonical_derivation"}
+    )
 
     assert original["contractVersion"] == "agent_host_runtime_inputs.v1"
     assert original["digest"] == presentation_only["digest"]
+    assert original["digest"] == changed_revision_provenance["digest"]
     assert original["digest"] != changed_route["digest"]
     assert original["digest"] != changed_pack["digest"]
     assert original["digest"] != changed_slack_runtime["digest"]
     assert "portrait_url" not in original["inputs"]
     assert "deploy_commit" not in original["inputs"]
+    assert "runtimePackAgentVersion" not in original["inputs"]
+    assert "slackPresentation" not in original["inputs"]
 
 
 def test_health_is_live_but_not_ready_for_the_old_grok_to_kimi_ladder(monkeypatch):
@@ -3135,6 +3753,74 @@ def test_health_is_live_but_not_ready_for_the_old_grok_to_kimi_ladder(monkeypatc
     )
 
 
+def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    state = _preactivation_boot_state()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+
+    route_state = {
+        "openai-codex": {
+            "provider": "openai-codex",
+            "logged_in": True,
+            "usable": True,
+            "rate_limited": False,
+            "credential_pool": {
+                "profile_count": 3,
+                "selectable_count": 3,
+                "minimum_required": 3,
+                "minimum_ready": True,
+            },
+        },
+        "xai-oauth": {
+            "provider": "xai-oauth",
+            "logged_in": True,
+            "usable": True,
+            "rate_limited": False,
+        },
+    }
+    monkeypatch.setattr(
+        health_gateway,
+        "subscription_auth_readiness",
+        lambda provider: route_state[provider],
+    )
+    gate = health_gateway.authenticated_model_route_gate()
+
+    assert gate["ready"] is True
+    assert [
+        (route["provider"], route["model"], route["role"])
+        for route in gate["routes"]
+    ] == [
+        ("openai-codex", "gpt-5.6-sol", "primary"),
+        ("xai-oauth", "grok-4.6", "fallback-1"),
+    ]
+    assert gate["routes"][0]["detail"]["credential_pool"]["selectable_count"] == 3
+
+    route_state["xai-oauth"] = {
+        "provider": "xai-oauth",
+        "logged_in": False,
+        "usable": False,
+        "rate_limited": False,
+        "error": "authentication rejected",
+    }
+    activation = health_gateway.activationz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    health_gateway.BOOT["runtime_pack_applied"] = True
+    dispatch = health_gateway.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+
+    assert activation.status_code == 503
+    assert json.loads(activation.body)["checks"]["fallback_model_route_ready"] is False
+    assert dispatch.status_code == 503
+    assert json.loads(dispatch.body) == {
+        "ok": False,
+        "error": "reviewed model routes are temporarily unavailable",
+    }
+
+
 ACTIVATION_CHECK_KEYS = {
     "agent_ref_matches",
     "runtime_lane_matches",
@@ -3147,12 +3833,14 @@ ACTIVATION_CHECK_KEYS = {
     "channel_auth_ok",
     "channel_scopes_ready",
     "primary_model_route_ready",
+    "fallback_model_route_ready",
     "model_route_contract_ready",
     "web_search_ready",
     "k2_server_is_canonical",
     "k2_runtime_pack_tool_listed",
     "k2_well_tool_listed",
     "k2_runtime_pack_callable",
+    "k2_runtime_revision_ready",
     "k2_agent_bound_token",
     "k2_identity_matches",
     "k2_host_profile_compatible",
@@ -3311,6 +3999,11 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
 
     monkeypatch.setattr(health_gateway, "_probe_k2_boot_contract", fake_probe)
     monkeypatch.setattr(
+        health_gateway,
+        "authenticated_model_route_gate",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
         health_gateway.grounding,
         "install_runtime_pack",
         lambda *args, **kwargs: {
@@ -3364,6 +4057,11 @@ def test_activation_transition_starts_with_the_canonical_pack_when_well_times_ou
         lambda **kwargs: next(responses),
     )
     monkeypatch.setattr(
+        health_gateway,
+        "authenticated_model_route_gate",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
         health_gateway.grounding,
         "install_runtime_pack",
         lambda *args, **kwargs: {
@@ -3412,6 +4110,47 @@ def test_declared_outage_fallback_keeps_watching_for_the_canonical_pack():
     ) is False
 
 
+def test_declared_outage_fallback_waits_for_reviewed_model_routes(monkeypatch):
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo",
+            "brain_source": "bundled_outage_fallback",
+            "k2_context_plugin": {"installed": True, "enabled": True},
+            "slack_agent_lead": {
+                "roster_ready": True,
+                "local_agent_ready": True,
+                "required": True,
+            },
+        }
+    )
+    outage = {
+        "activation_ready": False,
+        "outage_declared": True,
+        "contract_status": "outage",
+    }
+    monkeypatch.setattr(
+        health_gateway,
+        "_probe_k2_boot_contract",
+        lambda **_kwargs: outage,
+    )
+    route_ready = {"value": False}
+    monkeypatch.setattr(
+        health_gateway,
+        "authenticated_model_route_gate",
+        lambda: {"ready": route_ready["value"]},
+    )
+
+    assert health_gateway._try_k2_activation_once() is False
+    assert health_gateway.BOOT["gateway_start_allowed"] is False
+    assert health_gateway._should_watch_for_k2_activation(outage) is True
+
+    route_ready["value"] = True
+    assert health_gateway._try_k2_activation_once() is True
+    assert health_gateway.BOOT["gateway_start_allowed"] is True
+
+
 def test_outage_recovery_does_not_restart_an_already_running_gateway(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setattr(
@@ -3419,7 +4158,20 @@ def test_outage_recovery_does_not_restart_an_already_running_gateway(monkeypatch
         "_stop",
         SimpleNamespace(wait=lambda _seconds: False),
     )
-    monkeypatch.setattr(health_gateway, "_try_k2_activation_once", lambda: True)
+    attempts = {"count": 0}
+
+    def recover_after_fallback():
+        attempts["count"] += 1
+        health_gateway.BOOT["brain_source"] = (
+            "bundled_outage_fallback"
+            if attempts["count"] == 1
+            else "katailyst2_runtime_pack"
+        )
+        return True
+
+    monkeypatch.setattr(
+        health_gateway, "_try_k2_activation_once", recover_after_fallback
+    )
     monkeypatch.setattr(
         health_gateway.supervisor,
         "snapshot",
@@ -3432,6 +4184,46 @@ def test_outage_recovery_does_not_restart_an_already_running_gateway(monkeypatch
     monkeypatch.setattr(health_gateway.supervisor, "start", unexpected_restart)
 
     health_gateway._watch_for_k2_activation()
+    assert attempts["count"] == 2
+
+
+def test_route_recovery_starts_fallback_once_but_keeps_watching_for_k2(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "_stop",
+        SimpleNamespace(wait=lambda _seconds: False),
+    )
+    outcomes = iter(
+        [
+            (False, "bundled_outage_fallback"),
+            (True, "bundled_outage_fallback"),
+            (True, "katailyst2_runtime_pack"),
+        ]
+    )
+    attempts = {"count": 0}
+
+    def recover_routes_then_k2():
+        allowed, brain_source = next(outcomes)
+        attempts["count"] += 1
+        health_gateway.BOOT["brain_source"] = brain_source
+        return allowed
+
+    starts = []
+    monkeypatch.setattr(
+        health_gateway, "_try_k2_activation_once", recover_routes_then_k2
+    )
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {"running": bool(starts)},
+    )
+    monkeypatch.setattr(health_gateway.supervisor, "start", lambda: starts.append(True))
+
+    health_gateway._watch_for_k2_activation()
+
+    assert attempts["count"] == 3
+    assert starts == [True]
 
 
 def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypatch):
@@ -3511,6 +4303,7 @@ def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypa
                 "server_matches_katailyst2": True,
                 "runtime_pack_tool_listed": True,
                 "runtime_pack_callable": True,
+                "runtime_revision_ready": True,
                 "agent_bound_token": True,
                 "host_profile_compatible": True,
                 "well_tool_listed": True,
@@ -3557,8 +4350,37 @@ def test_health_names_the_exact_k2_readiness_seam(
         {
             "agent_ref": "agent:cleo",
             "runtime_lane": "hermes",
-            "model_provider": "xai-oauth",
-            "subscription_auth": {"logged_in": True},
+            "model_provider": "openai-codex",
+            "subscription_auth": {"logged_in": True, "usable": True},
+            "configured_model_route": [
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                    "role": "primary",
+                },
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "fallback-1",
+                },
+            ],
+            "reasoning_effort": "high",
+            "model_route_readiness": [
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                    "role": "primary",
+                    "available": True,
+                },
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "fallback-1",
+                    "available": True,
+                },
+            ],
+            "runtime_revision_version": "agent_runtime_revision.v1",
+            "runtime_revision_digest": "a" * 64,
             "runtime_pack_applied": pack_applied,
             "k2_agent_readiness": readiness,
             "slack_auth": {},
@@ -3573,6 +4395,11 @@ def test_health_names_the_exact_k2_readiness_seam(
             "agent_run_ledger": {"ready": True},
             "web_search_readiness": {"available": True},
         }
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "refresh_model_route_readiness",
+        lambda: list(health_gateway.BOOT["model_route_readiness"]),
     )
 
     payload = health_gateway.health()
@@ -4362,7 +5189,7 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
         "paused": ["nm-monday-brief"],
     }
     assert health_gateway.BOOT["cron_smoke"] == "retired-with-recurring-briefs"
-    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.5.0"
+    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.6.0"
 
 
 def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):
@@ -4466,7 +5293,7 @@ def test_unrelated_xai_api_key_cannot_expand_the_reviewed_recovery_ladder():
     """Only the managed Codex pool and authenticated Grok route are agentic.
 
     A stray plain-API key must not add another billed provider hop or change
-    ordering. Operators can still name an exact deliberate route override.
+    ordering. Model changes require a reviewed code/config update.
     """
     with_key = render_config.fallback_providers(
         {**FULL_ENV, "XAI_API_KEY": "xai-test"},

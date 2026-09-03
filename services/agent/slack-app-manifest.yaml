@@ -1,8 +1,8 @@
 # Authoritative Slack app manifest for Cleo, the Nursing Mastery product owner.
 # Apply this complete file to the existing Cleo app; apps.manifest.update replaces
 # the whole remote manifest rather than merging fields. Cleo uses Slack's current
-# Agent View. The pinned Hermes runtime supports its app_home_opened and
-# app_context_changed lifecycle, but not Agent Sessions/native Stop yet.
+# Agent View. The pinned Hermes runtime supports the Agent View lifecycle and
+# the native agent_session_stopped cancellation event.
 _metadata:
   # Match the version emitted by Slack's manifest export API and the pinned
   # Hermes manifest generator so validators do not have to infer a schema.
@@ -18,8 +18,9 @@ display_information:
     finished work. Ask what is blocking nurse applications, what shipped, how
     a feature works, or for a decision brief. Cleo can investigate the current
     estate, use specialist tools, and deliver polished Slack plans, tables,
-    files, and visuals. She leads with the answer, keeps progress quiet unless
-    work is genuinely long, and gives one useful final response.
+    files, and visuals. She leads with the answer, shows concise useful progress
+    inside one evolving response whenever it helps, and seals that response
+    once with the finished answer.
   background_color: "#06101C"
 features:
   bot_user:
@@ -149,6 +150,7 @@ settings:
       # Agent View lifecycle supported by pinned Hermes 29112bef.
       - app_context_changed
       - app_home_opened
+      - agent_session_stopped
       - message.channels
       - message.groups
       - message.im
