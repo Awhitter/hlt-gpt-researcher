@@ -583,9 +583,13 @@ def build_config(
             "platforms": {
                 "slack": {
                     # Keep every pre-tool assistant segment out of Slack. The
-                    # ephemeral Assistant status still shows that work is
+                    # ephemeral working status still shows that work is
                     # active; only the finished response becomes a message.
                     "streaming": False,
+                    # Pinned Hermes supports full|verb|off here. `verb` keeps
+                    # a useful live cue without leaking arguments, filenames,
+                    # commands, or other tool detail into a shared channel.
+                    "live_status": "verb",
                     "tool_progress": "off",
                     "interim_assistant_messages": False,
                     "long_running_notifications": False,
@@ -771,11 +775,9 @@ def render(
             ),
             "transport": "final_send",
             "tool_progress": slack_display["tool_progress"],
-            # The ephemeral Assistant status line ("is digging through the
-            # estate…") — the only live-status surface Hermes actually has.
-            # An earlier revision reported a `live_status` display key here,
-            # but no such key exists in Hermes' display config; it read as
-            # configured while configuring nothing.
+            "live_status": slack_display["live_status"],
+            # The ephemeral working-status line ("is digging through the
+            # estate…") keeps a long turn alive without a permanent post.
             "assistant_status": bool(
                 config.get("platforms", {}).get("slack", {}).get("typing_indicator")
             ),

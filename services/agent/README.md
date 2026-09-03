@@ -219,10 +219,21 @@ poll `statusUrl` and terminalize its run from that receipt. Treating the initial
 202 as completed is a control-plane bug, not a successful Cleo run.
 
 Slack sends one finished answer. Token streaming stays off for this surface
-because pre-tool model text must not become permanent Slack replies; the
-ephemeral Assistant status carries working state instead. Per-tool/interim
+because pre-tool model text must not become permanent Slack replies; an
+ephemeral, verb-only working status carries progress instead. Per-tool/interim
 commentary posts stay off, routine compaction notices are suppressed, and the
 model does not use a Slack send tool to duplicate its own response.
+
+The checked-in manifest uses Slack's current Agent View. Pinned Hermes handles
+`app_home_opened`, `app_context_changed`, the active-view context, and
+threadless suggested prompts. Agent Sessions and their native Stop event are a
+newer Slack lifecycle that this Hermes pin does not implement, so the manifest
+does not subscribe to them. Hermes can technically stream tokens and separate
+native task cards, but those surfaces remain disabled: the former can preserve
+pre-tool narration, while the latter creates an extra permanent progress
+surface with a generic upstream title. The Home tab also remains disabled
+because this runtime does not publish a Home view. File delivery and rich
+Block Kit answers are supported; Canvas creation is not.
 
 The canonical K2 runtime pack is installed at boot. Turns use `registry.get`
 at card or concise depth first and load a full body only when needed; fetching
@@ -254,10 +265,40 @@ under `config.mcp_without_token` so a half-set pair is visible rather than
 silently degraded. All three of codegraph, gpt-researcher and katailyst2 now
 reject unauthenticated calls, so a missing token there means a dead tool.
 
+## Applying Cleo's reviewed Agent View manifest
+
+[`slack-app-manifest.yaml`](./slack-app-manifest.yaml) is the complete remote
+manifest, not a patch. Committing it does not change the installed Slack app;
+the steps below are the separate live migration. Updating to Agent View is
+one-way in Slack.
+
+1. Read authenticated `/slack-identityz` and `/health` first. Confirm the
+   workspace, app, bot, `agent_ref`, deployed commit, and current OAuth grants.
+2. In https://api.slack.com/apps open **Cleo → App Manifest → Edit**, replace
+   the remote manifest with this file, review the Agent View warning, and save.
+   The API equivalent is `apps.manifest.update`; it requires Cleo's app ID and
+   an app-configuration token with `app_configurations:write` and replaces the
+   whole manifest.
+3. **OAuth & Permissions → Reinstall to Workspace** so the installed app gains
+   any changed scopes/events. If Slack reissues the `xoxb-…` token, update only
+   `SLACK_BOT_TOKEN` on the Render `hlt-hermes` service without logging it.
+4. Deploy or restart from the exact merged commit. Re-read `/health` and
+   `/slack-identityz`; require Slack auth, no missing core scopes,
+   `assistant:write` among the granted scopes, the expected identity, and a
+   connected gateway.
+5. Use a private DM canary: open Cleo, confirm the Agent View description and
+   starters, switch views once to exercise `app_context_changed`, and send one
+   real read-only task. Expect a brief live status and exactly one useful final
+   response. Do not treat native Stop as available at this Hermes pin.
+
+Official references: [Agent View and Agent Sessions](https://docs.slack.dev/changelog/2026/08/20/agent-updates/),
+[app manifest fields](https://docs.slack.dev/reference/app-manifest/), and
+[`apps.manifest.update`](https://docs.slack.dev/reference/methods/apps.manifest.update/).
+
 ## Turning an agent on (one-time, ~5 minutes)
 
-Steps 1-3 need Alec's login. **Cleo's app already exists** — for her, skip to
-"Fixing Cleo's scopes" below.
+Steps 1-3 need Alec's login. **Cleo's app already exists** — use the reviewed
+Agent View migration above for her. This section is for a new agent app.
 
 1. https://api.slack.com/apps → **Create New App** → **From an app manifest** →
    HLT workspace → paste [`slack-app-manifest.yaml`](./slack-app-manifest.yaml)
@@ -360,12 +401,13 @@ Do not infer installed scopes from an old template or this README. Read
 https://api.slack.com/apps → **Cleo** → **OAuth & Permissions** → add bot scopes:
 
 ```
-app_mentions:read  channels:read  commands  files:read  files:write
-groups:history  groups:read  im:history  im:read  im:write
+app_mentions:read  channels:history  channels:read  chat:write  commands
+files:read  files:write  groups:history  groups:read  im:history  im:read  im:write
 mpim:history  mpim:read  users:read  reactions:read  reactions:write
 assistant:write
 ```
 
 Then **Reinstall to Workspace**, and confirm **Event Subscriptions** has
-`app_mention`, `message.im`, `message.channels`, `message.groups`,
-`message.mpim`. The bot token changes on reinstall — update `SLACK_BOT_TOKEN`.
+`app_mention`, `app_context_changed`, `app_home_opened`, `message.im`,
+`message.channels`, `message.groups`, `message.mpim`. If the bot token changes
+on reinstall, update `SLACK_BOT_TOKEN`.

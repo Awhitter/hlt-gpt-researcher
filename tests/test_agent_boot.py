@@ -455,6 +455,42 @@ def test_fallback_override_accepts_json_and_compact_routes():
     assert "fallback_providers" not in disabled
 
 
+def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
+    manifest = yaml.safe_load(
+        (SERVICE_DIR / "slack-app-manifest.yaml").read_text(encoding="utf-8")
+    )
+    features = manifest["features"]
+    agent_view = features["agent_view"]
+    events = set(manifest["settings"]["event_subscriptions"]["bot_events"])
+    scopes = set(manifest["oauth_config"]["scopes"]["bot"])
+
+    assert manifest["display_information"]["name"] == "Cleo"
+    assert features["bot_user"]["display_name"] == "cleo"
+    assert features["app_home"] == {
+        "home_tab_enabled": False,
+        "messages_tab_enabled": True,
+        "messages_tab_read_only_enabled": False,
+    }
+    assert "assistant_view" not in features
+    assert 0 < len(agent_view["agent_description"]) <= 300
+    assert agent_view["suggested_prompts"] == list(render_config.SUGGESTED_PROMPTS)
+    assert len(agent_view["actions"]) == 3
+
+    # Pinned Hermes 29112bef handles these Agent View lifecycle events and
+    # threadless suggested prompts. Its Slack adapter does not yet implement
+    # Agent Sessions/native Stop or Canvas, so the manifest must not advertise
+    # those capabilities until the runtime does.
+    assert {"app_context_changed", "app_home_opened", "message.im"} <= events
+    assert {
+        "agent_session_stopped",
+        "agent_session_title_changed",
+        "assistant_thread_started",
+        "assistant_thread_context_changed",
+    }.isdisjoint(events)
+    assert "assistant:write" in scopes
+    assert {"canvases:read", "canvases:write"}.isdisjoint(scopes)
+
+
 def test_slack_sends_one_final_answer_without_permanent_progress_bubbles(tmp_path):
     config = render_config.build_config(FULL_ENV)
     slack_display = config["display"]["platforms"]["slack"]
@@ -474,18 +510,18 @@ def test_slack_sends_one_final_answer_without_permanent_progress_bubbles(tmp_pat
 
     # Placement is the contract here. `show_commentary` is read by agent_init
     # from the TOP-LEVEL display section only — a per-platform copy is silently
-    # ignored, which would let Codex-failover narration return. And Hermes has
-    # no `live_status` display key at all; asserting its absence keeps the
-    # config from carrying keys that read as configured while doing nothing.
+    # ignored, which would let Codex-failover narration return. Pinned Hermes'
+    # Slack display accepts full|verb|off; `verb` keeps its live cue discreet.
     assert config["display"]["show_commentary"] is False
     assert "show_commentary" not in slack_display
-    assert "live_status" not in slack_display
+    assert slack_display["live_status"] == "verb"
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
     assert summary["slack_presentation"] == {
         "one_message_stream": True,
         "transport": "final_send",
         "tool_progress": "off",
+        "live_status": "verb",
         "assistant_status": True,
         "show_commentary": False,
     }
