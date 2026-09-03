@@ -1,24 +1,43 @@
-# Slack app manifest for Cleo, the Nursing Mastery product-owner facilitator.
-# Create the app at https://api.slack.com/apps → "Create New App" →
-# "From an app manifest" → pick the HLT workspace → paste this file.
-#
-# This is a hand-maintained minimal manifest, and it is complete enough to run.
-# Once Cleo is live you can regenerate a richer one (native slash commands,
-# assistant/agent view) from inside the container with:
-#     hermes slack manifest --write
-# Slack's agent view is one-way — it cannot be reverted to assistant view — so
-# read what that command produces before applying it.
+# Authoritative Slack app manifest for Cleo, the Nursing Mastery product owner.
+# Apply this complete file to the existing Cleo app; apps.manifest.update replaces
+# the whole remote manifest rather than merging fields. Cleo uses Slack's current
+# Agent View. The pinned Hermes runtime supports its app_home_opened and
+# app_context_changed lifecycle, but not Agent Sessions/native Stop yet.
 display_information:
   name: Cleo
   description: Nursing Mastery product owner — research, decisions, and useful artifacts.
   background_color: "#06101C"
 features:
   bot_user:
-    display_name: cleo-the-po
+    display_name: cleo
     always_online: true
   app_home:
+    # Hermes does not publish a Home-tab view at this pin. Leave it off instead
+    # of presenting teammates with an empty surface.
+    home_tab_enabled: false
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  agent_view:
+    agent_description: >-
+      Cleo is Nursing Mastery's product owner. She turns live product, funnel,
+      customer, and estate evidence into clear decisions, prioritized plans,
+      and finished briefs, prototypes, and other useful artifacts.
+    actions:
+      - name: Build the product plan
+        description: Turn current evidence into one decision-ready plan with owners and proof.
+      - name: Read the funnel
+        description: Find the Nursing Mastery bottleneck and recommend the next move.
+      - name: Finish the useful artifact
+        description: Research, create, and verify the brief, prototype, or decision.
+    suggested_prompts:
+      - title: What shipped this week?
+        message: What shipped in Nursing Mastery this week, and what's still in flight?
+      - title: Explain a subsystem
+        message: I'm new here. Explain how the job board gets its jobs, and point me at the files.
+      - title: Where do I start?
+        message: I just joined. What are the three things I should understand first about this codebase, and what will confuse me?
+      - title: Take a product task
+        message: Pick one high-leverage Nursing Mastery product question we can answer today, do the research, and bring back the useful artifact or decision.
 oauth_config:
   scopes:
     bot:
@@ -38,7 +57,7 @@ oauth_config:
       - users:read
       - files:read
       - files:write
-      # Native slash commands (/status, /new, /queue …).
+      # Native slash commands (/help, /new, /queue …).
       - commands
       # Assistant/agent view: thread titles and suggested prompts.
       - assistant:write
@@ -46,6 +65,9 @@ settings:
   event_subscriptions:
     bot_events:
       - app_mention
+      # Agent View lifecycle supported by pinned Hermes 29112bef.
+      - app_context_changed
+      - app_home_opened
       - message.channels
       - message.groups
       - message.im
