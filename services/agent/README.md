@@ -282,6 +282,14 @@ manifest, not a patch. Committing it does not change the installed Slack app;
 the steps below are the separate live migration. Updating to Agent View is
 one-way in Slack.
 
+Before applying it, run
+`uv run python services/agent/validate_slack_manifest.py`. This read-only local gate
+checks the schema version and the source/runtime seam: Cleo's identity, Agent
+View starters, writable Messages tab, supported events, OAuth scopes, and real
+Hermes commands. Slack's `apps.manifest.validate` remains the generic remote
+schema check and needs a short-lived app-configuration token; a bot token
+cannot substitute for it.
+
 1. Read authenticated `/slack-identityz` and `/health` first. Confirm the
    workspace, app, bot, `agent_ref`, deployed commit, and current OAuth grants.
 2. In https://api.slack.com/apps open **Cleo → App Manifest → Edit**, replace

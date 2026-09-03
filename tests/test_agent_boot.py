@@ -500,7 +500,7 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
     assert "assistant_view" not in features
     assert 0 < len(agent_view["agent_description"]) <= 300
     assert agent_view["suggested_prompts"] == list(render_config.SUGGESTED_PROMPTS)
-    assert len(agent_view["actions"]) == 3
+    assert agent_view["actions"] == list(render_config.AGENT_VIEW_ACTIONS)
 
     # Pinned Hermes 29112bef handles these Agent View lifecycle events and
     # threadless suggested prompts. Its Slack adapter does not yet implement

@@ -158,6 +158,24 @@ SUGGESTED_PROMPTS: tuple[dict[str, str], ...] = (
     },
 )
 
+# The three visible Agent View actions belong to the same cross-file contract
+# as the starters above. Keeping them here gives the manifest validator one
+# runtime-owned source instead of accepting arbitrary copy with the right shape.
+AGENT_VIEW_ACTIONS: tuple[dict[str, str], ...] = (
+    {
+        "name": "Build the product plan",
+        "description": "Turn current evidence into one decision-ready plan with owners and proof.",
+    },
+    {
+        "name": "Read the funnel",
+        "description": "Find the Nursing Mastery bottleneck and recommend the next move.",
+    },
+    {
+        "name": "Finish the useful artifact",
+        "description": "Research, create, and verify the brief, prototype, or decision.",
+    },
+)
+
 # The per-surface guidance Hermes injects into the system prompt's STABLE tier
 # (see upstream `developer-guide/prompt-assembly.md`). `append` keeps the
 # built-in Slack hint and adds ours after it; a byte-stable string here does not
