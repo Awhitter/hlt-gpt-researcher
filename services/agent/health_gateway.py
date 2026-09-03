@@ -1677,6 +1677,10 @@ def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
         k2_readiness["outage_declared"] = False
         _publish_k2_readiness(k2_readiness)
         return False
+    # A successful canonical install ends the declared-outage fallback. Keep
+    # the public boot snapshot internally consistent so health cannot continue
+    # to name a stale outage after brain_source has moved back to K2.
+    BOOT.pop("bundled_fallback_reason", None)
     _publish_k2_readiness(k2_readiness)
     return True
 
@@ -1731,19 +1735,40 @@ def _try_k2_activation_once() -> bool:
 
 
 def _watch_for_k2_activation() -> None:
-    """Bridge K2's offline-to-online transition without a manual redeploy.
+    """Bridge K2 activation or outage recovery without a manual redeploy.
 
     The authenticated pre-activation probe lets K2 verify this hosted body
     before it marks the agent online. Once that happens, this watcher repeats
     the real ``requireActive:true`` read, installs the canonical pack, proves
-    the well, and only then starts Hermes. It never promotes from a health
-    response.
+    the well, and only then starts Hermes when it was blocked. The same loop
+    runs while Hermes is serving the reviewed bundled outage fallback: a
+    recovered K2 atomically replaces that fallback and existing sessions
+    refresh the managed prompt on their next turn. It never promotes from a
+    health response.
     """
     while not supervisor._stop.wait(_activation_poll_seconds()):
         if _try_k2_activation_once():
-            logger.info("Katailyst2 activated Cleo; starting the Hermes gateway")
-            supervisor.start()
+            if supervisor.snapshot().get("running"):
+                logger.info(
+                    "Katailyst2 recovered; Cleo promoted from the bundled "
+                    "fallback to the canonical runtime pack"
+                )
+            else:
+                logger.info("Katailyst2 activated Cleo; starting the Hermes gateway")
+                supervisor.start()
             return
+
+
+def _should_watch_for_k2_activation(k2_readiness: Mapping[str, Any]) -> bool:
+    """Whether this boot still needs a canonical-pack transition watcher."""
+    if not BOOT.get("agent_ref"):
+        return False
+    if not BOOT.get("gateway_start_allowed"):
+        return k2_readiness.get("outage_declared") is not True
+    return (
+        k2_readiness.get("outage_declared") is True
+        and BOOT.get("brain_source") == "bundled_outage_fallback"
+    )
 
 
 def boot() -> None:
@@ -1916,19 +1941,20 @@ def boot() -> None:
         BOOT["cron_smoke"] = "retired-with-recurring-briefs"
         logger.info("config cron_briefs: %s", BOOT["cron_briefs"])
 
+    watch_for_k2 = _should_watch_for_k2_activation(k2_readiness)
     if GATEWAY_ENABLED and not BOOT["gateway_start_allowed"]:
         supervisor.block_start(
             "gateway start blocked: Cleo has neither an applied active K2 runtime "
             "pack nor a declared K2 outage fallback with the mission-context plugin"
         )
-        if BOOT.get("agent_ref") and k2_readiness.get("outage_declared") is not True:
-            threading.Thread(
-                target=_watch_for_k2_activation,
-                name="k2-activation-watcher",
-                daemon=True,
-            ).start()
     else:
         supervisor.start()
+    if GATEWAY_ENABLED and watch_for_k2:
+        threading.Thread(
+            target=_watch_for_k2_activation,
+            name="k2-activation-watcher",
+            daemon=True,
+        ).start()
 
 
 def activation_readiness() -> dict[str, Any]:

@@ -204,6 +204,14 @@ the Well times out, keep and run the K2 pack with context readiness shown as
 degraded; never replace a current canonical brain with bundled fallback solely
 because the optional context probe was slow.
 
+If boot starts from `bundled_outage_fallback` during a declared K2 transport
+outage, keep the activation watcher running after the Slack gateway starts. A
+successful recovery installs the canonical pack in place and clears the stale
+outage reason. The pinned Hermes prompt-refresh overlay treats the K2 pack's
+managed source marker as a cache epoch, so an existing Slack conversation picks
+up the new SOUL and doctrine on its next turn without restarting the socket or
+discarding history.
+
 Slack token streaming stays off: pre-tool model text must not become permanent
 thread fragments. Keep per-tool, interim, and routine compaction posts off; the
 ephemeral Assistant status is the working-state surface and only the finished

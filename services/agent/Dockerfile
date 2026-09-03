@@ -49,6 +49,8 @@ RUN git init /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/api_runs_numeric_grounding.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/api_runs_numeric_grounding.patch \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl]" \
@@ -76,6 +78,7 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && grep -q 're.escape(COMPACTION_DONE_STATUS)' /opt/hermes/gateway/run.py \
     && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py \
     && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes \
+    && python /tmp/hermes-patches/assert_k2_runtime_pack_prompt_refresh.py /opt/hermes \
     && PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \
     && PYTHONPATH=/app python -c "from hlt_numeric_grounding import NumericGroundingLedger; assert NumericGroundingLedger('applications: 2').validate('Applications: 2').ok"
 

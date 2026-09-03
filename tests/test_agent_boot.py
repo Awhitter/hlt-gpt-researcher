@@ -18,6 +18,7 @@ import importlib.util
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1376,6 +1377,40 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert "Use K2 with judgment" in doctrine
     assert "hlt-k2-context" in doctrine
     assert "never form an allowlist" in doctrine
+
+
+def test_runtime_pack_holds_one_exclusive_lock_across_both_managed_writes(
+    monkeypatch, tmp_path
+):
+    import fcntl
+
+    original_write = grounding._atomic_managed_write
+    writes_observed_under_lock = []
+
+    def checked_write(path, body):
+        lock_path = tmp_path / ".hlt-k2-runtime-pack.lock"
+        with lock_path.open("a+", encoding="utf-8") as contender:
+            try:
+                fcntl.flock(
+                    contender.fileno(),
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                )
+            except BlockingIOError:
+                writes_observed_under_lock.append(path.name)
+            else:  # pragma: no cover - contract failure path
+                fcntl.flock(contender.fileno(), fcntl.LOCK_UN)
+        original_write(path, body)
+
+    monkeypatch.setattr(grounding, "_atomic_managed_write", checked_write)
+
+    result = grounding.install_runtime_pack(
+        _cleo_runtime_pack(),
+        expected_agent_ref="agent:cleo",
+        home=tmp_path,
+    )
+
+    assert result["runtime_pack_applied"] is True
+    assert writes_observed_under_lock == ["SOUL.md", "AGENTS.md"]
 
 
 def test_runtime_pack_cannot_overwrite_an_operator_owned_soul(tmp_path):
@@ -2864,6 +2899,7 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
                 "local_agent_ready": True,
                 "required": True,
             },
+            "bundled_fallback_reason": "K2 timed out",
         }
     )
 
@@ -2874,6 +2910,7 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
     ]
     assert health_gateway.BOOT["runtime_pack_applied"] is True
     assert health_gateway.BOOT["gateway_start_allowed"] is True
+    assert "bundled_fallback_reason" not in health_gateway.BOOT
 
 
 def test_activation_transition_starts_with_the_canonical_pack_when_well_times_out(
@@ -2923,6 +2960,49 @@ def test_activation_transition_starts_with_the_canonical_pack_when_well_times_ou
     assert health_gateway.BOOT["brain_source"] == "katailyst2_runtime_pack"
     assert health_gateway.BOOT["gateway_start_allowed"] is True
     assert health_gateway.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
+
+
+def test_declared_outage_fallback_keeps_watching_for_the_canonical_pack():
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo",
+            "gateway_start_allowed": True,
+            "brain_source": "bundled_outage_fallback",
+        }
+    )
+
+    assert health_gateway._should_watch_for_k2_activation(
+        {"outage_declared": True}
+    ) is True
+
+    health_gateway.BOOT["brain_source"] = "katailyst2_runtime_pack"
+    assert health_gateway._should_watch_for_k2_activation(
+        {"outage_declared": False}
+    ) is False
+
+
+def test_outage_recovery_does_not_restart_an_already_running_gateway(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "_stop",
+        SimpleNamespace(wait=lambda _seconds: False),
+    )
+    monkeypatch.setattr(health_gateway, "_try_k2_activation_once", lambda: True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {"running": True},
+    )
+
+    def unexpected_restart():  # pragma: no cover - must remain hot
+        raise AssertionError("hot recovery restarted the working gateway")
+
+    monkeypatch.setattr(health_gateway.supervisor, "start", unexpected_restart)
+
+    health_gateway._watch_for_k2_activation()
 
 
 def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypatch):
