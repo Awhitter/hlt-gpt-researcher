@@ -53,6 +53,15 @@ DEFAULT_MAX_TURNS = 24
 # independently of whichever model route is active; Hermes still preserves the
 # initial request, rolling summary, and recent tail.
 DEFAULT_COMPRESSION_THRESHOLD_TOKENS = 80_000
+# Hermes keeps the full payload on the durable agent disk and replaces the
+# model-visible result with a 1,500-character preview once this threshold is
+# crossed. K2's nested discovery bridge returned several 19K-53K responses in
+# one ordinary funnel read; upstream's 50K MCP default let most of them stack
+# inside the prompt before compression could help.
+DEFAULT_MCP_RESULT_SIZE_CHARS = 16_000
+DEFAULT_TOOL_SEARCH_LIMIT = 3
+MAX_TOOL_SEARCH_LIMIT = 8
+TOOL_LISTING_MAX_TOKENS = 2_000
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "xai-oauth": DEFAULT_MODEL,
     "openai-codex": "gpt-5.6-sol",
@@ -140,6 +149,10 @@ SLACK_TOOLSETS: tuple[str, ...] = (
     # text_to_speech uses ElevenLabs when ELEVENLABS_API_KEY is set.
     "image_gen",
     "tts",
+    # Read only one bounded page from a result Hermes already persisted under
+    # its own spillover directory. This preserves on-demand depth without
+    # granting Slack the general file/write toolset.
+    "hlt-context",
 )
 
 # One-tap Nursing Mastery product starters at the Agent/Assistant entry point.
@@ -192,6 +205,19 @@ SLACK_PLATFORM_HINT = (
     "Use current source authority. If a capability is not visible, search K2's "
     "progressive catalog and try one credible alternate before reporting the "
     "exact access gap. Do not claim a handoff or delivery without readback.\n"
+    "Hermes already exposes K2 progressively: use host tool_search, describe one "
+    "direct mcp__katailyst2__<verb>, then call it. Prefer that direct verb over "
+    "K2's nested tool_search/tool_describe/tool_execute compatibility bridge. "
+    "If the bridge is genuinely needed, request tool_describe detailLevel "
+    "'summary' first and ask for action plus schema only for the exact action "
+    "you are ready to invoke.\n"
+    "PostHog is exposed through mcp__posthog__exec as a CLI bridge. Use search "
+    "<regex> (or tools), info <tool_name> once, schema <tool_name> <field_path> "
+    "only for hinted complex fields, then call --json <tool_name> <json_input>. "
+    "Reuse the discovered contract; do not guess action names or wrapper shapes.\n"
+    "When a tool result is marked persisted-output, use read_spillover with the "
+    "saved path plus an offset and limit to retrieve only the needed page; do not "
+    "repeat the remote request just to recover omitted output.\n"
     "For a specialist handoff, mention the named agent with a bounded output "
     "and keep working on your part; reconcile their reply instead of waiting.\n"
     "For exact interface text or labeled structure, prefer a deterministic "
@@ -510,6 +536,13 @@ def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
     return list(SLACK_TOOLSETS) + sorted(f"mcp-{name}" for name in servers)
 
 
+def api_server_toolsets(servers: Mapping[str, Any]) -> list[str]:
+    """External-run allowlist without Slack-session-local spillover access."""
+    return [
+        toolset for toolset in slack_toolsets(servers) if toolset != "hlt-context"
+    ]
+
+
 def build_config(
     env: Mapping[str, str], grounding_dir: str = DEFAULT_GROUNDING_DIR
 ) -> dict[str, Any]:
@@ -637,6 +670,13 @@ def build_config(
         # so it is the default here — `ddgs` remains the keyless fallback for a
         # deploy with no Firecrawl credit.
         "tools": {
+            "tool_search": {
+                "enabled": "auto",
+                "search_default_limit": DEFAULT_TOOL_SEARCH_LIMIT,
+                "max_search_limit": MAX_TOOL_SEARCH_LIMIT,
+                "listing": "auto",
+                "listing_max_tokens": TOOL_LISTING_MAX_TOKENS,
+            },
             "web_search": {
                 "provider": _clean(env, "WEB_SEARCH_BACKEND")
                 or ("firecrawl" if _clean(env, "FIRECRAWL_API_KEY") else "ddgs")
@@ -652,7 +692,7 @@ def build_config(
         "platform_toolsets": {
             "slack": slack_toolsets(servers),
             **(
-                {"api_server": slack_toolsets(servers)}
+                {"api_server": api_server_toolsets(servers)}
                 if _clean(env, "OPENCLAW_HQ_HOOK_TOKEN")
                 else {}
             ),
@@ -673,6 +713,17 @@ def build_config(
         },
         "privacy": {"redact_pii": True},
         "security": {"allow_lazy_installs": False},
+        # Managed fleet learning belongs in K2. Upstream's automatic background
+        # reviewer replayed the just-finished 57K-78K-token Slack session through
+        # five additional model calls, then could not write the user-owned skill
+        # it proposed. Disabling that hidden replay does not remove any user tool
+        # or interactive capability.
+        "auxiliary": {"background_review": {"enabled": False}},
+        # Large MCP payloads remain fully recoverable on the durable agent disk;
+        # only the active-context preview is bounded here.
+        "tool_budget": {
+            "mcp_result_size_chars": DEFAULT_MCP_RESULT_SIZE_CHARS,
+        },
         # Alec's single-user state.db is already 103 MB; this box is shared.
         "sessions": {"auto_prune": True},
         "session_reset": {"mode": "both", "idle_minutes": 1440},
@@ -751,6 +802,15 @@ def render(
         "max_tokens": config["model"]["max_tokens"],
         "max_turns": config["agent"]["max_turns"],
         "compression_threshold_tokens": config["compression"]["threshold_tokens"],
+        "mcp_result_size_chars": config["tool_budget"]["mcp_result_size_chars"],
+        "tool_search": {
+            "default_limit": config["tools"]["tool_search"]["search_default_limit"],
+            "max_limit": config["tools"]["tool_search"]["max_search_limit"],
+            "listing_max_tokens": config["tools"]["tool_search"]["listing_max_tokens"],
+        },
+        "background_review_enabled": config["auxiliary"]["background_review"][
+            "enabled"
+        ],
         "agent_ref": agent_ref(env) or "",
         "runtime_lane": runtime_lane(env),
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",

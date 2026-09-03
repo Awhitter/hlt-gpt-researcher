@@ -217,7 +217,7 @@ thread fragments. Keep per-tool, interim, and routine compaction posts off; the
 ephemeral Assistant status is the working-state surface and only the finished
 answer becomes a Slack message.
 
-Four rules that exist because each was once a silent no-op:
+Five rules that exist because each was once a silent no-op:
 
 1. **`platform_toolsets.slack` is a security control, not a preference.**
    Upstream's default Slack toolset is "full access for workspace use" —
@@ -239,6 +239,13 @@ Four rules that exist because each was once a silent no-op:
    SQLite session has a durable `ended_at` and `end_reason`. This is an API
    boundary guarantee for K2-hosted runs; direct Slack gateway delivery does
    not pass through it.
+5. **Keep broad MCP access progressive, not eager.** Hermes' host bridge should
+   search for and call direct K2 verbs; nested K2 `tool_search` / `tool_describe`
+   / `tool_execute` is the compatibility path. MCP results over 16K remain on
+   the durable disk behind a bounded, session-bound `read_spillover` page
+   reader, so lowering the active-context payload does not remove capability.
+   The managed agent's automatic background review stays off because K2 owns
+   durable learning.
 
 AI observability: HLT-hosted GPT Researcher emits Langfuse observations when
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. `/health`
