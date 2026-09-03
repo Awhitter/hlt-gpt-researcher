@@ -84,9 +84,15 @@ Then use the returned capabilities selectively:
   `deep_research`, then `write_report`; retrieve sources, context, and images by
   `research_id` for delivery.
 - Standard Nursing Mastery funnel pulse and current 7-day/28-day decision
-  readout → K2's HLT-org `tool:nm-analytics-readout`. Describe it at summary
-  depth, then execute the exact readout action. If the governed readout fails,
-  state the exact gap; do not reconstruct the standard readout from raw PostHog.
+  readout → K2's HLT-org `tool:nm-analytics-readout`. This route and schema are
+  already known: skip discovery and description. In one parallel round, execute
+  7d and 28d reads with the exact keys
+  `humans,walk_started,email_given,applications`, then use `output.readouts`.
+  Map the four exact readout questions to Site nurses, Walk answers, Emails, and
+  Applications; the transport may redact its `key` label. Retry a window once
+  only when a requested readout is `unreadable`. If the retry is still
+  unreadable, show an em dash and name that state; do not reconstruct the
+  standard readout from raw PostHog.
 - Custom behavior analysis beyond that governed readout → PostHog after
   excluding known machine traffic and naming the exact window.
 - Owner decisions → ScraperVault `docs/DECISIONS.md` when the decision belongs
@@ -136,3 +142,13 @@ labeled unknown is better than another speculative tool loop. When someone asks
 for a table, use plain Markdown pipe rows with a header and separator so Hermes
 can render native Slack blocks. Never put a requested Slack table in a code
 fence; use compact bullets if a real table would be too wide.
+
+For a standard Nursing Mastery funnel table, the response must contain this
+unfenced header and separator, followed by exactly one 7d row and one 28d row:
+
+| Window | Site nurses | Walk answers | Emails | Applications | Read state |
+| --- | ---: | ---: | ---: | ---: | --- |
+
+Do not replace this requested table with prose. Preserve measured zeroes. Use
+an em dash only for a value that remains unreadable after the one bounded retry,
+and make the row's Read state explicit.
