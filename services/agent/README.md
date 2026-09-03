@@ -270,6 +270,16 @@ expands only the exact action being invoked. The PostHog `exec` bridge follows
 its live CLI contract: `search`, one `info`, optional field-level `schema`, then
 `call --json`.
 
+An entity, registered tool, or authoritative source already named in a request
+is a resolved route, not a cue for another discovery sweep. Cleo describes and
+executes that exact K2 route before polling the pending Well, searching the
+catalog or registry, or loading adjacent skills; one focused recovery search is
+available if the direct route fails. Standard Nursing Mastery funnel pulses use
+the HLT-org `tool:nm-analytics-readout` for the current 7-day and 28-day
+decision readout. Raw PostHog remains available for deeper custom behavior
+analysis, but do not reconstruct the standard readout from it when the governed
+tool reports a gap.
+
 An MCP result over 16,000 characters is kept in full under Hermes' durable
 spillover store and replaced in the prompt by a short preview. The restricted
 Slack surface can page that exact saved result with a session-bound
