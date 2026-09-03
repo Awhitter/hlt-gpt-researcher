@@ -473,6 +473,24 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
         "messages_tab_enabled": True,
         "messages_tab_read_only_enabled": False,
     }
+    commands = {entry["command"] for entry in features["slash_commands"]}
+    assert commands == {
+        "/help",
+        "/commands",
+        "/whoami",
+        "/new",
+        "/queue",
+        "/sessions",
+        "/title",
+        "/stop",
+        "/approve",
+        "/deny",
+    }
+    assert commands == {
+        *(f"/{command}" for command in render_config.USER_ALLOWED_COMMANDS),
+        "/approve",
+        "/deny",
+    }
     assert "assistant_view" not in features
     assert 0 < len(agent_view["agent_description"]) <= 300
     assert agent_view["suggested_prompts"] == list(render_config.SUGGESTED_PROMPTS)

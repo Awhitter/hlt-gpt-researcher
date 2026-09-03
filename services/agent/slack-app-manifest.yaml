@@ -26,6 +26,57 @@ features:
     home_tab_enabled: false
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  # Socket Mode still requires each native slash command to be declared on the
+  # Slack app. Keep this list aligned with USER_ALLOWED_COMMANDS plus the two
+  # admin-gated approval controls; omitting it silently removes working UX when
+  # this complete manifest replaces the remote configuration.
+  slash_commands:
+    - command: /help
+      url: https://hermes-agent.local/slack/commands
+      description: Show available commands
+      should_escape: false
+    - command: /commands
+      url: https://hermes-agent.local/slack/commands
+      description: Browse all commands and skills
+      usage_hint: "[page]"
+      should_escape: false
+    - command: /whoami
+      url: https://hermes-agent.local/slack/commands
+      description: Show your command access
+      should_escape: false
+    - command: /new
+      url: https://hermes-agent.local/slack/commands
+      description: Start a fresh session
+      usage_hint: "[name]"
+      should_escape: false
+    - command: /queue
+      url: https://hermes-agent.local/slack/commands
+      description: Queue a prompt for the next turn
+      usage_hint: "<prompt>"
+      should_escape: false
+    - command: /sessions
+      url: https://hermes-agent.local/slack/commands
+      description: Browse and resume sessions
+      should_escape: false
+    - command: /title
+      url: https://hermes-agent.local/slack/commands
+      description: Name the current session
+      usage_hint: "[name]"
+      should_escape: false
+    - command: /stop
+      url: https://hermes-agent.local/slack/commands
+      description: Stop running work
+      should_escape: false
+    - command: /approve
+      url: https://hermes-agent.local/slack/commands
+      description: Approve a pending command
+      usage_hint: "[session|always]"
+      should_escape: false
+    - command: /deny
+      url: https://hermes-agent.local/slack/commands
+      description: Deny a pending command
+      usage_hint: "[all] [reason]"
+      should_escape: false
   agent_view:
     agent_description: >-
       Cleo is Nursing Mastery's product owner. She turns live product, funnel,
