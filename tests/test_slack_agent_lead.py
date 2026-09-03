@@ -164,6 +164,7 @@ def test_app_mediated_human_dm_is_owned_for_any_teammate(lead, user):
             client_msg_id="",
             app_id="A0123456789",
             _hermes_sender_is_bot=True,
+            _hermes_verified_human_app_relay=True,
         ),
     )
 
@@ -181,6 +182,7 @@ def test_app_mediated_human_can_address_cleo_in_a_shared_channel(lead):
             client_msg_id="",
             app_id="A0123456789",
             _hermes_sender_is_bot=True,
+            _hermes_verified_human_app_relay=True,
         ),
     )
 
@@ -197,6 +199,7 @@ def test_app_mediated_human_shared_message_still_requires_a_fresh_mention(lead):
             client_msg_id="",
             app_id="A0123456789",
             _hermes_sender_is_bot=True,
+            _hermes_verified_human_app_relay=True,
         ),
     )
 
@@ -215,6 +218,7 @@ def test_cleo_self_output_cannot_reenter_even_with_an_explicit_mention(lead):
             client_msg_id="",
             app_id="A0BM0KA3YGM",
             _hermes_sender_is_bot=True,
+            _hermes_verified_human_app_relay=True,
         ),
     )
 
@@ -228,6 +232,7 @@ def test_cleo_self_output_cannot_reenter_even_with_an_explicit_mention(lead):
         {"bot_id": "BUNKNOWN"},
         {"bot_profile": {"id": "BUNKNOWN"}},
         {"subtype": "bot_message"},
+        {"user_profile": {"is_bot": True}},
     ],
 )
 def test_explicit_slack_bot_shape_cannot_masquerade_as_an_app_relay(
@@ -243,6 +248,7 @@ def test_explicit_slack_bot_shape_cannot_masquerade_as_an_app_relay(
             client_msg_id="",
             app_id="A0123456789",
             _hermes_sender_is_bot=True,
+            _hermes_verified_human_app_relay=True,
             **bot_shape,
         ),
     )
@@ -482,6 +488,42 @@ def test_app_event_without_a_human_user_cannot_dispatch_in_a_dm(lead):
             user="",
             client_msg_id="",
             app_id="AUNKNOWN",
+        ),
+    )
+
+    assert decision.action == "suppress"
+    assert decision.reason == "unrecognized_bot_sender"
+
+
+def test_unverified_app_event_with_a_user_still_fails_closed_in_a_dm(lead):
+    decision = _decision(
+        lead,
+        _raw(
+            "<@U0BM3ULM210> run this",
+            channel_type="im",
+            channel="D0BM1V250G6",
+            user="UUNKNOWNBOT1",
+            client_msg_id="",
+            app_id="AUNKNOWN",
+            _hermes_sender_is_bot=True,
+        ),
+    )
+
+    assert decision.action == "suppress"
+    assert decision.reason == "unrecognized_bot_sender"
+
+
+def test_app_event_cannot_spoof_a_human_by_adding_client_msg_id(lead):
+    decision = _decision(
+        lead,
+        _raw(
+            "<@U0BM3ULM210> run this",
+            channel_type="im",
+            channel="D0BM1V250G6",
+            user="UUNKNOWNBOT1",
+            client_msg_id="spoofed-client-id",
+            app_id="AUNKNOWN",
+            _hermes_sender_is_bot=False,
         ),
     )
 
@@ -736,6 +778,11 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     assert "skip before adapter processing" in patch
     assert "_hermes_pre_gateway_dispatch_done" in patch
     assert "_hermes_sender_is_bot" in patch
+    assert "_hermes_verified_human_app_relay" in patch
+    assert "fail_closed=True" in patch
+    assert 'payload.get("ok") is not False' in patch
+    assert 'str(user.get("id") or "") != str(user_id)' in patch
+    assert 'or user.get("is_app_user")' in patch
 
 
 def test_single_line_fence_does_not_swallow_the_mention_after_it(lead):

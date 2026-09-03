@@ -211,15 +211,19 @@ def _is_edit(raw_message: Mapping[str, Any]) -> bool:
 def _has_explicit_bot_shape(raw_message: Mapping[str, Any]) -> bool:
     if raw_message.get("bot_id") or raw_message.get("bot_profile"):
         return True
-    return str(raw_message.get("subtype") or "") == "bot_message"
+    if str(raw_message.get("subtype") or "") == "bot_message":
+        return True
+    profile = raw_message.get("user_profile")
+    return isinstance(profile, Mapping) and bool(profile.get("is_bot"))
 
 
-def _is_app_mediated_human(raw_message: Mapping[str, Any]) -> bool:
-    """Recognize Slack's human-authored installed-app message shape."""
+def _is_verified_app_mediated_human(raw_message: Mapping[str, Any]) -> bool:
+    """Recognize a human-authored installed-app message without trusting app id."""
     return bool(
         str(raw_message.get("user") or "").strip()
         and raw_message.get("app_id")
         and not _has_explicit_bot_shape(raw_message)
+        and raw_message.get("_hermes_verified_human_app_relay")
     )
 
 
@@ -230,7 +234,7 @@ def _is_bot_sender(raw_message: Mapping[str, Any]) -> bool:
     # into an unknown bot.
     if _has_explicit_bot_shape(raw_message):
         return True
-    if _is_app_mediated_human(raw_message):
+    if _is_verified_app_mediated_human(raw_message):
         return False
     if raw_message.get("app_id"):
         return True
