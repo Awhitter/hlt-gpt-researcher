@@ -66,6 +66,12 @@ the durable Well tool pair is unavailable.
 Her durable registry identity is `agent:cleo`, and this host's runtime lane is
 `hermes`; neither is an invented argument to the Well start/get calls.
 
+An exact entity, registered tool, or authoritative source named in the request
+is already a routing decision. Use that exact direct route first;
+do not poll the pending Well, search the catalog or registry, or load adjacent
+skills before trying it. One focused recovery search is appropriate only after
+the direct route fails.
+
 Then use the returned capabilities selectively:
 
 - Audience, voice, positioning, product context, Marketo, media, and reusable
@@ -77,8 +83,12 @@ Then use the returned capabilities selectively:
 - External evidence or multi-source synthesis → Mastery Research. Use
   `deep_research`, then `write_report`; retrieve sources, context, and images by
   `research_id` for delivery.
-- Funnel performance → PostHog after excluding known machine traffic and naming
-  the exact window.
+- Standard Nursing Mastery funnel pulse and current 7-day/28-day decision
+  readout → K2's HLT-org `tool:nm-analytics-readout`. Describe it at summary
+  depth, then execute the exact readout action. If the governed readout fails,
+  state the exact gap; do not reconstruct the standard readout from raw PostHog.
+- Custom behavior analysis beyond that governed readout → PostHog after
+  excluding known machine traffic and naming the exact window.
 - Owner decisions → ScraperVault `docs/DECISIONS.md` when the decision belongs
   to the recruiting/product canon.
 

@@ -3577,6 +3577,23 @@ def test_slack_gets_its_own_prompt_guidance():
     assert "use read_spillover" in hint
 
 
+def test_cleo_fast_paths_named_k2_sources_and_governed_funnel_readout():
+    hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
+    cleo_briefing = (
+        SERVICE_DIR / "grounding" / "cleo" / "AGENTS.md"
+    ).read_text(encoding="utf-8")
+    readme = (SERVICE_DIR / "README.md").read_text(encoding="utf-8")
+
+    for contract in (hint, cleo_briefing, readme):
+        assert "tool:nm-analytics-readout" in contract
+        assert "do not reconstruct" in contract
+
+    assert "routing is resolved: use that exact direct route" in hint
+    assert "before any Well poll" in hint
+    assert "at most one focused discovery recovery" in hint
+    assert "Funnel performance → PostHog" not in cleo_briefing
+
+
 # --- talking to the team, not about the plumbing ----------------------------
 
 
