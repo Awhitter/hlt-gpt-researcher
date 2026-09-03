@@ -48,6 +48,11 @@ ROSTER_PARTICIPANT_REFS = frozenset(
     {"agent:victoria", "agent:lila", "agent:julius", "agent:cleo"}
 )
 ROSTER_NONPARTICIPANT_REFS = frozenset({"agent:brian"})
+# Slack preserves the human author in ``user`` for owner-authored messages sent
+# through an installed app.  App attribution can still make Hermes mark that
+# event as bot-mediated, so trust the signed Slack owner + one-to-one DM
+# boundary rather than an app id that is not present in every event shape.
+TRUSTED_OWNER_DM_RELAY_USER_IDS = frozenset({"U06MWH7PE"})
 _SLACK_MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>", re.IGNORECASE)
 
 
@@ -258,7 +263,16 @@ def select_slack_agent_lead(
     # bot_id/subtype markers from the raw event. The pinned roster user IDs are
     # bot identities, so they remain peers at this pure-selector boundary.
     sender_is_bot = _is_bot_sender(raw_message) or sender_is_recognized_peer
+    if (
+        sender_is_recognized_peer
+        and roster.by_user_id[sender_user_id].agent_ref == local_ref
+    ):
+        return SlackLeadDecision(action="suppress", reason="self_bot_sender", **base)
     if sender_is_bot and not sender_is_recognized_peer:
+        if kind == "dm" and sender_user_id in TRUSTED_OWNER_DM_RELAY_USER_IDS:
+            return SlackLeadDecision(
+                action="allow", reason="owned_dm_via_app", **base
+            )
         return SlackLeadDecision(
             action="suppress", reason="unrecognized_bot_sender", **base
         )
