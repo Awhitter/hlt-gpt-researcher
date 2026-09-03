@@ -152,6 +152,53 @@ def test_human_one_to_one_dm_is_owned_without_a_mention(lead):
     assert decision.channel_kind == "dm"
 
 
+def test_owner_authored_chatgpt_relay_is_owned_in_a_one_to_one_dm(lead):
+    decision = _decision(
+        lead,
+        _raw(
+            "Can you check the funnel?",
+            channel_type="im",
+            channel="D0BM1V250G6",
+            user="U06MWH7PE",
+            client_msg_id="",
+            app_id="A_CHATGPT",
+            _hermes_sender_is_bot=True,
+        ),
+    )
+
+    assert decision.action == "allow"
+    assert decision.reason == "owned_dm_via_app"
+    assert decision.channel_kind == "dm"
+
+
+@pytest.mark.parametrize(
+    ("user", "channel_type", "channel", "reason"),
+    [
+        ("U0BM3ULM210", "im", "D0BM1V250G6", "self_bot_sender"),
+        ("UUNRECOGNIZED1", "im", "D0BM1V250G6", "unrecognized_bot_sender"),
+        ("U06MWH7PE", "channel", "C0BNVFN5MM5", "unrecognized_bot_sender"),
+    ],
+)
+def test_bot_mediated_owner_exception_never_opens_self_unknown_or_public_senders(
+    lead, user, channel_type, channel, reason
+):
+    decision = _decision(
+        lead,
+        _raw(
+            "<@U0BM3ULM210> can you check the funnel?",
+            channel_type=channel_type,
+            channel=channel,
+            user=user,
+            client_msg_id="",
+            app_id="A_CHATGPT",
+            _hermes_sender_is_bot=True,
+        ),
+    )
+
+    assert decision.action == "suppress"
+    assert decision.reason == reason
+
+
 def test_mpim_is_shared_and_requires_a_fresh_mention(lead):
     silent = _decision(
         lead,
