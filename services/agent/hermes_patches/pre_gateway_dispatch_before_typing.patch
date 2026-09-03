@@ -1,8 +1,8 @@
 diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
-index 6bae26aa0..b86e6c51e 100644
+index 3ad1ea1..e03ebc2 100644
 --- a/gateway/platforms/base.py
 +++ b/gateway/platforms/base.py
-@@ -6053,6 +6053,49 @@ class BasePlatformAdapter(ABC):
+@@ -6253,6 +6253,49 @@ class BasePlatformAdapter(ABC):
          if not self._message_handler:
              return
  
@@ -53,10 +53,10 @@ index 6bae26aa0..b86e6c51e 100644
              coerce_plaintext_gateway_command(event)
  
 diff --git a/gateway/run.py b/gateway/run.py
-index 84604b303..0a53de757 100644
+index 8264eed..e2f8de0 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -16562,7 +16562,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -18135,7 +18135,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          #   {"action": "allow"}   /   None          -> normal dispatch
          # Hook runs BEFORE auth so plugins can handle unauthorized senders
          # (e.g. customer handover ingest) without triggering the pairing flow.
@@ -68,13 +68,136 @@ index 84604b303..0a53de757 100644
                  from hermes_cli.lifecycle import invoke_hook as _invoke_hook
                  _hook_results = _invoke_hook(
 diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
-index e017838fc..8b8025ff1 100644
+index cd8e237..5bdf836 100644
 --- a/plugins/platforms/slack/adapter.py
 +++ b/plugins/platforms/slack/adapter.py
-@@ -5842,6 +5842,11 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -3847,11 +3847,16 @@ class SlackAdapter(BasePlatformAdapter):
+         profile = event.get("user_profile")
+         if isinstance(profile, dict) and bool(profile.get("is_bot")):
+             return True
+-        # Some Slack app-originated events arrive without subtype=bot_message
+-        # or bot_id, but they still carry app_id and no client_msg_id. Real
+-        # human-authored messages normally carry client_msg_id, so treat the
+-        # combination as app/bot-authored (#35777).
+-        if event.get("app_id") and not event.get("client_msg_id"):
++        # An app-mediated message is human only after the adapter has checked
++        # its Slack user through users.info. Keep explicit bot shapes above as
++        # the stronger signal, then preserve that verified result at every
++        # later routing gate instead of reclassifying the same relay as a bot.
++        if event.get("_hermes_verified_human_app_relay"):
++            return False
++        # App attribution is bot/app-shaped until this adapter verifies the
++        # preserved Slack user through users.info below. client_msg_id is not
++        # an identity signal: an app can supply one too.
++        if event.get("app_id"):
+             return True
+         return False
+ 
+@@ -4694,22 +4699,28 @@ class SlackAdapter(BasePlatformAdapter):
+         )
+ 
+     async def _resolve_user_is_bot(
+-        self, user_id: str, chat_id: str = "", team_id: str = ""
++        self,
++        user_id: str,
++        chat_id: str = "",
++        team_id: str = "",
++        *,
++        fail_closed: bool = False,
+     ) -> bool:
+         """Resolve whether a Slack user ID is a bot account, with caching.
+ 
+         Workspace-scoped like :meth:`_resolve_user_name` — Slack user IDs are
+-        team-local, so the cache key includes the team.
++        team-local, so the cache key includes the team. A caller admitting an
++        otherwise ambiguous app relay may request fail-closed resolution;
++        unsuccessful lookups are never cached as human.
+         """
+         if not user_id:
+-            return False
++            return fail_closed
+         team_id = str(team_id or self._channel_team.get(chat_id, ""))
+         cache_key = (team_id, str(user_id))
+         if cache_key in self._user_is_bot_cache:
+             return self._user_is_bot_cache[cache_key]
+         if not self._app:
+-            self._user_is_bot_cache[cache_key] = False
+-            return False
++            return fail_closed
+ 
+         try:
+             client = (
+@@ -4719,15 +4730,18 @@ class SlackAdapter(BasePlatformAdapter):
+             )
+             result = await client.users_info(user=user_id)
+             payload = _slack_response_payload(result)
+-            if not payload:
+-                self._user_is_bot_cache[cache_key] = False
++            user = payload.get("user") if payload.get("ok") is not False else None
++            if (
++                not isinstance(user, dict)
++                or str(user.get("id") or "") != str(user_id)
++            ):
+                 self._user_name_cache.setdefault(cache_key, user_id)
+-                return False
+-            user = payload.get("user", {})
+-            profile = user.get("profile", {}) if isinstance(user, dict) else {}
++                return fail_closed
++            profile = user.get("profile", {})
+             is_bot = bool(
+                 user.get("is_bot")
+                 or user.get("is_workflow_bot")
++                or user.get("is_app_user")
+                 or (isinstance(profile, dict) and profile.get("bot_id"))
+             )
+             self._user_is_bot_cache[cache_key] = is_bot
+@@ -4747,8 +4761,7 @@ class SlackAdapter(BasePlatformAdapter):
+             return is_bot
+         except Exception as e:
+             logger.debug("[Slack] users.info bot check failed for %s: %s", user_id, e)
+-            self._user_is_bot_cache[cache_key] = False
+-            return False
++            return fail_closed
+ 
+     async def send_image_file(
+         self,
+@@ -6120,13 +6133,43 @@ class SlackAdapter(BasePlatformAdapter):
+         # real human-authored Slack messages normally carry client_msg_id;
+         # bot/app-originated events that slip past the markers often do not.
+         msg_user = event.get("user", "")
++        user_profile = event.get("user_profile")
++        explicit_bot_shape = bool(
++            event.get("bot_id")
++            or event.get("bot_profile")
++            or event.get("subtype") == "bot_message"
++            or (
++                isinstance(user_profile, dict)
++                and bool(user_profile.get("is_bot"))
++            )
++        )
++        ambiguous_app_relay = bool(
++            msg_user
++            and event.get("app_id")
++            and not explicit_bot_shape
++        )
+         sender_is_bot = self._event_declares_bot_sender(event)
+-        if not sender_is_bot and msg_user and not event.get("client_msg_id"):
++        if ambiguous_app_relay:
+             sender_is_bot = await self._resolve_user_is_bot(
+                 msg_user,
                  chat_id=event.get("channel", ""),
                  team_id=str(event.get("team") or event.get("team_id") or ""),
++                fail_closed=True,
              )
++            if not sender_is_bot:
++                event["_hermes_verified_human_app_relay"] = True
++        elif not sender_is_bot and msg_user and not event.get("client_msg_id"):
++            sender_is_bot = await self._resolve_user_is_bot(
++                msg_user,
++                chat_id=event.get("channel", ""),
++                team_id=str(event.get("team") or event.get("team_id") or ""),
++                fail_closed=True,
++            )
 +        if sender_is_bot:
 +            # Preserve the adapter's users.info result for pre-dispatch
 +            # admission. Some bot posts have only a user id, with no bot_id,
