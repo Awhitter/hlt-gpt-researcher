@@ -1,0 +1,205 @@
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index 5ee9da8..90860be 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -1821,6 +1821,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+             tool_use_id=tool_call_id,
+             env=get_active_env(effective_task_id),
+             config=_tool_budget,
++            session_id=getattr(agent, "session_id", "") or "",
+         ) if not _is_multimodal_tool_result(function_result) else function_result
+         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
+ 
+@@ -1918,7 +1919,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+     num_tools = len(parsed_calls)
+     if finalize and num_tools > 0:
+         turn_tool_msgs = messages[-num_tools:]
+-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
++        enforce_turn_budget(
++            turn_tool_msgs,
++            env=get_active_env(effective_task_id),
++            config=_tool_budget,
++            session_id=getattr(agent, "session_id", "") or "",
++        )
+ 
+     # ── /steer injection ──────────────────────────────────────────────
+     # Append any pending user steer text to the last tool result so the
+@@ -2746,6 +2752,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+             tool_use_id=tool_call_id,
+             env=get_active_env(effective_task_id),
+             config=_tool_budget,
++            session_id=getattr(agent, "session_id", "") or "",
+         ) if not _is_multimodal_tool_result(function_result) else function_result
+         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
+ 
+@@ -2853,7 +2860,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+     # be discarded when aggregate budget enforcement replaces a tool result.
+     num_tools_seq = len(assistant_message.tool_calls)
+     if finalize and num_tools_seq > 0:
+-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
++        enforce_turn_budget(
++            messages[-num_tools_seq:],
++            env=get_active_env(effective_task_id),
++            config=_tool_budget,
++            session_id=getattr(agent, "session_id", "") or "",
++        )
+ 
+     # ── /steer injection ──────────────────────────────────────────────
+     # See _execute_tool_calls_parallel for the rationale. Same hook,
+@@ -2920,6 +2932,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
+             messages[-total_tools:],
+             env=get_active_env(effective_task_id),
+             config=_tool_budget,
++            session_id=getattr(agent, "session_id", "") or "",
+         )
+         agent._apply_pending_steer_to_tool_results(messages, total_tools)
+ 
+diff --git a/tools/tool_result_storage.py b/tools/tool_result_storage.py
+index 1fc3085..ab28826 100644
+--- a/tools/tool_result_storage.py
++++ b/tools/tool_result_storage.py
+@@ -210,7 +210,15 @@ def _resolve_storage_dir(env) -> str:
+     return STORAGE_DIR
+ 
+ 
+-def _safe_result_filename(tool_use_id: str) -> str:
++def _session_spillover_prefix(session_id: str) -> str:
++    """Return an opaque stable prefix for one session's spillover files."""
++    raw_session_id = str(session_id or "")
++    if not raw_session_id:
++        return ""
++    return hashlib.sha256(raw_session_id.encode("utf-8")).hexdigest()[:20]
++
++
++def _safe_result_filename(tool_use_id: str, session_id: str = "") -> str:
+     """Return a single safe filename for a tool result id."""
+     raw_id = str(tool_use_id or "tool_result")
+     safe_stem = _UNSAFE_RESULT_FILENAME_CHARS.sub("_", raw_id).strip("._-")
+@@ -225,7 +233,8 @@ def _safe_result_filename(tool_use_id: str) -> str:
+         safe_stem = safe_stem[:_MAX_RESULT_FILENAME_STEM].rstrip("._-") or "tool_result"
+         safe_stem = f"{safe_stem}_{digest}"
+ 
+-    return f"{safe_stem}.txt"
++    prefix = _session_spillover_prefix(session_id)
++    return f"{prefix}_{safe_stem}.txt" if prefix else f"{safe_stem}.txt"
+ 
+ 
+ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
+@@ -281,11 +281,14 @@ def _build_persisted_message(
+     msg = f"{PERSISTED_OUTPUT_TAG}\n"
+     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
+     msg += f"Full output saved to: {file_path}\n"
+-    msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n"
+     msg += (
+-        "Recovery: page through the saved file with read_file (offset/limit) or "
+-        "process it with execute_code — do NOT re-request the same data from the "
+-        "remote API; the full result is already on disk.\n\n"
++        "Use read_file with offset and limit, or the platform's read_spillover "
++        "tool when host file access is restricted, to retrieve only the needed "
++        "section.\n"
++    )
++    msg += (
++        "Recovery: page through the saved result instead of re-requesting the same "
++        "data from the remote API; the full result is already on disk.\n\n"
+     )
+     msg += f"Preview (first {len(preview)} chars):\n"
+     msg += preview
+@@ -318,6 +330,7 @@ def maybe_persist_tool_result(
+     env=None,
+     config: BudgetConfig = DEFAULT_BUDGET,
+     threshold: int | float | None = None,
++    session_id: str = "",
+ ) -> str:
+     """Layer 2: persist oversized result into the sandbox, return preview + path.
+ 
+@@ -344,7 +357,7 @@ def maybe_persist_tool_result(
+     if len(content) <= effective_threshold:
+         return content
+ 
+-    filename = _safe_result_filename(tool_use_id)
++    filename = _safe_result_filename(tool_use_id, session_id=session_id)
+     preview, has_more = generate_preview(content, max_chars=config.preview_size)
+ 
+     # Always persist host-side first: $HERMES_HOME/cache/spillover is the
+@@ -400,6 +413,7 @@ def enforce_turn_budget(
+     tool_messages: list[dict],
+     env=None,
+     config: BudgetConfig = DEFAULT_BUDGET,
++    session_id: str = "",
+ ) -> list[dict]:
+     """Layer 3: enforce aggregate budget across all tool results in a turn.
+ 
+@@ -437,6 +451,7 @@ def enforce_turn_budget(
+             env=env,
+             config=config,
+             threshold=0,
++            session_id=session_id,
+         )
+         if replacement != content:
+             total_size -= size
+diff --git a/tools/tool_search.py b/tools/tool_search.py
+index 66f1b19..ec759c0 100644
+--- a/tools/tool_search.py
++++ b/tools/tool_search.py
+@@ -77,8 +77,13 @@ CHARS_PER_TOKEN = 4.0
+ 
+ # Bound the work one tool_search bridge call can request.
+ _MAX_QUERIES_PER_CALL = 10
+-# Bound the work one tool_describe bridge call can request.
++# Bound the work one tool_describe bridge call can request. A model may still
++# ask for ten names, but disclosure is progressive: only the first three are
++# returned and the remainder are handed back as ``deferred_names``. This keeps
++# one discovery step from filling the context while preserving every schema.
+ _MAX_DESCRIBE_NAMES_PER_CALL = 10
++_MAX_DESCRIBE_NAMES_PER_RESPONSE = 3
++_MAX_TOOL_DESCRIPTION_CHARS = 4_000
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -1151,6 +1156,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
+             "Retry with fewer names per call."
+         )
+ 
++    deferred_names = names[_MAX_DESCRIBE_NAMES_PER_RESPONSE:]
++    names = names[:_MAX_DESCRIBE_NAMES_PER_RESPONSE]
++
+     _, deferrable = classify_tools(current_tool_defs)
+     by_name: Dict[str, Dict[str, Any]] = {}
+     for td in deferrable:
+@@ -1164,10 +1172,22 @@ def dispatch_tool_describe(args: Dict[str, Any],
+     for name in names:
+         fn = by_name.get(name)
+         if fn is not None:
++            description = str(fn.get("description", "") or "")
++            original_description_chars = len(description)
++            description_compacted = original_description_chars > _MAX_TOOL_DESCRIPTION_CHARS
++            if description_compacted:
++                marker = "\n\n[Description compacted; the input schema below is complete.]"
++                description = (
++                    description[: _MAX_TOOL_DESCRIPTION_CHARS - len(marker)].rstrip()
++                    + marker
++                )
+             tools[name] = {
+-                "description": fn.get("description", ""),
++                "description": description,
+                 "parameters": fn.get("parameters", {}),
+             }
++            if description_compacted:
++                tools[name]["description_compacted"] = True
++                tools[name]["description_original_chars"] = original_description_chars
+         elif _describe_classification(name) == "not_deferrable":
+             errors[name] = (
+                 f"'{name}' is not a deferrable tool. If you see it in the tools list "
+@@ -1177,6 +1197,12 @@ def dispatch_tool_describe(args: Dict[str, Any],
+             not_found.append(name)
+ 
+     result: Dict[str, Any] = {"tools": tools}
++    if deferred_names:
++        result["deferred_names"] = deferred_names
++        result["next"] = (
++            "Call tool_describe again with deferred_names only if the task still "
++            "needs them. Prefer describing one tool immediately before calling it."
++        )
+     if not_found:
+         result["not_found"] = not_found
+         result["hint"] = "Names in not_found are not currently available. Re-run tool_search to refresh."

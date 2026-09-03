@@ -134,12 +134,13 @@ Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
 
 `/health.config.configured_model_route` exposes the intended ordered route:
-Grok 4.6, Codex GPT-5.6 Sol, then the current Kimi K3, Qwen 3.8 Max, and
-DeepSeek V4 Pro OpenRouter routes. `model_route_readiness` checks each route's
-credential without exposing tokens. `gateway.observed_model_route` remains
-empty until a successful model call, then names the provider/model that really
-answered — including a fallback. Cleo caps one generated provider reply at
-32,768 tokens, caps a run at 24 model iterations, and compacts the working
+Grok 4.6, then the current Kimi K3, Qwen 3.8 Max, and DeepSeek V4 Pro
+OpenRouter routes. When `XAI_API_KEY` is present, the same Grok model over xAI's
+key route joins first as an OAuth recovery hop. `model_route_readiness` checks
+each route's credential without exposing tokens. `gateway.observed_model_route`
+remains empty until a successful model call, then names the provider/model that
+really answered — including a fallback. Cleo caps one generated provider reply
+at 32,768 tokens, caps a run at 24 model iterations, and compacts the working
 prompt at 80,000 tokens. These provider-independent limits keep a useful run
 from consuming a whole subscription rate window without reducing the models'
 readable context or Cleo's tool access. `/health.config.max_turns` and
@@ -249,6 +250,25 @@ The canonical K2 runtime pack is installed at boot. Turns use `registry.get`
 at card or concise depth first and load a full body only when needed; fetching
 the runtime pack again or opening several full registry bodies just burns the
 working context without adding authority.
+
+Hermes' own progressive bridge is the first discovery door: search for a
+direct `mcp__katailyst2__<verb>`, describe one candidate, then call it. Host
+search returns three candidates by default (eight maximum), and a multi-name
+describe reveals three tools at a time while retaining each complete input
+schema. K2's compatibility `tool_describe` starts at `detailLevel: summary` and
+expands only the exact action being invoked. The PostHog `exec` bridge follows
+its live CLI contract: `search`, one `info`, optional field-level `schema`, then
+`call --json`.
+
+An MCP result over 16,000 characters is kept in full under Hermes' durable
+spillover store and replaced in the prompt by a short preview. The restricted
+Slack surface can page that exact saved result with a session-bound
+`read_spillover` byte cursor; it never receives the general file/write toolset,
+and the external API hook never receives the reader.
+`/health.config.mcp_result_size_chars` and `/health.config.tool_search` expose
+the deployed limits. Automatic Hermes background review is disabled for this
+managed agent: K2 owns durable learning, and replaying a finished Slack turn
+through more model calls cannot update the user-owned skill anyway.
 
 One-to-one DMs belong to the agent the teammate opened. Channels and group DMs
 require a fresh native Slack mention; the first recognized, nonquoted mention

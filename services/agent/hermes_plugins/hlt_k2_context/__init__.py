@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,10 @@ from .slack_lead_ledger import RECEIPT_SCHEMA, SlackLeadLedger
 
 logger = logging.getLogger(__name__)
 
+SPILLOVER_DEFAULT_PAGE_CHARS = 8_000
+SPILLOVER_MAX_PAGE_CHARS = 12_000
+_SAFE_SPILLOVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,220}\.txt")
+
 HOSTED_K2_CONTEXT = (
     "[Katailyst2 hosted mission — bounded handoff already supplied] "
     "K2 has already provided the mission context and any selected context refs in "
@@ -31,6 +37,100 @@ HOSTED_K2_CONTEXT = (
     "allow at most one focused recovery search, and return a useful final before "
     "the deadline."
 )
+
+
+def _spillover_session_prefix(session_id: str) -> str:
+    """Mirror the pinned Hermes prefix without exposing the session id."""
+    raw_session_id = str(session_id or "")
+    if not raw_session_id:
+        return ""
+    return hashlib.sha256(raw_session_id.encode("utf-8")).hexdigest()[:20]
+
+
+def _read_spillover(args: Any = None, **context: Any) -> str:
+    """Read one bounded page from a Hermes-owned persisted tool result.
+
+    Slack intentionally has no general file toolset because that also grants
+    writes. Oversized MCP results are nevertheless stored under
+    ``$HERMES_HOME/cache/spillover``. This narrow reader accepts only a saved
+    result's basename (or the exact path shown in ``persisted-output``), cannot
+    traverse elsewhere, requires the originating session, and never mutates
+    the file.
+    """
+    values = args if isinstance(args, Mapping) else {}
+    raw_handle = str(values.get("handle") or "").strip()
+    filename = Path(raw_handle).name
+    if not raw_handle or not _SAFE_SPILLOVER_NAME.fullmatch(filename):
+        return json.dumps(
+            {"error": "handle must be a .txt result path from persisted-output"}
+        )
+
+    session_prefix = _spillover_session_prefix(
+        str(context.get("session_id") or "")
+    )
+    if not session_prefix or not filename.startswith(f"{session_prefix}_"):
+        return json.dumps({"error": "saved result does not belong to this session"})
+
+    try:
+        offset = int(values.get("offset", 0))
+        limit = int(values.get("limit", SPILLOVER_DEFAULT_PAGE_CHARS))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "offset and limit must be integers"})
+    if offset < 0:
+        return json.dumps({"error": "offset must be zero or greater"})
+    limit = max(1, min(limit, SPILLOVER_MAX_PAGE_CHARS))
+
+    root = (Path(os.getenv("HERMES_HOME", "/data/hermes")) / "cache" / "spillover")
+    try:
+        root = root.resolve(strict=True)
+        path = (root / filename).resolve(strict=True)
+    except OSError:
+        return json.dumps({"error": "saved result is unavailable or expired"})
+    if path.parent != root or not path.is_file():
+        return json.dumps(
+            {"error": "saved result path is outside the spillover store"}
+        )
+
+    try:
+        total_bytes = path.stat().st_size
+        if offset > total_bytes:
+            return json.dumps({"error": "offset exceeds the saved result size"})
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            raw_page = handle.read(limit + 4)
+    except OSError:
+        return json.dumps({"error": "saved result could not be read"})
+
+    # Offsets are bytes so a late page never rereads the whole file. The
+    # persisted result is valid UTF-8; extend by at most three bytes to finish
+    # the final code point. Reject caller-chosen offsets inside a code point.
+    target = min(limit, len(raw_page))
+    page = None
+    consumed = 0
+    for end in range(target, min(len(raw_page), target + 3) + 1):
+        try:
+            page = raw_page[:end].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        consumed = end
+        break
+    if page is None:
+        return json.dumps({"error": "offset is not aligned to UTF-8 content"})
+
+    next_offset = offset + consumed
+    return json.dumps(
+        {
+            "schema": "hlt_spillover_page.v1",
+            "handle": filename,
+            "offset": offset,
+            "returnedBytes": consumed,
+            "totalBytes": total_bytes,
+            "hasMore": next_offset < total_bytes,
+            "nextOffset": next_offset if next_offset < total_bytes else None,
+            "content": page,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _agent_ref() -> str:
@@ -241,5 +341,48 @@ def _pre_llm_call(
 
 
 def register(ctx: Any) -> None:
+    description = (
+        "Read one bounded page from a large tool result Hermes already saved. "
+        "Pass the exact path or filename shown inside persisted-output plus an "
+        "optional byte offset and limit. Read-only and spillover-scoped."
+    )
+    ctx.register_tool(
+        name="read_spillover",
+        toolset="hlt-context",
+        schema={
+            "name": "read_spillover",
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "Exact saved .txt path or filename from persisted-output.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "UTF-8 byte offset returned by the prior page.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": SPILLOVER_MAX_PAGE_CHARS,
+                        "default": SPILLOVER_DEFAULT_PAGE_CHARS,
+                        "description": (
+                            "Maximum UTF-8 bytes to return, plus a complete "
+                            "final code point."
+                        ),
+                    },
+                },
+                "required": ["handle"],
+                "additionalProperties": False,
+            },
+        },
+        handler=_read_spillover,
+        description=description,
+        emoji="📄",
+    )
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_llm_call", _pre_llm_call)

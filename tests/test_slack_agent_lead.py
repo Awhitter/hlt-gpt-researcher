@@ -744,7 +744,8 @@ def test_plugin_registers_lead_selection_before_mission_context():
     plugin = _load_plugin()
     registrations = []
     context = SimpleNamespace(
-        register_hook=lambda name, callback: registrations.append((name, callback))
+        register_hook=lambda name, callback: registrations.append((name, callback)),
+        register_tool=lambda **_kwargs: None,
     )
 
     plugin.register(context)

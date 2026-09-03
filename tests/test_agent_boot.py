@@ -116,7 +116,10 @@ def test_external_runs_use_the_pinned_hermes_loopback_surface():
         "extra": {"host": "127.0.0.1", "port": 8642},
     }
     assert config["gateway"]["api_server"]["max_concurrent_runs"] == 2
-    assert config["platform_toolsets"]["api_server"] == config["platform_toolsets"]["slack"]
+    assert config["platform_toolsets"]["api_server"] == render_config.api_server_toolsets(
+        config["mcp_servers"]
+    )
+    assert "hlt-context" not in config["platform_toolsets"]["api_server"]
     assert config["plugins"]["enabled"] == ["hlt-k2-context"]
 
 
@@ -632,6 +635,37 @@ def test_turn_and_context_budgets_bound_subscription_usage(tmp_path):
     assert summary["compression_threshold_tokens"] == 80_000
 
 
+def test_progressive_tool_results_bound_context_without_hiding_capability(tmp_path):
+    config = render_config.build_config(FULL_ENV)
+    search = config["tools"]["tool_search"]
+
+    assert search == {
+        "enabled": "auto",
+        "search_default_limit": 3,
+        "max_search_limit": 8,
+        "listing": "auto",
+        "listing_max_tokens": 2_000,
+    }
+    assert config["tool_budget"]["mcp_result_size_chars"] == 16_000
+    assert "hlt-context" in config["platform_toolsets"]["slack"]
+
+    summary = render_config.render(env=FULL_ENV, home=tmp_path)
+    assert summary["mcp_result_size_chars"] == 16_000
+    assert summary["tool_search"] == {
+        "default_limit": 3,
+        "max_limit": 8,
+        "listing_max_tokens": 2_000,
+    }
+
+
+def test_managed_agent_does_not_replay_finished_turns_for_background_review(tmp_path):
+    config = render_config.build_config(FULL_ENV)
+    assert config["auxiliary"]["background_review"]["enabled"] is False
+    assert render_config.render(env=FULL_ENV, home=tmp_path)[
+        "background_review_enabled"
+    ] is False
+
+
 def test_summary_reports_what_was_actually_mounted(tmp_path):
     summary = render_config.render(
         env={"GPTR_MCP_URL": "https://gptr.example/mcp", "LINEAR_MCP_URL": "https://l.example/mcp"},
@@ -800,6 +834,8 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "grep -q 're.escape(COMPACTION_DONE_STATUS)'" in dockerfile
     assert "[slack,mcp,tts-premium,fal,firecrawl]" in dockerfile
     assert "from firecrawl import Firecrawl" in dockerfile
+    assert "progressive_tool_result_compaction.patch" in dockerfile
+    assert "assert_progressive_tool_result_compaction.py" in dockerfile
 
 
 def test_the_verbosity_flag_goes_where_upstream_declares_it():
@@ -1802,6 +1838,69 @@ def test_grounding_installs_the_mission_context_plugin(tmp_path):
         "error": "",
         "storage": "durable_sqlite",
     }
+
+
+def test_restricted_slack_surface_can_page_only_hermes_spillover(monkeypatch, tmp_path):
+    plugin = _load_k2_plugin()
+    spillover = tmp_path / "cache" / "spillover"
+    spillover.mkdir(parents=True)
+    session_id = "slack:D0BM1V250G6:thread:1788428167.504329"
+    prefix = plugin._spillover_session_prefix(session_id)
+    result_path = spillover / f"{prefix}_call-safe.txt"
+    result_path.write_text("abcdefghij", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    first = json.loads(
+        plugin._read_spillover(
+            {"handle": str(result_path), "offset": 0, "limit": 4},
+            session_id=session_id,
+        )
+    )
+    assert first == {
+        "schema": "hlt_spillover_page.v1",
+        "handle": f"{prefix}_call-safe.txt",
+        "offset": 0,
+        "returnedBytes": 4,
+        "totalBytes": 10,
+        "hasMore": True,
+        "nextOffset": 4,
+        "content": "abcd",
+    }
+    assert "error" in json.loads(
+        plugin._read_spillover({"handle": "../outside.txt"}, session_id=session_id)
+    )
+    assert "error" in json.loads(
+        plugin._read_spillover(
+            {"handle": str(result_path)}, session_id="another-slack-session"
+        )
+    )
+    escape = spillover / f"{prefix}_call-escape.txt"
+    escape.symlink_to(outside)
+    assert "error" in json.loads(
+        plugin._read_spillover({"handle": str(escape)}, session_id=session_id)
+    )
+
+
+def test_k2_plugin_registers_bounded_spillover_reader():
+    plugin = _load_k2_plugin()
+    registered = {}
+
+    class Context:
+        def register_tool(self, **kwargs):
+            registered.update(kwargs)
+
+        def register_hook(self, *_args, **_kwargs):
+            pass
+
+    plugin.register(Context())
+
+    assert registered["name"] == "read_spillover"
+    assert registered["toolset"] == "hlt-context"
+    params = registered["schema"]["parameters"]
+    assert params["properties"]["limit"]["maximum"] == 12_000
+    assert params["additionalProperties"] is False
 
 
 def test_nonparticipant_brian_keeps_gateway_readiness_without_joining_election(
@@ -3414,6 +3513,11 @@ def test_slack_gets_its_own_prompt_guidance():
     assert "No 'Sources:' footer" in hint
     assert "at the end" not in hint
     assert "return the answer or artifact" in hint
+    assert "describe one direct mcp__katailyst2__<verb>" in hint
+    assert "detailLevel 'summary' first" in hint
+    assert "mcp__posthog__exec as a CLI bridge" in hint
+    assert "call --json <tool_name> <json_input>" in hint
+    assert "use read_spillover" in hint
 
 
 # --- talking to the team, not about the plumbing ----------------------------
