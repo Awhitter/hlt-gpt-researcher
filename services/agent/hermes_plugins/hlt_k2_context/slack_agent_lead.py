@@ -48,11 +48,6 @@ ROSTER_PARTICIPANT_REFS = frozenset(
     {"agent:victoria", "agent:lila", "agent:julius", "agent:cleo"}
 )
 ROSTER_NONPARTICIPANT_REFS = frozenset({"agent:brian"})
-# Slack preserves the human author in ``user`` for owner-authored messages sent
-# through an installed app.  App attribution can still make Hermes mark that
-# event as bot-mediated, so trust the signed Slack owner + one-to-one DM
-# boundary rather than an app id that is not present in every event shape.
-TRUSTED_OWNER_DM_RELAY_USER_IDS = frozenset({"U06MWH7PE"})
 _SLACK_MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>", re.IGNORECASE)
 
 
@@ -213,14 +208,33 @@ def _is_edit(raw_message: Mapping[str, Any]) -> bool:
     )
 
 
-def _is_bot_sender(raw_message: Mapping[str, Any]) -> bool:
-    if raw_message.get("_hermes_sender_is_bot"):
-        return True
+def _has_explicit_bot_shape(raw_message: Mapping[str, Any]) -> bool:
     if raw_message.get("bot_id") or raw_message.get("bot_profile"):
         return True
-    if str(raw_message.get("subtype") or "") == "bot_message":
+    return str(raw_message.get("subtype") or "") == "bot_message"
+
+
+def _is_app_mediated_human(raw_message: Mapping[str, Any]) -> bool:
+    """Recognize Slack's human-authored installed-app message shape."""
+    return bool(
+        str(raw_message.get("user") or "").strip()
+        and raw_message.get("app_id")
+        and not _has_explicit_bot_shape(raw_message)
+    )
+
+
+def _is_bot_sender(raw_message: Mapping[str, Any]) -> bool:
+    # Explicit Slack bot identity always wins. By contrast, installed apps can
+    # post a message Slack still attributes to its human author; Hermes' cached
+    # users.info marker is advisory for that shape and must not turn the human
+    # into an unknown bot.
+    if _has_explicit_bot_shape(raw_message):
         return True
-    return bool(raw_message.get("app_id") and not raw_message.get("client_msg_id"))
+    if _is_app_mediated_human(raw_message):
+        return False
+    if raw_message.get("app_id"):
+        return True
+    return bool(raw_message.get("_hermes_sender_is_bot"))
 
 
 def select_slack_agent_lead(
@@ -269,10 +283,6 @@ def select_slack_agent_lead(
     ):
         return SlackLeadDecision(action="suppress", reason="self_bot_sender", **base)
     if sender_is_bot and not sender_is_recognized_peer:
-        if kind == "dm" and sender_user_id in TRUSTED_OWNER_DM_RELAY_USER_IDS:
-            return SlackLeadDecision(
-                action="allow", reason="owned_dm_via_app", **base
-            )
         return SlackLeadDecision(
             action="suppress", reason="unrecognized_bot_sender", **base
         )

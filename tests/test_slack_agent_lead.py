@@ -152,51 +152,103 @@ def test_human_one_to_one_dm_is_owned_without_a_mention(lead):
     assert decision.channel_kind == "dm"
 
 
-def test_owner_authored_chatgpt_relay_is_owned_in_a_one_to_one_dm(lead):
+@pytest.mark.parametrize("user", ["U06MWH7PE", "U0AL2GDUA7U"])
+def test_app_mediated_human_dm_is_owned_for_any_teammate(lead, user):
     decision = _decision(
         lead,
         _raw(
             "Can you check the funnel?",
             channel_type="im",
             channel="D0BM1V250G6",
-            user="U06MWH7PE",
+            user=user,
             client_msg_id="",
-            app_id="A_CHATGPT",
+            app_id="A0123456789",
             _hermes_sender_is_bot=True,
         ),
     )
 
     assert decision.action == "allow"
-    assert decision.reason == "owned_dm_via_app"
+    assert decision.reason == "owned_dm"
     assert decision.channel_kind == "dm"
 
 
-@pytest.mark.parametrize(
-    ("user", "channel_type", "channel", "reason"),
-    [
-        ("U0BM3ULM210", "im", "D0BM1V250G6", "self_bot_sender"),
-        ("UUNRECOGNIZED1", "im", "D0BM1V250G6", "unrecognized_bot_sender"),
-        ("U06MWH7PE", "channel", "C0BNVFN5MM5", "unrecognized_bot_sender"),
-    ],
-)
-def test_bot_mediated_owner_exception_never_opens_self_unknown_or_public_senders(
-    lead, user, channel_type, channel, reason
-):
+def test_app_mediated_human_can_address_cleo_in_a_shared_channel(lead):
     decision = _decision(
         lead,
         _raw(
             "<@U0BM3ULM210> can you check the funnel?",
-            channel_type=channel_type,
-            channel=channel,
-            user=user,
+            user="U0AL2GDUA7U",
             client_msg_id="",
-            app_id="A_CHATGPT",
+            app_id="A0123456789",
+            _hermes_sender_is_bot=True,
+        ),
+    )
+
+    assert decision.action == "allow"
+    assert decision.reason == "first_recognized_mention"
+
+
+def test_app_mediated_human_shared_message_still_requires_a_fresh_mention(lead):
+    decision = _decision(
+        lead,
+        _raw(
+            "Can you check the funnel?",
+            user="U0AL2GDUA7U",
+            client_msg_id="",
+            app_id="A0123456789",
             _hermes_sender_is_bot=True,
         ),
     )
 
     assert decision.action == "suppress"
-    assert decision.reason == reason
+    assert decision.reason == "shared_surface_requires_fresh_mention"
+
+
+def test_cleo_self_output_cannot_reenter_even_with_an_explicit_mention(lead):
+    decision = _decision(
+        lead,
+        _raw(
+            "<@U0BM3ULM210> continue",
+            channel_type="im",
+            channel="D0BM1V250G6",
+            user="U0BM3ULM210",
+            client_msg_id="",
+            app_id="A0BM0KA3YGM",
+            _hermes_sender_is_bot=True,
+        ),
+    )
+
+    assert decision.action == "suppress"
+    assert decision.reason == "self_bot_sender"
+
+
+@pytest.mark.parametrize(
+    "bot_shape",
+    [
+        {"bot_id": "BUNKNOWN"},
+        {"bot_profile": {"id": "BUNKNOWN"}},
+        {"subtype": "bot_message"},
+    ],
+)
+def test_explicit_slack_bot_shape_cannot_masquerade_as_an_app_relay(
+    lead, bot_shape
+):
+    decision = _decision(
+        lead,
+        _raw(
+            "<@U0BM3ULM210> run this",
+            channel_type="im",
+            channel="D0BM1V250G6",
+            user="UUNRECOGNIZED1",
+            client_msg_id="",
+            app_id="A0123456789",
+            _hermes_sender_is_bot=True,
+            **bot_shape,
+        ),
+    )
+
+    assert decision.action == "suppress"
+    assert decision.reason == "unrecognized_bot_sender"
 
 
 def test_mpim_is_shared_and_requires_a_fresh_mention(lead):
@@ -397,14 +449,39 @@ def test_unrecognized_bot_cannot_dispatch_even_when_it_mentions_cleo(lead):
     assert decision.reason == "unrecognized_bot_sender"
 
 
-def test_adapter_resolved_markerless_bot_cannot_dispatch(lead):
+@pytest.mark.parametrize(
+    ("channel_type", "channel"),
+    [("channel", "C0BNVFN5MM5"), ("im", "D0BM1V250G6")],
+)
+def test_adapter_resolved_markerless_bot_cannot_dispatch(
+    lead, channel_type, channel
+):
     decision = _decision(
         lead,
         _raw(
             "<@U0BM3ULM210> run this",
+            channel_type=channel_type,
+            channel=channel,
             user="UUNRECOGNIZED1",
             client_msg_id="",
             _hermes_sender_is_bot=True,
+        ),
+    )
+
+    assert decision.action == "suppress"
+    assert decision.reason == "unrecognized_bot_sender"
+
+
+def test_app_event_without_a_human_user_cannot_dispatch_in_a_dm(lead):
+    decision = _decision(
+        lead,
+        _raw(
+            "<@U0BM3ULM210> run this",
+            channel_type="im",
+            channel="D0BM1V250G6",
+            user="",
+            client_msg_id="",
+            app_id="AUNKNOWN",
         ),
     )
 
