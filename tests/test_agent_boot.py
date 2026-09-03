@@ -1131,7 +1131,7 @@ def test_codex_readiness_requires_a_logged_in_selectable_pool_entry():
     assert "owner" not in str(result)
 
 
-def test_codex_readiness_fails_until_all_three_profiles_are_selectable():
+def test_codex_readiness_separates_serving_from_three_profile_redundancy():
     health_gateway = _load_health_gateway()
 
     class _PartiallySelectablePool:
@@ -1149,7 +1149,7 @@ def test_codex_readiness_fails_until_all_three_profiles_are_selectable():
         pool_loader=lambda provider: _PartiallySelectablePool(),
     )
 
-    assert result["usable"] is False
+    assert result["usable"] is True
     assert result["credential_pool"] == {
         "has_credentials": True,
         "has_available": True,
@@ -1158,10 +1158,7 @@ def test_codex_readiness_fails_until_all_three_profiles_are_selectable():
         "minimum_required": 3,
         "minimum_ready": False,
     }
-    assert result["error"] == (
-        "managed Codex pool requires 3 selectable profiles; "
-        "found 3 present and 2 selectable"
-    )
+    assert result["error"] == ""
     assert "private" not in str(result)
 
 
@@ -1469,6 +1466,18 @@ def _cleo_runtime_pack():
     }
 
 
+def _cleo_preactivation_runtime_pack(*, registry_status="curated"):
+    pack = json.loads(json.dumps(_cleo_runtime_pack()))
+    pack["activation"] = {
+        "status": "offline",
+        "registryStatus": registry_status,
+        "reviewStatus": "reviewed",
+        "isOnline": True,
+        "issues": ["host activation proof pending"],
+    }
+    return pack
+
+
 def _load_k2_plugin():
     """Load the copied user plugin as a package so relative imports are real."""
     import sys
@@ -1502,6 +1511,7 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     doctrine = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
     assert result["runtime_pack_applied"] is True
     assert result["brain_source"] == "katailyst2_runtime_pack"
+    assert result["runtime_pack_preactivation"] is False
     assert result["runtime_pack_digest"].startswith("sha256:")
     assert result["runtime_revision_digest"] == "a" * 64
     assert result["runtime_revision_source"] == "canonical"
@@ -1512,6 +1522,64 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert "Use K2 with judgment" in doctrine
     assert "hlt-k2-context" in doctrine
     assert "never form an allowlist" in doctrine
+
+
+@pytest.mark.parametrize("registry_status", ["curated", "published"])
+def test_reviewed_preactivation_pack_installs_without_claiming_active(
+    tmp_path, registry_status
+):
+    pack = _cleo_preactivation_runtime_pack(registry_status=registry_status)
+
+    default_result = grounding.install_runtime_pack(
+        pack,
+        expected_agent_ref="agent:cleo",
+        home=tmp_path,
+    )
+
+    result = grounding.install_runtime_pack(
+        pack,
+        expected_agent_ref="agent:cleo",
+        home=tmp_path,
+        allow_preactivation=True,
+    )
+
+    doctrine = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
+    assert default_result["runtime_pack_applied"] is False
+    assert "explicit allowance" in default_result["runtime_pack_error"]
+    assert result["runtime_pack_applied"] is True
+    assert result["runtime_pack_activation"] == "offline"
+    assert result["runtime_pack_preactivation"] is True
+    assert result["brain_source"] == "katailyst2_preactivation_runtime_pack"
+    assert "verified preactivation runtime pack" in doctrine
+    assert "the active runtime pack at boot" not in doctrine
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "inactive"),
+        ("registryStatus", "active"),
+        ("registryStatus", "draft"),
+        ("reviewStatus", "needs_review"),
+        ("isOnline", False),
+    ],
+)
+def test_preactivation_pack_rejects_unreviewed_or_ineligible_metadata(
+    tmp_path, field, value
+):
+    pack = _cleo_preactivation_runtime_pack()
+    pack["activation"][field] = value
+
+    result = grounding.install_runtime_pack(
+        pack,
+        expected_agent_ref="agent:cleo",
+        home=tmp_path,
+        allow_preactivation=True,
+    )
+
+    assert result["runtime_pack_applied"] is False
+    assert result["brain_source"] == "bundled_fallback"
+    assert "eligible reviewed preactivation" in result["runtime_pack_error"]
 
 
 def test_legacy_runtime_revision_ignores_presentation_but_tracks_behavior():
@@ -1975,16 +2043,9 @@ def test_k2_readiness_boots_the_bound_runtime_pack_then_probes_well(monkeypatch)
     assert result["_runtime_pack"]["agentRef"] == "agent:cleo"
 
 
-def test_k2_preactivation_proves_binding_without_claiming_online(monkeypatch):
+def test_k2_preactivation_proves_binding_without_claiming_active(monkeypatch):
     health_gateway = _load_health_gateway()
-    pack = json.loads(json.dumps(_cleo_runtime_pack()))
-    pack["activation"] = {
-        "status": "offline",
-        "registryStatus": "active",
-        "reviewStatus": "reviewed",
-        "isOnline": False,
-        "issues": ["host activation proof pending"],
-    }
+    pack = _cleo_preactivation_runtime_pack()
     calls = []
     responses = iter(
         [
@@ -2027,9 +2088,39 @@ def test_k2_preactivation_proves_binding_without_claiming_online(monkeypatch):
     assert result["runtime_pack_callable"] is True
     assert result["agent_bound_token"] is True
     assert result["activation_ready"] is False
+    assert result["activation_online"] is True
+    assert result["preactivation_pack_ready"] is True
     assert result["contract_status"] == "preactivation"
-    assert "_runtime_pack" not in result
+    assert result["_runtime_pack"]["agentRef"] == "agent:cleo"
     assert calls[-1][0][2]["params"]["arguments"]["requireActive"] is False
+
+
+def test_verified_preactivation_pack_is_a_serving_brain_but_not_active(
+    monkeypatch, tmp_path
+):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    readiness = {
+        **_preactivation_boot_state()["k2_agent_readiness"],
+        "_runtime_pack": _cleo_preactivation_runtime_pack(),
+    }
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update({"agent_ref": "agent:cleo"})
+
+    installed = health_gateway._install_available_k2_pack(readiness)
+    published = health_gateway.BOOT["k2_agent_readiness"]
+
+    assert installed is True
+    assert health_gateway.BOOT["runtime_pack_applied"] is True
+    assert health_gateway.BOOT["runtime_pack_activation"] == "offline"
+    assert health_gateway.BOOT["runtime_pack_preactivation"] is True
+    assert (
+        health_gateway.BOOT["brain_source"]
+        == "katailyst2_preactivation_runtime_pack"
+    )
+    assert health_gateway._k2_brain_can_serve(published) is True
+    assert health_gateway._active_k2_pack_installed(published) is False
+    assert "_runtime_pack" not in published
 
 
 def test_k2_readiness_rejects_an_unbound_token_instead_of_supplying_agent_ref(monkeypatch):
@@ -2159,6 +2250,9 @@ def test_a_well_outage_does_not_discard_the_verified_runtime_pack(monkeypatch):
         "install_runtime_pack",
         lambda *args, **kwargs: {
             "runtime_pack_applied": True,
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+            "runtime_revision_digest": "a" * 64,
             "brain_source": "katailyst2_runtime_pack",
         },
     )
@@ -2168,6 +2262,51 @@ def test_a_well_outage_does_not_discard_the_verified_runtime_pack(monkeypatch):
     assert health_gateway.BOOT["brain_source"] == "katailyst2_runtime_pack"
     assert health_gateway.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
     assert "_runtime_pack" not in health_gateway.BOOT["k2_agent_readiness"]
+
+
+def test_rejected_active_replacement_preserves_the_verified_preactivation_pack(
+    monkeypatch,
+):
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo",
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "offline",
+            "runtime_pack_preactivation": True,
+            "runtime_revision_digest": "a" * 64,
+            "brain_source": "katailyst2_preactivation_runtime_pack",
+        }
+    )
+    readiness = {
+        "activation_ready": True,
+        "activation_status": "active",
+        "runtime_revision_digest": "b" * 64,
+        "_runtime_pack": _cleo_runtime_pack(),
+    }
+    monkeypatch.setattr(
+        health_gateway.grounding,
+        "install_runtime_pack",
+        lambda *args, **kwargs: {
+            "runtime_pack_applied": False,
+            "runtime_pack_error": "invalid active replacement",
+            "brain_source": "bundled_fallback",
+        },
+    )
+
+    assert health_gateway._install_available_k2_pack(readiness) is False
+    assert health_gateway.BOOT["runtime_pack_applied"] is True
+    assert health_gateway.BOOT["runtime_pack_activation"] == "offline"
+    assert health_gateway.BOOT["runtime_pack_preactivation"] is True
+    assert (
+        health_gateway.BOOT["brain_source"]
+        == "katailyst2_preactivation_runtime_pack"
+    )
+    assert (
+        health_gateway.BOOT["k2_agent_readiness"]["contract_status"]
+        == "runtime_pack_apply_failed"
+    )
 
 
 def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypatch):
@@ -3053,7 +3192,21 @@ def _set_hook_runtime_ready(monkeypatch, health_gateway, *, applied=True):
     """Keep dispatch-ledger tests focused on dispatch, not OAuth fixtures."""
     health_gateway.BOOT.clear()
     health_gateway.BOOT.update(
-        {"agent_ref": "agent:cleo", "runtime_pack_applied": applied}
+        {
+            "agent_ref": "agent:cleo",
+            "runtime_pack_applied": applied,
+            "runtime_pack_activation": "active" if applied else "",
+            "runtime_pack_preactivation": False,
+            "runtime_revision_digest": "a" * 64 if applied else "",
+            "brain_source": (
+                "katailyst2_runtime_pack" if applied else "bundled_fallback"
+            ),
+            "k2_agent_readiness": {
+                "activation_ready": applied,
+                "activation_status": "active" if applied else "",
+                "runtime_revision_digest": "a" * 64 if applied else "",
+            },
+        }
     )
     monkeypatch.setattr(
         health_gateway,
@@ -3557,6 +3710,14 @@ def _preactivation_boot_state():
                 "model": "gpt-5.6-sol",
                 "role": "primary",
                 "available": True,
+                "detail": {
+                    "credential_pool": {
+                        "profile_count": 3,
+                        "selectable_count": 3,
+                        "minimum_required": 3,
+                        "minimum_ready": True,
+                    }
+                },
             },
             {
                 "provider": "xai-oauth",
@@ -3585,13 +3746,116 @@ def _preactivation_boot_state():
             "well_tool_listed": True,
             "runtime_pack_callable": True,
             "runtime_revision_ready": True,
+            "runtime_revision_digest": "a" * 64,
             "agent_bound_token": True,
             "identity_matches": True,
             "host_profile_compatible": True,
+            "activation_status": "offline",
             "activation_ready": False,
+            "preactivation_pack_ready": True,
             "contract_status": "preactivation",
         },
     }
+
+
+def test_boot_starts_verified_preactivation_pack_and_keeps_activation_watcher(
+    monkeypatch, tmp_path
+):
+    health_gateway = _load_health_gateway()
+    state = _preactivation_boot_state()
+    state.update(
+        {
+            "agent": "cleo",
+            "model_provider": "openai-codex",
+            "plugins_installed": ["hlt_k2_context"],
+            "home_channel_id": "",
+            "slack_admins_configured": True,
+            "slack_channel_allowlist": ["C0BH5997USK"],
+        }
+    )
+    state["model_route_readiness"][0]["detail"]["credential_pool"].update(
+        {"selectable_count": 1, "minimum_ready": False}
+    )
+    state["model_route_readiness"][1]["available"] = False
+    readiness = {
+        **state["k2_agent_readiness"],
+        "_runtime_pack": _cleo_preactivation_runtime_pack(),
+    }
+    starts = []
+    watchers = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(health_gateway.grounding, "install", lambda: {})
+    monkeypatch.setattr(health_gateway.render_config, "render", lambda: dict(state))
+    monkeypatch.setattr(
+        health_gateway,
+        "agent_run_ledger_readiness",
+        lambda: {"ready": True, "schema_version": 1},
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "subscription_auth_readiness",
+        lambda provider: {
+            "provider": provider,
+            "logged_in": True,
+            "usable": True,
+            "rate_limited": False,
+        },
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "model_route_readiness",
+        lambda configured, env: list(state["model_route_readiness"]),
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "web_search_readiness",
+        lambda backend, env: {"available": True},
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "_probe_k2_boot_contract",
+        lambda **kwargs: dict(readiness),
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "slack_auth_readiness",
+        lambda token: {
+            "auth_ok": True,
+            "scopes_known": True,
+            "missing_core_scopes": [],
+        },
+    )
+    monkeypatch.setattr(
+        health_gateway.cron_seed,
+        "retire_stale_briefs",
+        lambda: {"policy": "retired", "paused": []},
+    )
+    monkeypatch.setattr(health_gateway.supervisor, "start", lambda: starts.append(True))
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "block_start",
+        lambda reason: pytest.fail(f"verified preactivation boot was blocked: {reason}"),
+    )
+    monkeypatch.setattr(
+        health_gateway.threading,
+        "Thread",
+        lambda **kwargs: SimpleNamespace(start=lambda: watchers.append(kwargs)),
+    )
+
+    health_gateway.boot()
+
+    assert starts == [True]
+    assert len(watchers) == 1
+    assert watchers[0]["name"] == "k2-activation-watcher"
+    assert health_gateway.BOOT["gateway_start_allowed"] is True
+    assert health_gateway.BOOT["authenticated_model_route"]["ready"] is False
+    assert health_gateway.BOOT["authenticated_model_route"]["servingReady"] is True
+    assert health_gateway.BOOT["runtime_pack_applied"] is True
+    assert health_gateway.BOOT["runtime_pack_activation"] == "offline"
+    assert health_gateway.BOOT["runtime_pack_preactivation"] is True
+    assert health_gateway.BOOT["k2_agent_readiness"]["activation_ready"] is False
 
 
 def test_runtime_proof_changes_only_with_runtime_inputs():
@@ -3796,6 +4060,8 @@ def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypa
         ("xai-oauth", "grok-4.6", "fallback-1"),
     ]
     assert gate["routes"][0]["detail"]["credential_pool"]["selectable_count"] == 3
+    assert gate["primaryRedundancyReady"] is True
+    assert gate["servingReady"] is True
 
     route_state["xai-oauth"] = {
         "provider": "xai-oauth",
@@ -3807,18 +4073,90 @@ def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypa
     activation = health_gateway.activationz(
         authorization="Bearer a-secure-shared-hook-token"
     )
-    health_gateway.BOOT["runtime_pack_applied"] = True
+    health_gateway.BOOT.update(
+        {
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+            "brain_source": "katailyst2_runtime_pack",
+        }
+    )
+    health_gateway.BOOT["k2_agent_readiness"].update(
+        {
+            "activation_ready": True,
+            "activation_status": "active",
+        }
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "dispatch_agent_hook",
+        lambda payload: {"ok": True, "accepted": True},
+    )
     dispatch = health_gateway.agent_hook(
         _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
     )
 
     assert activation.status_code == 503
     assert json.loads(activation.body)["checks"]["fallback_model_route_ready"] is False
-    assert dispatch.status_code == 503
-    assert json.loads(dispatch.body) == {
-        "ok": False,
-        "error": "reviewed model routes are temporarily unavailable",
-    }
+    assert dispatch.status_code == 202
+    assert json.loads(dispatch.body) == {"ok": True, "accepted": True}
+
+
+def test_reviewed_fallback_keeps_serving_while_codex_redundancy_is_degraded():
+    health_gateway = _load_health_gateway()
+    state = _preactivation_boot_state()
+    state["model_route_readiness"] = [
+        {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "role": "primary",
+            "available": False,
+            "detail": {
+                "credential_pool": {
+                    "profile_count": 2,
+                    "selectable_count": 0,
+                    "minimum_required": 3,
+                    "minimum_ready": False,
+                }
+            },
+        },
+        {
+            "provider": "xai-oauth",
+            "model": "grok-4.6",
+            "role": "fallback-1",
+            "available": True,
+        },
+    ]
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+
+    gate = health_gateway.authenticated_model_route_gate(
+        state["model_route_readiness"]
+    )
+
+    assert gate["primaryReady"] is False
+    assert gate["primaryRedundancyReady"] is False
+    assert gate["fallbackReady"] is True
+    assert gate["ready"] is False
+    assert gate["servingReady"] is True
+    assert health_gateway._reviewed_model_route_can_serve(gate) is True
+
+
+def test_no_reviewed_model_route_still_blocks_serving():
+    health_gateway = _load_health_gateway()
+    state = _preactivation_boot_state()
+    for route in state["model_route_readiness"]:
+        route["available"] = False
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+
+    gate = health_gateway.authenticated_model_route_gate(
+        state["model_route_readiness"]
+    )
+
+    assert gate["ready"] is False
+    assert gate["servingReady"] is False
+    assert health_gateway._reviewed_model_route_can_serve(gate) is False
 
 
 ACTIVATION_CHECK_KEYS = {
@@ -3833,6 +4171,7 @@ ACTIVATION_CHECK_KEYS = {
     "channel_auth_ok",
     "channel_scopes_ready",
     "primary_model_route_ready",
+    "primary_model_pool_redundancy_ready",
     "fallback_model_route_ready",
     "model_route_contract_ready",
     "web_search_ready",
@@ -3849,7 +4188,7 @@ ACTIVATION_CHECK_KEYS = {
 }
 
 
-def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch):
+def test_activation_probe_breaks_the_circle_without_claiming_active(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(
@@ -3880,7 +4219,7 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     assert unauthorized.status_code == 401
     assert response.status_code == 200
     assert body["ready"] is True
-    assert body["contractVersion"] == "agent_host_activation_readiness.v1"
+    assert body["contractVersion"] == "agent_host_activation_readiness.v2"
     assert body["stage"] == "pre_activation"
     assert body["agentRef"] == "agent:cleo"
     assert body["runtimeProof"]["contractVersion"] == "agent_host_runtime_inputs.v1"
@@ -3888,6 +4227,7 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
         _preactivation_boot_state()["configured_model_route"]
     )
     assert set(body["checks"]) == ACTIVATION_CHECK_KEYS
+    assert len(body["checks"]) == 25
     assert all(body["checks"].values())
     assert "k2_runtime_pack_applied" not in body["checks"]
     assert "gateway_running" not in body["checks"]
@@ -3927,6 +4267,81 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     )
 
 
+def test_preactivation_pack_opens_slack_proof_but_not_active_run_surfaces(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "cli_present": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+            "slack_socket_connected": True,
+        },
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "hermes_api_readiness",
+        lambda: {"reachable": True, "status": 200, "error": ""},
+    )
+    state = _preactivation_boot_state()
+    state.update(
+        {
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "offline",
+            "runtime_pack_preactivation": True,
+            "brain_source": "katailyst2_preactivation_runtime_pack",
+        }
+    )
+    state["k2_agent_readiness"].update(
+        {
+            "mounted": True,
+            "bearer_present": True,
+            "transport_ok": True,
+        }
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+    monkeypatch.setattr(
+        health_gateway,
+        "refresh_model_route_readiness",
+        lambda: list(health_gateway.BOOT["model_route_readiness"]),
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "dispatch_agent_hook",
+        lambda payload: pytest.fail("preactivation opened external dispatch"),
+    )
+
+    activation = health_gateway.activationz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    readiness = health_gateway.readyz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    dispatch = health_gateway.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    health = health_gateway.health()
+
+    assert activation.status_code == 200
+    assert json.loads(activation.body)["ready"] is True
+    assert readiness.status_code == 503
+    assert json.loads(readiness.body)["checks"]["k2_activation_ready"] is False
+    assert dispatch.status_code == 503
+    assert json.loads(dispatch.body)["error"] == (
+        "canonical Cleo runtime pack is not active"
+    )
+    assert health["status"] == "degraded"
+    assert health["mode"] == "gateway_k2_preactivation"
+    assert health["readiness"]["ready"] is False
+    assert health["readiness"]["checks"]["k2_activation_ready"] is False
+    assert "external run hook and readiness stay closed" in health["note"]
+
+
 def test_post_activation_readyz_requires_the_real_run_surface_and_reports_optional_well(monkeypatch):
     health_gateway = _load_health_gateway()
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
@@ -3945,10 +4360,18 @@ def test_post_activation_readyz_requires_the_real_run_surface_and_reports_option
         lambda: {"reachable": True, "status": 200, "error": ""},
     )
     state = _preactivation_boot_state()
-    state["runtime_pack_applied"] = True
+    state.update(
+        {
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+            "brain_source": "katailyst2_runtime_pack",
+        }
+    )
     state["k2_agent_readiness"].update(
         {
             "activation_ready": True,
+            "activation_status": "active",
             "well_callable": True,
         }
     )
@@ -3984,6 +4407,7 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
     preactivation = {
         **_preactivation_boot_state()["k2_agent_readiness"],
         "activation_ready": True,
+        "activation_status": "active",
     }
     active = {
         **preactivation,
@@ -4008,6 +4432,9 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
         "install_runtime_pack",
         lambda *args, **kwargs: {
             "runtime_pack_applied": True,
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+            "runtime_revision_digest": "a" * 64,
             "brain_source": "katailyst2_runtime_pack",
         },
     )
@@ -4042,6 +4469,7 @@ def test_activation_transition_starts_with_the_canonical_pack_when_well_times_ou
     preactivation = {
         **_preactivation_boot_state()["k2_agent_readiness"],
         "activation_ready": True,
+        "activation_status": "active",
     }
     active_with_context_outage = {
         **preactivation,
@@ -4066,6 +4494,9 @@ def test_activation_transition_starts_with_the_canonical_pack_when_well_times_ou
         "install_runtime_pack",
         lambda *args, **kwargs: {
             "runtime_pack_applied": True,
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+            "runtime_revision_digest": "a" * 64,
             "brain_source": "katailyst2_runtime_pack",
         },
     )
@@ -4104,10 +4535,100 @@ def test_declared_outage_fallback_keeps_watching_for_the_canonical_pack():
         {"outage_declared": True}
     ) is True
 
+
+def test_running_preactivation_gateway_keeps_polling_for_immutable_k2_proof():
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo",
+            "gateway_start_allowed": True,
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "offline",
+            "runtime_pack_preactivation": True,
+            "runtime_revision_digest": "a" * 64,
+            "brain_source": "katailyst2_preactivation_runtime_pack",
+        }
+    )
+    preactivation = {
+        "activation_ready": False,
+        "activation_status": "offline",
+        "runtime_revision_digest": "a" * 64,
+        "outage_declared": False,
+    }
+
+    assert health_gateway._should_watch_for_k2_activation(preactivation) is True
+
+    # A label alone is never activation proof.
     health_gateway.BOOT["brain_source"] = "katailyst2_runtime_pack"
-    assert health_gateway._should_watch_for_k2_activation(
-        {"outage_declared": False}
-    ) is False
+    assert health_gateway._should_watch_for_k2_activation(preactivation) is True
+
+    health_gateway.BOOT.update(
+        {
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+        }
+    )
+    active = {
+        **preactivation,
+        "activation_ready": True,
+        "activation_status": "active",
+    }
+    assert health_gateway._should_watch_for_k2_activation(active) is False
+
+
+def test_preactivation_route_recovery_can_start_slack_before_activation(monkeypatch):
+    health_gateway = _load_health_gateway()
+    preactivation = {
+        **_preactivation_boot_state()["k2_agent_readiness"],
+        "outage_declared": False,
+    }
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(
+        {
+            "agent_ref": "agent:cleo",
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "offline",
+            "runtime_pack_preactivation": True,
+            "runtime_revision_digest": "a" * 64,
+            "brain_source": "katailyst2_preactivation_runtime_pack",
+            "k2_context_plugin": {"installed": True, "enabled": True},
+            "slack_agent_lead": {
+                "roster_ready": True,
+                "local_agent_ready": True,
+                "required": True,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        health_gateway,
+        "_probe_k2_boot_contract",
+        lambda **_kwargs: dict(preactivation),
+    )
+    route_ready = {"value": False, "calls": 0}
+
+    def route_gate():
+        route_ready["calls"] += 1
+        return {
+            "ready": False,
+            "servingReady": route_ready["value"],
+        }
+
+    monkeypatch.setattr(
+        health_gateway,
+        "authenticated_model_route_gate",
+        route_gate,
+    )
+
+    assert health_gateway._try_k2_activation_once() is False
+    assert health_gateway.BOOT["gateway_start_allowed"] is False
+
+    route_ready["value"] = True
+    assert health_gateway._try_k2_activation_once() is True
+    assert health_gateway.BOOT["gateway_start_allowed"] is True
+    assert route_ready["calls"] == 2
+    assert health_gateway.BOOT["k2_agent_readiness"]["activation_ready"] is False
+    assert health_gateway._should_watch_for_k2_activation(preactivation) is True
 
 
 def test_declared_outage_fallback_waits_for_reviewed_model_routes(monkeypatch):
@@ -4162,11 +4683,26 @@ def test_outage_recovery_does_not_restart_an_already_running_gateway(monkeypatch
 
     def recover_after_fallback():
         attempts["count"] += 1
-        health_gateway.BOOT["brain_source"] = (
-            "bundled_outage_fallback"
-            if attempts["count"] == 1
-            else "katailyst2_runtime_pack"
-        )
+        if attempts["count"] == 1:
+            health_gateway.BOOT["brain_source"] = "bundled_outage_fallback"
+            health_gateway.BOOT["k2_agent_readiness"] = {
+                "activation_ready": False
+            }
+        else:
+            health_gateway.BOOT.update(
+                {
+                    "runtime_pack_applied": True,
+                    "runtime_pack_activation": "active",
+                    "runtime_pack_preactivation": False,
+                    "runtime_revision_digest": "a" * 64,
+                    "brain_source": "katailyst2_runtime_pack",
+                    "k2_agent_readiness": {
+                        "activation_ready": True,
+                        "activation_status": "active",
+                        "runtime_revision_digest": "a" * 64,
+                    },
+                }
+            )
         return True
 
     monkeypatch.setattr(
@@ -4194,19 +4730,34 @@ def test_route_recovery_starts_fallback_once_but_keeps_watching_for_k2(monkeypat
         "_stop",
         SimpleNamespace(wait=lambda _seconds: False),
     )
-    outcomes = iter(
-        [
-            (False, "bundled_outage_fallback"),
-            (True, "bundled_outage_fallback"),
-            (True, "katailyst2_runtime_pack"),
-        ]
-    )
+    outcomes = iter([False, True, True])
     attempts = {"count": 0}
 
     def recover_routes_then_k2():
-        allowed, brain_source = next(outcomes)
+        allowed = next(outcomes)
         attempts["count"] += 1
-        health_gateway.BOOT["brain_source"] = brain_source
+        if attempts["count"] < 3:
+            health_gateway.BOOT.update(
+                {
+                    "brain_source": "bundled_outage_fallback",
+                    "k2_agent_readiness": {"activation_ready": False},
+                }
+            )
+        else:
+            health_gateway.BOOT.update(
+                {
+                    "runtime_pack_applied": True,
+                    "runtime_pack_activation": "active",
+                    "runtime_pack_preactivation": False,
+                    "runtime_revision_digest": "a" * 64,
+                    "brain_source": "katailyst2_runtime_pack",
+                    "k2_agent_readiness": {
+                        "activation_ready": True,
+                        "activation_status": "active",
+                        "runtime_revision_digest": "a" * 64,
+                    },
+                }
+            )
         return allowed
 
     starts = []
@@ -4224,6 +4775,76 @@ def test_route_recovery_starts_fallback_once_but_keeps_watching_for_k2(monkeypat
 
     assert attempts["count"] == 3
     assert starts == [True]
+
+
+def test_health_names_a_degraded_primary_pool_without_calling_gateway_down(
+    monkeypatch,
+):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+            "slack_socket_connected": True,
+        },
+    )
+    state = _preactivation_boot_state()
+    state.update(
+        {
+            "runtime_pack_applied": True,
+            "runtime_pack_activation": "active",
+            "runtime_pack_preactivation": False,
+            "brain_source": "katailyst2_runtime_pack",
+        }
+    )
+    state["model_route_readiness"][0]["detail"]["credential_pool"].update(
+        {"selectable_count": 1, "minimum_ready": False}
+    )
+    state["k2_agent_readiness"].update(
+        {
+            "mounted": True,
+            "bearer_present": True,
+            "transport_ok": True,
+            "activation_ready": True,
+            "activation_status": "active",
+            "well_callable": True,
+        }
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+    monkeypatch.setattr(
+        health_gateway,
+        "refresh_model_route_readiness",
+        lambda: list(health_gateway.BOOT["model_route_readiness"]),
+    )
+
+    activation = health_gateway.activationz(
+        authorization="Bearer a-secure-shared-hook-token"
+    )
+    payload = health_gateway.health()
+
+    assert activation.status_code == 503
+    assert (
+        json.loads(activation.body)["checks"][
+            "primary_model_pool_redundancy_ready"
+        ]
+        is False
+    )
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == "gateway_model_pool_degraded"
+    assert "only 1 of 3 managed Codex profiles" in payload["note"]
+    assert payload["readiness"]["ready"] is False
+    assert (
+        payload["readiness"]["checks"][
+            "primary_model_pool_redundancy_ready"
+        ]
+        is False
+    )
 
 
 def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypatch):
@@ -4304,8 +4925,11 @@ def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypa
                 "runtime_pack_tool_listed": True,
                 "runtime_pack_callable": True,
                 "runtime_revision_ready": True,
+                "runtime_revision_digest": "a" * 64,
                 "agent_bound_token": True,
                 "host_profile_compatible": True,
+                "activation_ready": True,
+                "activation_status": "active",
                 "well_tool_listed": True,
                 "well_callable": False,
                 "contract_status": "unavailable",
@@ -4371,6 +4995,14 @@ def test_health_names_the_exact_k2_readiness_seam(
                     "model": "gpt-5.6-sol",
                     "role": "primary",
                     "available": True,
+                    "detail": {
+                        "credential_pool": {
+                            "profile_count": 3,
+                            "selectable_count": 3,
+                            "minimum_required": 3,
+                            "minimum_ready": True,
+                        }
+                    },
                 },
                 {
                     "provider": "xai-oauth",
@@ -4382,6 +5014,11 @@ def test_health_names_the_exact_k2_readiness_seam(
             "runtime_revision_version": "agent_runtime_revision.v1",
             "runtime_revision_digest": "a" * 64,
             "runtime_pack_applied": pack_applied,
+            "runtime_pack_activation": readiness.get("activation_status", ""),
+            "runtime_pack_preactivation": False,
+            "brain_source": (
+                "katailyst2_runtime_pack" if pack_applied else "bundled_fallback"
+            ),
             "k2_agent_readiness": readiness,
             "slack_auth": {},
             "mcp_mounted": ["katailyst2"],

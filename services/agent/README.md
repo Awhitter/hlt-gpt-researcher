@@ -107,7 +107,7 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| ChatGPT subscription OAuth | Primary GPT-5.6 Sol credentials. Readiness requires at least three present and selectable `openai-codex` profiles; Hermes rotates the pool before falling back. |
+| ChatGPT subscription OAuth | Primary GPT-5.6 Sol credentials. Hermes serves from any selectable `openai-codex` profile and reports the three-profile redundancy target separately before falling back. |
 | SuperGrok / Premium+ OAuth | The one independent Grok 4.6 recovery route, stored by `hermes auth add xai-oauth` in the persistent Hermes auth store |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
@@ -136,7 +136,10 @@ degraded-service answer. `model_route_readiness` checks each route's credential
 without exposing tokens; the Codex detail includes only profile count and
 selectability, never labels or tokens. Fewer than three selectable Codex
 profiles keeps `/activationz` and `/readyz` red while `/health` remains a 200
-liveness receipt with the exact safe counts. `gateway.observed_model_route` remains
+liveness receipt with the exact safe counts. It no longer blocks the Slack
+gateway when at least one reviewed Sol or Grok route can answer; the agent
+serves visibly degraded and keeps recovering its preferred route instead of
+going silent. `gateway.observed_model_route` remains
 empty until a successful model call, then names the provider/model that really
 answered — including Grok failover. Cleo caps one generated provider reply at
 32,768 tokens and keeps 24 model iterations available for long-running API/K2
@@ -167,13 +170,18 @@ probe fails; `well_mode`, `well_status`, and
 `well_outage_declared` carry that narrower truth.
 
 K2 activation has two stages. Authenticated `GET /activationz` returns the
-versioned `agent_host_activation_readiness.v1` contract and its exact 22
+versioned `agent_host_activation_readiness.v2` contract and its exact 25
 non-circular checks: hosted body, durable admission ledger, credentials,
-dependencies, reviewed model-route contract, exact token-bound Cleo pack and host compatibility, without
-requiring Cleo to already be online. K2 can then activate the agent; the bounded
-watcher repeats `agents.runtime_pack` with `requireActive:true`, installs it,
-proves the async Well door and starts Hermes. If the canonical active pack succeeds but
-the independent Well probe times out, Hermes keeps that K2 brain, starts
+dependencies, reviewed model-route contract, exact token-bound Cleo pack, and
+host compatibility, without requiring Cleo to already be active. When K2
+returns `activation.status=offline`, `isOnline=true`, and a reviewed,
+curated/published, agent-bound, host-compatible, revision-valid pack, Hermes may
+install that exact preactivation brain so Slack can produce the missing proof.
+Health stays degraded, `/readyz` and the external run hook stay closed, and the
+bounded watcher continues polling. K2 can then activate the agent; the watcher
+repeats `agents.runtime_pack` with `requireActive:true`, installs it, proves the
+async Well door, and starts Hermes. If the canonical active pack succeeds but
+the independent Well probe times out, Hermes keeps that K2 brain and starts
 with a visible optional-enrichment advisory, and retries K2 on ordinary Slack
 turns instead of replacing the current doctrine with a bundled fallback. That
 optional timeout does not fail whole-agent health or the hosted run door because
@@ -421,9 +429,12 @@ calling a model. Treat `liveness.ok: true` as HTTP/process availability and
 `readiness.ready: true` as admission readiness; alert only when readiness turns
 false or remains unknown. The readiness receipt names each non-model check under
 `readiness.checks` and carries the runtime-only activation digest under
-`readiness.runtimeProof`. In particular, `primary_model_profile_ready` stays
-false until at least three managed Codex profiles are present *and selectable*;
-a stale login flag cannot make this green.
+`readiness.runtimeProof`. `primary_model_profile_ready` means at least one real
+Codex credential can serve; `primary_model_pool_redundancy_ready` stays false
+until at least three managed Codex profiles are present *and selectable*. A
+stale login flag cannot make either green. `k2_activation_ready` also remains
+false while the reviewed preactivation brain is serving Slack, so liveness and
+useful degraded service never masquerade as completed K2 activation.
 
 The once-daily real canary belongs in the shared fleet scheduler, targeted only
 to `slack:C0BH5997USK` (`#agent-logs`), never a staffed product channel. Give it
