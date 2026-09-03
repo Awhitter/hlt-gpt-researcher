@@ -17,7 +17,6 @@ Those two facts together make the upstream defaults unsafe: see SLACK_TOOLSETS.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -28,19 +27,16 @@ import yaml
 # Marks a config this script owns. A file without the marker was written by a
 # human, so we leave it alone rather than overwriting their work on next boot.
 GENERATED_BY = "hlt-render-boot"
+HOST_RUNTIME_CONTRACT_VERSION = "cleo-hermes-host.v2"
+K2_CONTEXT_PLUGIN_VERSION = "1.5.0"
 
-# Cleo runs primarily on the owner's existing SuperGrok subscription through
-# Hermes' xAI device-code OAuth provider. OpenRouter remains a recoverable
-# fallback, not the billable default. ``HERMES_INFERENCE_PROVIDER`` is the
-# upstream Hermes provider override, so operators can still switch without a
-# code change.
-DEFAULT_PROVIDER = "xai-oauth"
-# grok-4.6 (released 2026-08-12) supersedes 4.5 on the same subscription at the
-# same list price, and scores 60.9 on Artificial Analysis' intelligence index
-# against 4.5's 55.8 — a free +5.1. Nothing here was watching for it, which is
-# the whole reason katailyst2 now runs a release rail; Cleo is outside that
-# loop's reach, so her pin is checked by hand at the same cadence.
-DEFAULT_MODEL = "grok-4.6"
+# Cleo's primary route is the managed Codex credential pool. Hermes rotates
+# pool entries before advancing to the provider fallback, so subscription
+# capacity is shared without copying credentials into this config. Grok 4.6 is
+# the one independent recovery route. ``HERMES_INFERENCE_PROVIDER`` remains an
+# explicit operator override for a deliberate cutover.
+DEFAULT_PROVIDER = "openai-codex"
+DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_MAX_TOKENS = 32_768
 # A live Nursing Mastery funnel brief completed in 20 model iterations. Leaving
 # Hermes at its upstream 500-turn default gives one externally-triggered run
@@ -65,9 +61,8 @@ DEFAULT_TOOL_SEARCH_LIMIT = 3
 MAX_TOOL_SEARCH_LIMIT = 8
 TOOL_LISTING_MAX_TOKENS = 2_000
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
-    "xai-oauth": DEFAULT_MODEL,
-    "openai-codex": "gpt-5.6-sol",
-    "openrouter": "moonshotai/kimi-k3",
+    "xai-oauth": "grok-4.6",
+    "openai-codex": DEFAULT_MODEL,
 }
 
 # Recovery order, not a second policy engine. Hermes walks this list only when
@@ -75,27 +70,15 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
 # id from the provider's current catalog; provider-only strings are not a valid
 # Hermes fallback contract and are intentionally never emitted.
 #
-# xAI stays primary because the owner already pays for SuperGrok. When an
-# XAI_API_KEY is configured, the SAME model over the plain api-key provider is
-# the first recovery route — the OAuth token is a six-hour credential that has
-# already expired unnoticed once (2026-08-18, 68 hours dark), and a key rung
-# means an auth failure degrades billing, never the model. OpenRouter is the
-# independent safety net. ChatGPT subscription OAuth is intentionally not a
-# default rung: its refresh token is single-use and this long-lived service
-# cannot renew it without an operator device-code login. A stale Codex profile
-# previously emitted refresh 401s at every boot while health still called the
-# route available. Operators can still add ``openai-codex`` explicitly through
-# ``HERMES_FALLBACK_PROVIDERS`` after a fresh login and bounded private canary.
+# The managed Codex pool rotates internally. If every selectable Codex profile
+# is unavailable, Hermes retries the original request once through the owner's
+# independently authenticated xAI subscription. Weak OpenRouter models are not
+# valid agentic recovery: when both reviewed routes are unavailable, the
+# gateway preserves the request and reports degraded service instead of
+# generating a lower-quality answer.
 DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
-    {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
-    {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
-    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813"},
+    {"provider": "xai-oauth", "model": "grok-4.6"},
 )
-# Hermes' plain `xai` provider reads XAI_API_KEY from env (auth.py
-# ProviderConfig). Emitting the route without the key would burn a failover
-# hop on a rung that cannot authenticate, so it joins only when the key is
-# actually present on the service.
-XAI_API_KEY_FALLBACK: dict[str, str] = {"provider": "xai", "model": DEFAULT_MODEL}
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
@@ -245,10 +228,14 @@ SLACK_PLATFORM_HINT = (
     "For exact interface text or labeled structure, prefer a deterministic "
     "prototype or diagram tool; use image generation for imagery. A text diagram "
     "is a fallback, not the requested high-fidelity mockup.\n"
-    "Slack already shows your live work in its ephemeral status. "
-    "Do not narrate each tool call as a separate message, do not use a send-message "
-    "tool to deliver the answer you are currently composing, and return exactly one "
-    "final answer. Keep ordinary replies concise. Use at most five tool-calling rounds "
+    "Slack opens one native evolving response stream for this turn. Acknowledge the "
+    "work immediately, then keep that same stream current with concise, meaningful, "
+    "human-readable progress such as what source you are checking or what artifact "
+    "you are shaping. Do not expose commands, paths, tool names, provider warnings, "
+    "raw logs, or private reasoning. Do not narrate each tool call, do not use a "
+    "send-message tool to deliver the answer you are currently composing, and "
+    "complete the same stream with one polished final answer. Keep ordinary replies "
+    "concise. Use at most five tool-calling rounds "
     "for a Slack turn: take the highest-signal reads first, never repeat a discovery "
     "query, then synthesize from evidence already collected and call missing values "
     "unknown. Reserve the final model response for synthesis.\n"
@@ -304,81 +291,24 @@ def _csv(env: Mapping[str, str], key: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-def _fallback_entry(value: object) -> dict[str, str] | None:
-    """Normalize one operator-supplied fallback without guessing a model.
-
-    Hermes' pinned contract is a list of objects with BOTH ``provider`` and
-    ``model``. The old renderer emitted provider-name strings, which Hermes
-    quietly filtered out. We accept a JSON object or the concise
-    ``provider:model`` form, and retain provider-only input only for providers
-    whose default model is explicitly pinned above.
-    """
-    if isinstance(value, dict):
-        provider = str(value.get("provider") or "").strip().lower()
-        model = str(value.get("model") or "").strip()
-    elif isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return None
-        if ":" in raw:
-            provider, model = raw.split(":", 1)
-            provider, model = provider.strip().lower(), model.strip()
-        else:
-            provider = raw.lower()
-            model = PROVIDER_DEFAULT_MODELS.get(provider, "")
-    else:
-        return None
-    if not provider or not model:
-        return None
-    return {"provider": provider, "model": model}
-
-
 def fallback_providers(
     env: Mapping[str, str], *, primary_provider: str, primary_model: str
 ) -> list[dict[str, str]]:
-    """Return the exact ordered route objects the pinned Hermes runtime reads.
+    """Return the reviewed recovery ladder with no environment expansion.
 
-    ``HERMES_FALLBACK_PROVIDERS`` may be either JSON or a comma-separated list
-    of ``provider:model`` entries. Unset means the HLT recovery chain above.
-    Invalid entries are skipped, duplicates collapse, and the primary route is
-    removed so recovery never loops back to the backend that just failed.
+    The primary provider remains an intentional operator cutover, but recovery
+    is a code-reviewed reliability contract rather than another mutable flag.
+    Removing the active primary prevents a loop when the operator deliberately
+    cuts over to Grok. No environment value can add Kimi, Qwen, DeepSeek,
+    OpenRouter, or an unproved paid route behind the readiness gate.
     """
-    raw = _clean(env, "HERMES_FALLBACK_PROVIDERS")
-    default_values = [dict(route) for route in DEFAULT_FALLBACK_PROVIDERS]
-    if _clean(env, "XAI_API_KEY"):
-        default_values.insert(0, dict(XAI_API_KEY_FALLBACK))
-    values: list[object]
-    explicitly_disabled = False
-    if raw is None:
-        values = default_values
-    elif raw.startswith(("[", "{")):
-        try:
-            decoded = json.loads(raw)
-        except json.JSONDecodeError:
-            values = default_values
-        else:
-            explicitly_disabled = isinstance(decoded, list) and not decoded
-            values = decoded if isinstance(decoded, list) else [decoded]
-    else:
-        values = [part.strip() for part in raw.split(",") if part.strip()]
-
+    del env
     primary = (primary_provider.strip().lower(), primary_model.strip().lower())
-    seen: set[tuple[str, str]] = set()
-    routes: list[dict[str, str]] = []
-    for value in values:
-        route = _fallback_entry(value)
-        if route is None:
-            continue
-        identity = (route["provider"].lower(), route["model"].lower())
-        if identity == primary or identity in seen:
-            continue
-        seen.add(identity)
-        routes.append(route)
-    if raw is not None and not routes and not explicitly_disabled:
-        return fallback_providers(
-            {}, primary_provider=primary_provider, primary_model=primary_model
-        )
-    return routes
+    return [
+        dict(route)
+        for route in DEFAULT_FALLBACK_PROVIDERS
+        if (route["provider"].lower(), route["model"].lower()) != primary
+    ]
 
 
 def agent_ref(env: Mapping[str, str]) -> str | None:
@@ -427,9 +357,11 @@ def build_slack(env: Mapping[str, str]) -> dict[str, Any]:
     """
     slack: dict[str, Any] = {
         "require_mention": True,
-        # Without this, the agent re-engages in old threads it was once mentioned
-        # in — surprising, and noisy in a shared workspace.
-        "strict_mention": True,
+        # Top-level channel work still requires a mention. Once the private
+        # participant resolver admits one or more explicitly named agents in a
+        # thread, ordinary unmentioned human follow-ups remain conversational
+        # with that participant set; every uninvited agent stays silent.
+        "strict_mention": False,
         # Scheduled briefs open their own thread and stay conversational there.
         "cron_continuable_surface": "thread",
     }
@@ -580,8 +512,9 @@ def build_config(
         "You run as a hosted Slack bot on Render without direct shell, file "
         "writes, or browser control. Reach the estate and hosted artifact tools "
         f"through MCP and K2. Your runtime lane is {host_runtime_lane}. Long work "
-        "is fine; keep working state in Slack's ephemeral status and send only "
-        "the finished answer."
+        "is fine; acknowledge immediately, keep meaningful progress in the one "
+        "native evolving Slack stream, and complete that same stream with the "
+        "finished answer."
     )
     if registry_ref:
         runtime_hint += (
@@ -600,9 +533,12 @@ def build_config(
     model_name = _clean(env, "HERMES_MODEL")
     if not model_name and model_provider == "openrouter":
         model_name = _clean(env, "OPENROUTER_MODEL")
-    model_name = (
-        model_name or PROVIDER_DEFAULT_MODELS.get(model_provider) or DEFAULT_MODEL
-    )
+    model_name = model_name or PROVIDER_DEFAULT_MODELS.get(model_provider)
+    if not model_name:
+        raise ValueError(
+            "HERMES_MODEL is required when HERMES_INFERENCE_PROVIDER has no "
+            "reviewed default"
+        )
 
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
@@ -641,34 +577,32 @@ def build_config(
         # the exact path the pinned API adapter reads; placing the cap in the
         # platform's `extra` mapping looks plausible but is ignored upstream.
         "gateway": {"api_server": {"max_concurrent_runs": 2}},
-        # Keep the global edit transport available for non-Slack gateway
-        # surfaces. Slack opts out below so model text before tool calls can
-        # never become permanent transcript fragments.
+        # Prefer each platform's native stream when it has one, with progressive
+        # edit fallback elsewhere. Slack's stream is the final message itself.
         "streaming": {
             "enabled": True,
-            "transport": "edit",
+            "transport": "auto",
             "edit_interval": 1.0,
             "buffer_threshold": 40,
             "cursor": " ▉",
         },
         "display": {
-            # Codex-backed models narrate phase=commentary through a separate
-            # agent-level gate (agent_init reads this from the TOP-LEVEL display
-            # section only — a per-platform copy is silently ignored). Without
-            # this, narration returns the moment the ladder fails over to Codex.
-            "show_commentary": False,
+            # Codex phase=commentary is the intended polished progress lane.
+            # It is folded into the one Slack-native stream by the pinned patch;
+            # private reasoning remains hidden below.
+            "show_commentary": True,
             "platforms": {
                 "slack": {
-                    # Keep every pre-tool assistant segment out of Slack. The
-                    # ephemeral working status still shows that work is
-                    # active; only the finished response becomes a message.
-                    "streaming": False,
+                    # One chat.startStream reply begins with an immediate host
+                    # acknowledgement, carries meaningful commentary, and is
+                    # sealed exactly once with the final response.
+                    "streaming": True,
                     # Pinned Hermes supports full|verb|off here. `verb` keeps
                     # a useful live cue without leaking arguments, filenames,
                     # commands, or other tool detail into a shared channel.
                     "live_status": "verb",
                     "tool_progress": "off",
-                    "interim_assistant_messages": False,
+                    "interim_assistant_messages": True,
                     "long_running_notifications": False,
                     "busy_ack_detail": False,
                     "show_reasoning": False,
@@ -830,6 +764,7 @@ def render(
             ],
         ],
         "max_tokens": config["model"]["max_tokens"],
+        "reasoning_effort": config["agent"]["reasoning_effort"],
         "max_turns": config["agent"]["max_turns"],
         "slack_max_turns": config["agent"]["platform_max_turns"]["slack"],
         "slack_tool_round_limit": DEFAULT_SLACK_TOOL_ROUNDS,
@@ -847,6 +782,7 @@ def render(
         "runtime_lane": runtime_lane(env),
         "deploy_commit": _clean(env, "RENDER_GIT_COMMIT") or "",
         "hermes_upstream_ref": _clean(env, "HERMES_UPSTREAM_REF") or "",
+        "host_runtime_contract_version": HOST_RUNTIME_CONTRACT_VERSION,
         "openrouter_key_present": bool(_clean(env, "OPENROUTER_API_KEY")),
         "web_search_backend": config.get("tools", {})
         .get("web_search", {})
@@ -876,10 +812,10 @@ def render(
         "home_channel_id": (build_home_channel(env) or {}).get("chat_id", ""),
         "slack_presentation": {
             "one_message_stream": (
-                slack_display["streaming"] is False
-                and slack_display["interim_assistant_messages"] is False
+                slack_display["streaming"] is True
+                and slack_display["interim_assistant_messages"] is True
             ),
-            "transport": "final_send",
+            "transport": "native_stream",
             "tool_progress": slack_display["tool_progress"],
             "live_status": slack_display["live_status"],
             # The ephemeral working-status line ("is digging through the
@@ -891,8 +827,13 @@ def render(
             # the TOP-LEVEL display section only.
             "show_commentary": config.get("display", {}).get("show_commentary"),
         },
+        "slack_conversation": {
+            "top_level_requires_mention": config["slack"]["require_mention"],
+            "thread_continuation_enabled": not config["slack"]["strict_mention"],
+        },
         "k2_context_plugin": {
             "enabled": "hlt-k2-context" in config.get("plugins", {}).get("enabled", []),
+            "version": K2_CONTEXT_PLUGIN_VERSION,
         },
         "external_dispatch": {
             "configured": bool(_clean(env, "OPENCLAW_HQ_HOOK_TOKEN")),

@@ -89,16 +89,21 @@ def _rich(*elements):
     ]
 
 
-def _decision(lead, raw, local="agent:cleo", roster=None):
+def _decision(
+    lead, raw, local="agent:cleo", roster=None, thread_participants=()
+):
     return lead.select_slack_agent_lead(
         raw,
         local_agent_ref=local,
         roster=roster or lead.load_fallback_roster(),
+        thread_participant_agent_refs=thread_participants,
     )
 
 
 def _event(raw, *, platform="slack"):
     return SimpleNamespace(
+        text=str(raw.get("text") or ""),
+        channel_context=None,
         raw_message=raw,
         message_id=str(raw.get("ts") or ""),
         metadata={
@@ -277,7 +282,53 @@ def test_mpim_is_shared_and_requires_a_fresh_mention(lead):
     assert addressed.channel_kind == "mpim"
 
 
-def test_first_recognized_native_mention_wins_for_every_runtime(lead):
+def test_unmentioned_thread_followup_stays_with_every_human_invited_participant(lead):
+    raw = _raw(
+        "keep going",
+        thread_ts="1787140000.000100",
+        ts="1787141352.524009",
+    )
+
+    participants = ("agent:victoria", "agent:cleo")
+    cleo = _decision(lead, raw, local="agent:cleo", thread_participants=participants)
+    victoria = _decision(
+        lead, raw, local="agent:victoria", thread_participants=participants
+    )
+    lila = _decision(lead, raw, local="agent:lila", thread_participants=participants)
+
+    assert cleo.action == "allow"
+    assert cleo.reason == "thread_participant_continuation"
+    assert cleo.selected_agent_ref == "agent:cleo"
+    assert victoria.action == "allow"
+    assert victoria.reason == "thread_participant_continuation"
+    assert lila.action == "suppress"
+    assert lila.reason == "not_a_thread_participant"
+
+
+def test_fresh_human_mention_replaces_the_previous_participant_set(lead):
+    raw = _raw(
+        "<@U0AHLTX283E> take it from here",
+        thread_ts="1787140000.000100",
+        ts="1787141352.524009",
+    )
+
+    victoria = _decision(
+        lead,
+        raw,
+        local="agent:victoria",
+        thread_participants=("agent:cleo",),
+    )
+    cleo = _decision(
+        lead, raw, local="agent:cleo", thread_participants=("agent:cleo",)
+    )
+
+    assert victoria.action == "allow"
+    assert victoria.selected_agent_ref == "agent:victoria"
+    assert cleo.action == "suppress"
+    assert cleo.reason == "another_agent_mentioned_first"
+
+
+def test_every_explicit_human_agent_mention_is_invited(lead):
     raw = _raw("<@U0AHLTX283E> and <@U0BM3ULM210> dig into this")
 
     victoria = _decision(lead, raw, local="agent:victoria")
@@ -285,8 +336,9 @@ def test_first_recognized_native_mention_wins_for_every_runtime(lead):
 
     assert victoria.action == "allow"
     assert victoria.selected_agent_ref == "agent:victoria"
-    assert cleo.action == "suppress"
-    assert cleo.reason == "another_agent_mentioned_first"
+    assert cleo.action == "allow"
+    assert cleo.selected_agent_ref == "agent:cleo"
+    assert cleo.reason == "explicit_human_invitation"
     assert cleo.recognized_mentions == ("agent:victoria", "agent:cleo")
 
 
@@ -573,6 +625,120 @@ def test_sqlite_tombstone_is_atomic_across_concurrent_retries(ledger_module, tmp
     assert inserted.count(False) == 7
 
 
+def test_thread_participant_ledger_keeps_the_latest_explicit_human_set(
+    ledger_module, tmp_path
+):
+    ledger = ledger_module.SlackLeadLedger(tmp_path / "lead.sqlite3")
+    key = {
+        "workspace_id": "T_HLT",
+        "channel_id": "C0BNVFN5MM5",
+        "thread_ts": "1787140000.000100",
+    }
+    ledger.assign_thread_participants(
+        **key,
+        agent_refs=("agent:victoria", "agent:cleo"),
+        mention_message_ts="1787141352.524009",
+    )
+    ledger.assign_thread_participants(
+        **key,
+        agent_refs=("agent:lila",),
+        mention_message_ts="1787141351.999999",
+    )
+    assert ledger.thread_participants(**key) == (
+        "agent:victoria",
+        "agent:cleo",
+    )
+
+    ledger.assign_thread_participants(
+        **key,
+        agent_refs=("agent:cleo",),
+        mention_message_ts="1787141400.000001",
+    )
+    assert ledger.thread_participants(**key) == ("agent:cleo",)
+
+
+def test_multi_agent_invitation_keeps_every_invited_agent_conversational(
+    monkeypatch, tmp_path
+):
+    plugin = _load_plugin()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HLT_AGENT_REF", "agent:cleo")
+    root_ts = "1787140000.000100"
+    invitation = _event(
+        _raw(
+            "<@U0AHLTX283E> and <@U0BM3ULM210> both dig into this",
+            ts=root_ts,
+        )
+    )
+
+    assert plugin._pre_gateway_dispatch(event=invitation) is None
+    ledger = plugin.SlackLeadLedger(tmp_path / "slack-agent-lead.sqlite3")
+    assert ledger.thread_participants(
+        workspace_id="T_HLT",
+        channel_id="C0BNVFN5MM5",
+        thread_ts=root_ts,
+    ) == (
+        "agent:victoria",
+        "agent:cleo",
+    )
+
+    followup = _event(
+        _raw(
+            "keep going",
+            thread_ts=root_ts,
+            ts="1787141352.524009",
+        )
+    )
+    assert plugin._pre_gateway_dispatch(event=followup) is None
+
+
+def test_peer_handoff_does_not_expand_the_human_participant_set(
+    monkeypatch, tmp_path
+):
+    plugin = _load_plugin()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HLT_AGENT_REF", "agent:cleo")
+    root_ts = "1787140000.000100"
+    human_invitation = _event(
+        _raw("<@U0AHLTX283E> own this", ts=root_ts)
+    )
+    assert plugin._pre_gateway_dispatch(event=human_invitation) == {
+        "action": "skip",
+        "reason": "another_agent_mentioned_first",
+    }
+
+    peer_handoff = _event(
+        _raw(
+            "<@U0BM3ULM210> inspect this bounded packet",
+            user="U0AHLTX283E",
+            bot_id="BVICTORIA",
+            client_msg_id="",
+            thread_ts=root_ts,
+            ts="1787141352.524009",
+        )
+    )
+    assert plugin._pre_gateway_dispatch(event=peer_handoff) is None
+
+    ledger = plugin.SlackLeadLedger(tmp_path / "slack-agent-lead.sqlite3")
+    assert ledger.thread_participants(
+        workspace_id="T_HLT",
+        channel_id="C0BNVFN5MM5",
+        thread_ts=root_ts,
+    ) == ("agent:victoria",)
+
+    unmentioned_human_followup = _event(
+        _raw(
+            "keep going",
+            thread_ts=root_ts,
+            ts="1787141400.000001",
+        )
+    )
+    assert plugin._pre_gateway_dispatch(event=unmentioned_human_followup) == {
+        "action": "skip",
+        "reason": "not_a_thread_participant",
+    }
+
+
 def test_hook_records_private_receipt_then_suppresses_restart_replay(
     monkeypatch, tmp_path, caplog
 ):
@@ -601,6 +767,52 @@ def test_hook_records_private_receipt_then_suppresses_restart_replay(
     assert receipt["action"] == "allow"
     assert secret_message not in json.dumps(receipt)
     assert secret_message not in caplog.text
+
+
+def test_bare_cleo_transfer_recovers_the_parent_task_and_recent_thread_context(
+    monkeypatch, tmp_path
+):
+    plugin = _load_plugin()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HLT_AGENT_REF", "agent:cleo")
+    parent_task = (
+        "<@U0AHLTX283E> can you see the content Cailey made; is this something "
+        "you or <@U0BM3ULM210> can do? Check Drive, Nursing Mastery, K2, "
+        "Airtable and Notion, then give me the plan of action."
+    )
+    recent_context = "Cailey Oates: the video and article are in the shared folder."
+    raw = _raw(
+        "<@U0BM3ULM210>",
+        thread_ts="1787140000.000100",
+        ts="1787141352.524009",
+    )
+    event = _event(raw)
+    # This is the exact shape after Slack strips its own bot mention.
+    event.text = ""
+    event.channel_context = (
+        "[Thread context — prior messages in this thread "
+        "(not yet in conversation history):]\n"
+        f"[thread parent] Alec Whitters: {parent_task}\n"
+        f"{recent_context}\n"
+        "[End of thread context]\n\n"
+    )
+
+    result = plugin._pre_gateway_dispatch(event=event)
+
+    assert result["action"] == "rewrite"
+    assert result["channel_context"] == ""
+    assert parent_task in result["text"]
+    assert recent_context in result["text"]
+    assert "explicitly transferred this thread to cleo" in result["text"]
+
+    followup = _event(
+        _raw(
+            "continue with it",
+            thread_ts="1787140000.000100",
+            ts="1787141400.000001",
+        )
+    )
+    assert plugin._pre_gateway_dispatch(event=followup) is None
 
 
 def test_valid_json_corruption_in_replay_tombstone_fails_closed(monkeypatch, tmp_path):
@@ -705,6 +917,12 @@ def test_edited_message_form_command_stays_frozen(monkeypatch, tmp_path):
         "reason": "edited_message_frozen",
     }
     assert (tmp_path / "slack-agent-lead.sqlite3").is_file()
+    ledger = plugin.SlackLeadLedger(tmp_path / "slack-agent-lead.sqlite3")
+    assert ledger.thread_participants(
+        workspace_id="T_HLT",
+        channel_id="C0BNVFN5MM5",
+        thread_ts="1787141352.524009",
+    ) == ()
 
 
 def test_nonparticipant_runtime_is_untouched(monkeypatch, tmp_path):
@@ -753,6 +971,7 @@ def test_plugin_registers_lead_selection_before_mission_context():
     assert [name for name, _ in registrations] == [
         "pre_gateway_dispatch",
         "pre_llm_call",
+        "pre_tool_call",
     ]
 
 
@@ -768,8 +987,44 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
         / "hermes_patches"
         / "pre_gateway_dispatch_before_typing.patch"
     ).read_text(encoding="utf-8")
+    bare_transfer_patch = (
+        ROOT
+        / "services"
+        / "agent"
+        / "hermes_patches"
+        / "slack_bare_transfer_full_context.patch"
+    ).read_text(encoding="utf-8")
+    quiet_failover_patch = (
+        ROOT
+        / "services"
+        / "agent"
+        / "hermes_patches"
+        / "quiet_slack_provider_failover.patch"
+    ).read_text(encoding="utf-8")
+    single_stream_patch = (
+        ROOT
+        / "services"
+        / "agent"
+        / "hermes_patches"
+        / "slack_single_stream_progress.patch"
+    ).read_text(encoding="utf-8")
+    single_stream_assertion = (
+        ROOT
+        / "services"
+        / "agent"
+        / "hermes_patches"
+        / "assert_slack_single_stream_progress.py"
+    ).read_text(encoding="utf-8")
+    failover_assertion = (
+        ROOT
+        / "services"
+        / "agent"
+        / "hermes_patches"
+        / "assert_provider_failover_request_contract.py"
+    ).read_text(encoding="utf-8")
 
     assert "- pre_gateway_dispatch" in manifest
+    assert manifest["version"] == "1.5.0"
     assert "hermes_cli/plugins.py" in dockerfile
     assert "pre_gateway_dispatch skip" in dockerfile
     assert "ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile
@@ -784,6 +1039,22 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     assert 'payload.get("ok") is not False' in patch
     assert 'str(user.get("id") or "") != str(user_id)' in patch
     assert 'or user.get("is_app_user")' in patch
+    assert "slack_bare_transfer_full_context.patch" in dockerfile
+    assert "quiet_slack_provider_failover.patch" in dockerfile
+    assert "slack_single_stream_progress.patch" in dockerfile
+    assert "assert_provider_failover_request_contract.py /opt/hermes" in dockerfile
+    assert "assert_slack_single_stream_progress.py /opt/hermes" in dockerfile
+    assert "bare_agent_transfer" in bare_transfer_patch
+    assert 'watermark_ts = ""' in bare_transfer_patch
+    assert '"channel_context" in _result' in patch
+    assert "both model routes are" in quiet_failover_patch
+    assert "Your request is preserved in this thread" in quiet_failover_patch
+    assert "return None" in quiet_failover_patch
+    assert "original_user_message = _ctx.original_user_message" in failover_assertion
+    assert "draft_stream_is_message = True" in single_stream_patch
+    assert 'initial_stream_ack = "On it' in single_stream_patch
+    assert "meaningful progress" in single_stream_patch
+    assert "len(draft_ids) == 1" in single_stream_assertion
 
 
 def test_single_line_fence_does_not_swallow_the_mention_after_it(lead):

@@ -1,0 +1,130 @@
+diff --git a/gateway/stream_consumer.py b/gateway/stream_consumer.py
+index 4fc33ef..84ccd7e 100644
+--- a/gateway/stream_consumer.py
++++ b/gateway/stream_consumer.py
+@@ -1272,8 +1272,22 @@ class GatewayStreamConsumer:
+                 logger.debug(
+                     "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
+                     self.chat_id, self._draft_id,
+                 )
++                # Stream-is-the-message adapters (Slack chat.*Stream) need a
++                # visible acknowledgement before the first model delta. Seed
++                # that SAME append-only stream here; later progress and the
++                # final answer extend it instead of creating separate posts.
++                initial_ack = getattr(self.adapter, "initial_stream_ack", "")
++                if self._stream_is_message() and isinstance(initial_ack, str):
++                    initial_ack = initial_ack.strip()
++                    if initial_ack:
++                        self._append_accumulated(initial_ack + "\n\n")
++                        if not await self._send_draft_frame(self._accumulated):
++                            # Gracefully fall back to the edit path. Retain the
++                            # acknowledgement in the buffer so the first update
++                            # still owns one visible message.
++                            self._use_draft_streaming = False
+ 
+         try:
+             while True:
+                 # Abandon the stream early if the session has been reset
+@@ -1324,10 +1338,55 @@ class GatewayStreamConsumer:
+                             if _streamed_something and not self._turn_split_delivery:
+                                 _final_payload = self._clean_for_display(item[1])
+                                 _visible = self._clean_for_display(self._accumulated)
+                                 if _final_payload and _final_payload != _visible:
+-                                    self._accumulated = item[1]
+-                                    self._stream_ledger = item[1]
++                                    if (
++                                        self._use_draft_streaming
++                                        and self._stream_is_message()
++                                    ):
++                                        # Slack streams are append-only. Keep
++                                        # the visible acknowledgement and
++                                        # meaningful progress, then complete
++                                        # that same stream with the polished
++                                        # final answer.
++                                        overlap = 0
++                                        if _visible.endswith(_final_payload):
++                                            overlap = len(_final_payload)
++                                        else:
++                                            # A post-stream transform may
++                                            # extend the streamed body (for
++                                            # example with a verified footer).
++                                            # Append only that missing suffix
++                                            # when there is a substantive
++                                            # overlap; tiny accidental matches
++                                            # do not qualify.
++                                            for size in range(
++                                                min(
++                                                    len(_visible),
++                                                    len(_final_payload),
++                                                ),
++                                                31,
++                                                -1,
++                                            ):
++                                                if _visible.endswith(
++                                                    _final_payload[:size]
++                                                ):
++                                                    overlap = size
++                                                    break
++                                        if overlap < len(_final_payload):
++                                            separator = (
++                                                ""
++                                                if overlap
++                                                or _visible.endswith("\n\n")
++                                                else "\n\n"
++                                            )
++                                            self._append_accumulated(
++                                                separator
++                                                + _final_payload[overlap:]
++                                            )
++                                    else:
++                                        self._accumulated = item[1]
++                                        self._stream_ledger = item[1]
+                             elif _streamed_something and self._turn_split_delivery:
+                                 # Split delivery + authoritative final (review
+                                 # r2, finding 3): wholesale adoption would
+                                 # repeat sealed heads inside the tail (#78541),
+@@ -1878,9 +1937,25 @@ class GatewayStreamConsumer:
+                     # would break the append-only invariant the connector's
+                     # delta computation depends on (whole-snapshot re-append).
+                     _stream_is_msg_c = self._stream_is_message()
+                     if _stream_is_msg_c and self._use_draft_streaming:
+-                        await self._send_commentary(commentary_text)
++                        # Slack native streams are the message. Fold polished
++                        # commentary into the cumulative stream so progress is
++                        # visible without producing one permanent bubble per
++                        # update. Raw tool progress remains separately gated.
++                        visible_commentary = self._clean_for_display(
++                            commentary_text
++                        ).strip()
++                        if visible_commentary:
++                            separator = (
++                                ""
++                                if self._accumulated.endswith("\n\n")
++                                else "\n\n"
++                            )
++                            self._append_accumulated(
++                                separator + visible_commentary + "\n\n"
++                            )
++                            await self._send_or_edit(self._accumulated)
+                         self._last_edit_time = time.monotonic()
+                     elif self._use_native_streaming:
+                         # Native streaming (WeCom): commentary is sent as an
+                         # independent message via adapter.send(), but we must
+diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
+index cd8e237..7101a2a 100644
+--- a/plugins/platforms/slack/adapter.py
++++ b/plugins/platforms/slack/adapter.py
+@@ -1119,8 +1119,13 @@ class SlackAdapter(BasePlatformAdapter):
+     """
+ 
+     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
++    # Slack chat.*Stream is the visible message itself, not a disposable draft.
++    # Keep one cumulative stream through tool boundaries and seal it exactly
++    # once with the turn-final answer.
++    draft_stream_is_message = True
++    initial_stream_ack = "On it — I’m getting to work now."
+     # Slack's typing indicator is a text status line (assistant.threads
+     # .setStatus), so the gateway feeds it live per-tool phrases.
+     supports_status_text = True
+     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)

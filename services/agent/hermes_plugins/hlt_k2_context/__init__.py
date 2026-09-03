@@ -244,6 +244,42 @@ def _slack_key(event: Any, raw_message: Mapping[str, Any]) -> tuple[str, str, st
     return workspace_id, channel_id, message_ts
 
 
+def _slack_thread_ts(raw_message: Mapping[str, Any], message_ts: str) -> str:
+    """Return Slack's durable thread key, including a top-level starter."""
+    return str(raw_message.get("thread_ts") or message_ts or "").strip()
+
+
+def _bare_transfer_rewrite(
+    event: Any, *, selected_agent_ref: str | None
+) -> dict[str, Any] | None:
+    """Recover a real thread task when the transfer message is only ``@agent``.
+
+    The Slack adapter strips its own mention before this hook runs. A bare
+    transfer therefore arrives with empty ``event.text`` but with an
+    authenticated, bounded ``channel_context`` fetched from
+    ``conversations.replies``. Promote that exact context into the durable user
+    message so K2 sees the actual mission, transcript compaction cannot erase
+    it during this turn, and every provider retry receives the same request.
+    ``channel_context`` is cleared in the rewrite to avoid duplicating it at
+    the gateway's normal prepend step.
+    """
+    if str(getattr(event, "text", "") or "").strip():
+        return None
+    context = str(getattr(event, "channel_context", "") or "").strip()
+    if not context:
+        return None
+    agent_name = str(selected_agent_ref or "the selected agent").removeprefix(
+        "agent:"
+    )
+    recovered = (
+        f"{context}\n\n"
+        "[Ownership transfer]\n"
+        f"The latest verified user explicitly transferred this thread to "
+        f"{agent_name}. Complete the substantive request in the thread context."
+    )
+    return {"action": "rewrite", "text": recovered, "channel_context": ""}
+
+
 def _lead_ledger() -> SlackLeadLedger:
     home = Path(os.getenv("HERMES_HOME", "/data/hermes"))
     return SlackLeadLedger(home / "slack-agent-lead.sqlite3")
@@ -271,7 +307,7 @@ def _private_receipt(
     }
 
 
-def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, str] | None:
+def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, Any] | None:
     """Admit only Cleo-owned Slack turns before model and typing dispatch."""
     source = getattr(event, "source", None)
     platform = getattr(source, "platform", None)
@@ -299,12 +335,20 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, str] | None:
 
     try:
         roster = load_fallback_roster()
+        workspace_id, channel_id, message_ts = _slack_key(event, raw_message)
+        thread_ts = _slack_thread_ts(raw_message, message_ts)
+        ledger = _lead_ledger()
+        thread_participants = ledger.thread_participants(
+            workspace_id=workspace_id,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+        )
         decision = select_slack_agent_lead(
             raw_message,
             local_agent_ref=local_agent_ref,
             roster=roster,
+            thread_participant_agent_refs=thread_participants,
         )
-        workspace_id, channel_id, message_ts = _slack_key(event, raw_message)
         receipt = _private_receipt(
             decision=decision,
             workspace_id=workspace_id,
@@ -323,7 +367,25 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, str] | None:
         return {"action": "skip", "reason": "lead_selection_unavailable"}
 
     try:
-        tombstone = _lead_ledger().record_once(
+        sender_user_id = str(raw_message.get("user") or "").strip().upper()
+        sender_is_agent = sender_user_id in roster.by_user_id
+        if (
+            decision.recognized_mentions
+            and not sender_is_agent
+            and decision.reason != "edited_message_frozen"
+        ):
+            # Every runtime observes the same explicit human invitation,
+            # including agents that suppress this turn. Persisting the full set
+            # on each disk keeps every invited specialist conversational after
+            # a restart. A later human mention replaces/narrows this set.
+            ledger.assign_thread_participants(
+                workspace_id=workspace_id,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                agent_refs=decision.recognized_mentions,
+                mention_message_ts=message_ts,
+            )
+        tombstone = ledger.record_once(
             workspace_id=workspace_id,
             channel_id=channel_id,
             message_ts=message_ts,
@@ -351,6 +413,12 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, str] | None:
 
     logger.info("%s %s", RECEIPT_SCHEMA, json.dumps(receipt, sort_keys=True))
     if decision.allows_dispatch:
+        if decision.recognized_mentions:
+            recovered = _bare_transfer_rewrite(
+                event, selected_agent_ref=decision.selected_agent_ref
+            )
+            if recovered is not None:
+                return recovered
         # None means normal dispatch without short-circuiting a later policy
         # hook; Hermes stops evaluating hooks after an explicit allow result.
         return None

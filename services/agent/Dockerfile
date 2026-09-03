@@ -49,6 +49,14 @@ RUN git init /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_bare_transfer_full_context.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/slack_bare_transfer_full_context.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/quiet_slack_provider_failover.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/quiet_slack_provider_failover.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/codex_pool_readiness_counts.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/codex_pool_readiness_counts.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_single_stream_progress.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/slack_single_stream_progress.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/api_runs_numeric_grounding.patch \
@@ -82,6 +90,9 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && grep -q 're.escape(COMPACTION_DONE_STATUS)' /opt/hermes/gateway/run.py \
     && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py \
     && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes \
+    && python /tmp/hermes-patches/assert_provider_failover_request_contract.py /opt/hermes \
+    && python -c "from agent.credential_pool import CredentialPool; assert callable(getattr(CredentialPool, 'readiness_counts', None))" \
+    && python /tmp/hermes-patches/assert_slack_single_stream_progress.py /opt/hermes \
     && python /tmp/hermes-patches/assert_k2_runtime_pack_prompt_refresh.py /opt/hermes \
     && python /tmp/hermes-patches/assert_progressive_tool_result_compaction.py /opt/hermes \
     && python /tmp/hermes-patches/assert_platform_turn_budget.py /opt/hermes \

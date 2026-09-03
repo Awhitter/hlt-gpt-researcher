@@ -154,15 +154,11 @@ services:
         sync: false
       - key: ELEVENLABS_API_KEY
         sync: false
-      # Optional Hermes provider override. Cleo defaults to subscription-backed
-      # xAI OAuth; set openrouter only for an intentional paid fallback/cutover.
+      # Optional Hermes provider override. Cleo defaults to the managed Codex
+      # profile pool; readiness requires three present/selectable profiles.
+      # Set another provider only for an intentional cutover.
       - key: HERMES_INFERENCE_PROVIDER
         sync: false
-      # Optional model override; defaults to grok-4.6 on xAI OAuth.
+      # Optional model override; defaults to gpt-5.6-sol on openai-codex.
       - key: HERMES_MODEL
-        sync: false
-      # Optional JSON list or comma-separated provider:model route override.
-      # Unset uses Codex GPT-5.6 Sol, then Kimi K3, Qwen 3.8 Max and the latest
-      # DeepSeek V4 Pro on OpenRouter.
-      - key: HERMES_FALLBACK_PROVIDERS
         sync: false

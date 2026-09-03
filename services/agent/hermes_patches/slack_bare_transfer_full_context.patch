@@ -1,0 +1,33 @@
+diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
+index cd8e237..66db088 100644
+--- a/plugins/platforms/slack/adapter.py
++++ b/plugins/platforms/slack/adapter.py
+@@ -6554,6 +6554,7 @@ class SlackAdapter(BasePlatformAdapter):
+         if _claim_ts:
+             self._remember_processed_message_ts(_claim_ts)
+ 
++        bare_agent_transfer = False
+         if is_mentioned:
+             # Strip the bot mention from the text
+             text = text.replace(f"<@{bot_uid}>", "").strip()
+@@ -6564,6 +6565,7 @@ class SlackAdapter(BasePlatformAdapter):
+             # the first probe ran) and ``@bot /cmd`` (typed slash addressed
+             # at the bot).
+             mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
++            bare_agent_transfer = not bool(mention_stripped)
+             if mention_stripped.startswith("/"):
+                 command_text = mention_stripped
+             else:
+@@ -6667,6 +6669,12 @@ class SlackAdapter(BasePlatformAdapter):
+                 user_id=user_id,
+                 team_id=team_id,
+             )
++            # A bare ownership transfer (``@Cleo``) carries no task in its
++            # authored text. Even when a stale session exists, recover the
++            # complete bounded thread so the parent request cannot disappear
++            # behind the session watermark.
++            if bare_agent_transfer:
++                watermark_ts = ""
+             thread_context = await self._fetch_thread_context(
+                 channel_id=channel_id,
+                 thread_ts=event_thread_ts,

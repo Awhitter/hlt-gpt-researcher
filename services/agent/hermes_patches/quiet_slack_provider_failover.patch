@@ -1,0 +1,53 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index 8264eed..e4d8e19 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -146,6 +146,10 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
+     r"|rate\s+limited\.\s+waiting\s+\d"
+     r"|retrying\s+in\s+\d"
+     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
++    r"|model\s+fallback:"
++    r"|primary\s+model\s+restored:"
++    r"|(?:authentication\s+failed|provider\s+unreachable|rate\s+limited|billing(?:\s+or\s+credits)?\s+exhausted).*(?:fallback|switching)"
++    r"|switched\s+to\s+fallback:"
+     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
+     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+     rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+@@ -914,8 +918,19 @@ def _format_exec_approval_fallback(
+         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
+     )
+ 
+-def _gateway_provider_error_reply(text: str) -> str:
++def _is_slack_gateway_surface(platform: Any) -> bool:
++    value = getattr(platform, "value", platform)
++    return str(value or "").strip().lower() == "slack"
++
++
++def _gateway_provider_error_reply(text: str, *, platform: Any = None) -> str:
+     """Map raw provider/API errors to a short user-safe Telegram reply."""
++    if _is_slack_gateway_surface(platform):
++        return (
++            "I couldn't complete this right now because both model routes are "
++            "unavailable. Your request is preserved in this thread; please retry "
++            "shortly."
++        )
+     if _GATEWAY_AUTH_ERROR_RE.search(text):
+         return (
+             "⚠️ Provider authentication failed. Check the configured credentials; "
+@@ -1021,7 +1036,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+ 
+     redacted = _redact_gateway_user_facing_secrets(str(text))
+     if _looks_like_gateway_provider_error(redacted):
+-        return _gateway_provider_error_reply(redacted)
++        return _gateway_provider_error_reply(redacted, platform=platform)
+     return redacted
+ 
+ 
+@@ -1051,5 +1066,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
+         ):
+             return None
+     if _looks_like_gateway_provider_error(text):
++        if _is_slack_gateway_surface(platform):
++            return None
+         return _gateway_provider_error_reply(text)
+     return text

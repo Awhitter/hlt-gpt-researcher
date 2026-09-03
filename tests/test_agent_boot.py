@@ -192,7 +192,8 @@ def test_sender_policy_is_reported(tmp_path):
 def test_workspace_safety_defaults():
     config = render_config.build_config(FULL_ENV)
 
-    assert config["slack"]["strict_mention"] is True
+    assert config["slack"]["require_mention"] is True
+    assert config["slack"]["strict_mention"] is False
     assert config["memory"]["write_approval"] is True
     # USER.md is singular; a whole workspace makes that profile incoherent.
     assert config["memory"]["user_profile_enabled"] is False
@@ -241,8 +242,8 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     render_config.render(env=FULL_ENV, home=tmp_path)
     config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
-    assert config["model"]["provider"] == "xai-oauth"
-    assert config["model"]["default"] == "grok-4.6"
+    assert config["model"]["provider"] == "openai-codex"
+    assert config["model"]["default"] == "gpt-5.6-sol"
     assert config["model"]["max_tokens"] == 32_768
     assert config["agent"]["max_turns"] == 24
     assert config["agent"]["platform_max_turns"] == {"slack": 7}
@@ -325,6 +326,8 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     assert summary["runtime_lane"] == "hermes"
     assert summary["deploy_commit"] == "abc123"
     assert summary["hermes_upstream_ref"] == "upstream123"
+    assert summary["host_runtime_contract_version"] == "cleo-hermes-host.v2"
+    assert summary["k2_context_plugin"]["version"] == "1.5.0"
 
 
 def test_product_work_skill_is_a_small_k2_activation_shim(tmp_path):
@@ -373,8 +376,9 @@ def test_model_override_precedence(tmp_path):
 
 def test_subscription_provider_is_default_but_can_be_overridden(tmp_path):
     default = render_config.render(env={}, home=tmp_path)
-    assert default["model_provider"] == "xai-oauth"
-    assert default["model"] == "grok-4.6"
+    assert default["model_provider"] == "openai-codex"
+    assert default["model"] == "gpt-5.6-sol"
+    assert default["reasoning_effort"] == "high"
 
     openrouter = render_config.build_config(
         {"HERMES_INFERENCE_PROVIDER": "openrouter", "OPENROUTER_MODEL": "anthropic/claude-sonnet-5"}
@@ -387,19 +391,14 @@ def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
     """Provider-name strings are silently discarded by pinned Hermes.
 
     The recovery chain must therefore contain a provider and an exact model at
-    every hop. Durable defaults contain only credentials this service can
-    refresh without a human device-code ceremony; Codex remains an explicit
-    operator override.
+    every hop. The managed Codex pool rotates internally; Grok is the only
+    independent agentic fallback. An unavailable pair must degrade rather than
+    answer through a weaker OpenRouter model.
     """
     config = render_config.build_config(FULL_ENV)
 
     assert config["fallback_providers"] == [
-        {"provider": "openrouter", "model": "moonshotai/kimi-k3"},
-        {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
-        {
-            "provider": "openrouter",
-            "model": "deepseek/deepseek-v4-pro-0813",
-        },
+        {"provider": "xai-oauth", "model": "grok-4.6"},
     ]
     assert all(
         isinstance(route, dict) and set(route) == {"provider", "model"}
@@ -409,59 +408,31 @@ def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
     assert summary["configured_model_route"][0] == {
-        "provider": "xai-oauth",
-        "model": "grok-4.6",
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
         "role": "primary",
     }
-    assert summary["configured_model_route"][1]["role"] == "fallback-1"
-    assert all(
-        route["provider"] != "openai-codex"
-        for route in summary["configured_model_route"]
-    )
+    assert summary["configured_model_route"][1] == {
+        "provider": "xai-oauth",
+        "model": "grok-4.6",
+        "role": "fallback-1",
+    }
+    assert len(summary["configured_model_route"]) == 2
 
 
-def test_fallback_override_accepts_json_and_compact_routes():
-    json_override = render_config.build_config(
-        {
-            **FULL_ENV,
-            "HERMES_FALLBACK_PROVIDERS": json.dumps(
-                [
-                    {"provider": "xai-oauth", "model": "grok-4.6"},
-                    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
-                    {"provider": "openai-codex", "model": "gpt-5.6-sol"},
-                ]
-            ),
-        }
-    )
-    assert json_override["fallback_providers"] == [
-        {"provider": "openai-codex", "model": "gpt-5.6-sol"}
-    ]
-
-    compact = render_config.build_config(
-        {
-            **FULL_ENV,
-            "HERMES_FALLBACK_PROVIDERS": (
-                "openai-codex,openrouter:qwen/qwen3.8-max"
-            ),
-        }
-    )
-    assert compact["fallback_providers"] == [
-        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
-        {"provider": "openrouter", "model": "qwen/qwen3.8-max"},
-    ]
-
-    # A typo cannot silently erase every recovery route; [] is the explicit
-    # operator spelling when no fallback is truly desired.
-    malformed = render_config.build_config(
-        {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": "[{not-json"}
-    )
-    assert malformed["fallback_providers"] == list(
-        render_config.DEFAULT_FALLBACK_PROVIDERS
-    )
-    disabled = render_config.build_config(
-        {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": "[]"}
-    )
-    assert "fallback_providers" not in disabled
+def test_environment_cannot_expand_or_disable_the_reviewed_fallback():
+    for override in (
+        "openrouter:moonshotai/kimi-k3",
+        "openrouter:qwen/qwen3.8-max",
+        "openrouter:deepseek/deepseek-v4-pro-0813",
+        "[]",
+    ):
+        config = render_config.build_config(
+            {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": override}
+        )
+        assert config["fallback_providers"] == [
+            {"provider": "xai-oauth", "model": "grok-4.6"}
+        ]
 
 
 def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
@@ -561,46 +532,49 @@ def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
     assert manifest["settings"]["is_mcp_enabled"] is False
 
 
-def test_slack_sends_one_final_answer_without_permanent_progress_bubbles(tmp_path):
+def test_slack_uses_one_native_evolving_stream_for_progress_and_final(tmp_path):
     config = render_config.build_config(FULL_ENV)
     slack_display = config["display"]["platforms"]["slack"]
 
     assert config["streaming"] == {
         "enabled": True,
-        "transport": "edit",
+        "transport": "auto",
         "edit_interval": 1.0,
         "buffer_threshold": 40,
         "cursor": " ▉",
     }
     assert config["platforms"]["slack"]["typing_indicator"] is True
-    assert slack_display["streaming"] is False
+    assert slack_display["streaming"] is True
     assert slack_display["tool_progress"] == "off"
-    assert slack_display["interim_assistant_messages"] is False
+    assert slack_display["interim_assistant_messages"] is True
     assert slack_display["show_reasoning"] is False
 
     # Placement is the contract here. `show_commentary` is read by agent_init
     # from the TOP-LEVEL display section only — a per-platform copy is silently
     # ignored, which would let Codex-failover narration return. Pinned Hermes'
     # Slack display accepts full|verb|off; `verb` keeps its live cue discreet.
-    assert config["display"]["show_commentary"] is False
+    assert config["display"]["show_commentary"] is True
     assert "show_commentary" not in slack_display
     assert slack_display["live_status"] == "verb"
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
     assert summary["slack_presentation"] == {
         "one_message_stream": True,
-        "transport": "final_send",
+        "transport": "native_stream",
         "tool_progress": "off",
         "live_status": "verb",
         "assistant_status": True,
-        "show_commentary": False,
+        "show_commentary": True,
     }
 
     assert (
-        "keep working state in Slack's ephemeral status and send only the "
-        "finished answer"
+        "acknowledge immediately, keep meaningful progress in the one native "
+        "evolving Slack stream"
         in config["agent"]["environment_hint"]
     )
+    assert "complete that same stream with the finished answer" in config["agent"][
+        "environment_hint"
+    ]
     assert "canonical runtime pack is already installed" in config["agent"][
         "environment_hint"
     ]
@@ -1033,7 +1007,7 @@ def test_every_configured_model_route_gets_a_separate_readiness_result(monkeypat
         },
         {
             "provider": "openrouter",
-            "model": "moonshotai/kimi-k3",
+            "model": "anthropic/claude-sonnet-5",
             "role": "fallback-2",
         },
     ]
@@ -1090,6 +1064,9 @@ def test_codex_legacy_login_cannot_mask_an_unusable_credential_pool(monkeypatch)
         def has_available(self):
             return False
 
+        def readiness_counts(self):
+            return {"profile_count": 2, "selectable_count": 0}
+
     result = health_gateway._codex_subscription_auth_readiness(
         status_getter=lambda: {
             "logged_in": True,
@@ -1104,6 +1081,10 @@ def test_codex_legacy_login_cannot_mask_an_unusable_credential_pool(monkeypatch)
     assert result["credential_pool"] == {
         "has_credentials": True,
         "has_available": False,
+        "profile_count": 2,
+        "selectable_count": 0,
+        "minimum_required": 3,
+        "minimum_ready": False,
     }
     assert result["source"] == "hermes-auth-store"
     assert "api_key" not in result
@@ -1134,6 +1115,9 @@ def test_codex_readiness_requires_a_logged_in_selectable_pool_entry():
         def has_available(self):
             return True
 
+        def readiness_counts(self):
+            return {"profile_count": 3, "selectable_count": 3}
+
     result = health_gateway._codex_subscription_auth_readiness(
         status_getter=lambda: {
             "logged_in": True,
@@ -1145,8 +1129,117 @@ def test_codex_readiness_requires_a_logged_in_selectable_pool_entry():
 
     assert result["usable"] is True
     assert result["credential_pool"]["has_available"] is True
+    assert result["credential_pool"]["profile_count"] == 3
+    assert result["credential_pool"]["selectable_count"] == 3
+    assert result["credential_pool"]["minimum_required"] == 3
+    assert result["credential_pool"]["minimum_ready"] is True
     assert result["source"] == "credential_pool"
     assert "owner" not in str(result)
+
+
+def test_codex_readiness_fails_until_all_three_profiles_are_selectable():
+    health_gateway = _load_health_gateway()
+
+    class _PartiallySelectablePool:
+        def has_credentials(self):
+            return True
+
+        def has_available(self):
+            return True
+
+        def readiness_counts(self):
+            return {"profile_count": 3, "selectable_count": 2}
+
+    result = health_gateway._codex_subscription_auth_readiness(
+        status_getter=lambda: {"logged_in": True, "source": "pool:private"},
+        pool_loader=lambda provider: _PartiallySelectablePool(),
+    )
+
+    assert result["usable"] is False
+    assert result["credential_pool"] == {
+        "has_credentials": True,
+        "has_available": True,
+        "profile_count": 3,
+        "selectable_count": 2,
+        "minimum_required": 3,
+        "minimum_ready": False,
+    }
+    assert result["error"] == (
+        "managed Codex pool requires 3 selectable profiles; "
+        "found 3 present and 2 selectable"
+    )
+    assert "private" not in str(result)
+
+
+def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
+    monkeypatch,
+):
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.update(
+        {
+            "model_provider": "openai-codex",
+            "configured_model_route": [
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                    "role": "primary",
+                },
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "fallback-1",
+                },
+            ],
+            "model_route_readiness": [
+                {"provider": "openai-codex", "available": True, "role": "primary"}
+            ],
+        }
+    )
+    refreshed = [
+        {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "role": "primary",
+            "available": False,
+            "detail": {
+                "provider": "openai-codex",
+                "logged_in": True,
+                "usable": False,
+                "credential_pool": {
+                    "profile_count": 2,
+                    "selectable_count": 2,
+                    "minimum_required": 3,
+                    "minimum_ready": False,
+                },
+            },
+        },
+        {
+            "provider": "xai-oauth",
+            "model": "grok-4.6",
+            "role": "fallback-1",
+            "available": True,
+            "detail": {"provider": "xai-oauth", "usable": True},
+        },
+    ]
+    calls = []
+    monkeypatch.setattr(
+        health_gateway,
+        "model_route_readiness",
+        lambda routes, env: calls.append((routes, env)) or refreshed,
+    )
+
+    result = health_gateway.refresh_model_route_readiness()
+
+    assert len(calls) == 1
+    assert result == refreshed
+    assert health_gateway.BOOT["model_route_readiness"] == refreshed
+    assert health_gateway.BOOT["subscription_auth"]["credential_pool"] == {
+        "profile_count": 2,
+        "selectable_count": 2,
+        "minimum_required": 3,
+        "minimum_ready": False,
+    }
+    assert "token" not in str(result).lower()
 
 
 def test_subscription_readiness_does_not_publish_xai_pool_labels(monkeypatch):
@@ -2838,13 +2931,32 @@ def _preactivation_boot_state():
         "agent_ref": "agent:cleo",
         "runtime_lane": "hermes",
         "written": True,
-        "model_route_readiness": [
+        "configured_model_route": [
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.6-sol",
+                "role": "primary",
+            },
             {
                 "provider": "xai-oauth",
                 "model": "grok-4.6",
+                "role": "fallback-1",
+            },
+        ],
+        "reasoning_effort": "high",
+        "model_route_readiness": [
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.6-sol",
                 "role": "primary",
                 "available": True,
-            }
+            },
+            {
+                "provider": "xai-oauth",
+                "model": "grok-4.6",
+                "role": "fallback-1",
+                "available": True,
+            },
         ],
         "web_search_readiness": {"available": True},
         "external_dispatch": {"configured": True},
@@ -2874,6 +2986,155 @@ def _preactivation_boot_state():
     }
 
 
+def test_runtime_proof_changes_only_with_runtime_inputs():
+    health_gateway = _load_health_gateway()
+    state = _preactivation_boot_state()
+    state.update(
+        {
+            "hermes_upstream_ref": "29112bef",
+            "host_runtime_contract_version": "cleo-hermes-host.v2",
+            "runtime_pack_digest": "sha256:pack-a",
+            "runtime_pack_agent_version": 6,
+            "slack_toolsets": ["web", "mcp-katailyst2"],
+            "slack_conversation": {
+                "top_level_requires_mention": True,
+                "thread_continuation_enabled": True,
+            },
+            "slack_presentation": {
+                "one_message_stream": True,
+                "transport": "native_stream",
+            },
+            "k2_context_plugin": {
+                "installed": True,
+                "enabled": True,
+                "version": "1.5.0",
+            },
+            "mcp_mounted": ["katailyst2"],
+            "deploy_commit": "commit-a",
+            "portrait_url": "https://images.example/cleo-a.png",
+            "slack_card_copy": "Cleo card A",
+            "owner_tuning": "approved",
+        }
+    )
+
+    original = health_gateway.runtime_input_proof(state)
+    presentation_only = health_gateway.runtime_input_proof(
+        {
+            **state,
+            "deploy_commit": "commit-b",
+            "portrait_url": "https://images.example/cleo-b.png",
+            "slack_card_copy": "Cleo card B",
+            "owner_tuning": "needs_review",
+        }
+    )
+    changed_route = health_gateway.runtime_input_proof(
+        {
+            **state,
+            "configured_model_route": [
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "primary",
+                }
+            ],
+        }
+    )
+    changed_pack = health_gateway.runtime_input_proof(
+        {**state, "runtime_pack_digest": "sha256:pack-b"}
+    )
+    changed_slack_runtime = health_gateway.runtime_input_proof(
+        {
+            **state,
+            "slack_conversation": {
+                **state["slack_conversation"],
+                "thread_continuation_enabled": False,
+            },
+        }
+    )
+
+    assert original["contractVersion"] == "agent_host_runtime_inputs.v1"
+    assert original["digest"] == presentation_only["digest"]
+    assert original["digest"] != changed_route["digest"]
+    assert original["digest"] != changed_pack["digest"]
+    assert original["digest"] != changed_slack_runtime["digest"]
+    assert "portrait_url" not in original["inputs"]
+    assert "deploy_commit" not in original["inputs"]
+
+
+def test_health_is_live_but_not_ready_for_the_old_grok_to_kimi_ladder(monkeypatch):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
+    monkeypatch.setattr(
+        health_gateway.supervisor,
+        "snapshot",
+        lambda: {
+            "running": True,
+            "cli_present": True,
+            "slack_adapter_available": True,
+            "mcp_sdk_available": True,
+            "slack_socket_connected": True,
+        },
+    )
+    state = _preactivation_boot_state()
+    state.update(
+        {
+            "model_provider": "xai-oauth",
+            "subscription_auth": {"logged_in": True, "usable": True},
+            "configured_model_route": [
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "primary",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "moonshotai/kimi-k3",
+                    "role": "fallback-1",
+                },
+            ],
+            "model_route_readiness": [
+                {
+                    "provider": "xai-oauth",
+                    "model": "grok-4.6",
+                    "role": "primary",
+                    "available": True,
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "moonshotai/kimi-k3",
+                    "role": "fallback-1",
+                    "available": True,
+                },
+            ],
+            "runtime_pack_applied": True,
+            "mcp_mounted": ["katailyst2"],
+        }
+    )
+    state["k2_agent_readiness"].update(
+        {
+            "mounted": True,
+            "bearer_present": True,
+            "transport_ok": True,
+            "well_callable": True,
+        }
+    )
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+
+    payload = health_gateway.health()
+
+    assert payload["status"] == "degraded"
+    assert payload["mode"] == "gateway_model_route_contract_degraded"
+    assert payload["liveness"] == {
+        "ok": True,
+        "contractVersion": "agent_host_http_liveness.v1",
+    }
+    assert payload["readiness"]["ready"] is False
+    assert (
+        payload["readiness"]["checks"]["model_route_contract_ready"] is False
+    )
+
+
 ACTIVATION_CHECK_KEYS = {
     "agent_ref_matches",
     "runtime_lane_matches",
@@ -2886,6 +3147,7 @@ ACTIVATION_CHECK_KEYS = {
     "channel_auth_ok",
     "channel_scopes_ready",
     "primary_model_route_ready",
+    "model_route_contract_ready",
     "web_search_ready",
     "k2_server_is_canonical",
     "k2_runtime_pack_tool_listed",
@@ -2915,6 +3177,11 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     )
     health_gateway.BOOT.clear()
     health_gateway.BOOT.update(_preactivation_boot_state())
+    monkeypatch.setattr(
+        health_gateway,
+        "refresh_model_route_readiness",
+        lambda: health_gateway.BOOT["model_route_readiness"],
+    )
 
     unauthorized = health_gateway.activationz(authorization=None)
     response = health_gateway.activationz(
@@ -2928,6 +3195,10 @@ def test_activation_probe_breaks_the_circle_without_claiming_online(monkeypatch)
     assert body["contractVersion"] == "agent_host_activation_readiness.v1"
     assert body["stage"] == "pre_activation"
     assert body["agentRef"] == "agent:cleo"
+    assert body["runtimeProof"]["contractVersion"] == "agent_host_runtime_inputs.v1"
+    assert body["runtimeProof"]["inputs"]["modelRoute"] == (
+        _preactivation_boot_state()["configured_model_route"]
+    )
     assert set(body["checks"]) == ACTIVATION_CHECK_KEYS
     assert all(body["checks"].values())
     assert "k2_runtime_pack_applied" not in body["checks"]
@@ -2995,6 +3266,11 @@ def test_post_activation_readyz_requires_the_real_run_surface_and_reports_option
     )
     health_gateway.BOOT.clear()
     health_gateway.BOOT.update(state)
+    monkeypatch.setattr(
+        health_gateway,
+        "refresh_model_route_readiness",
+        lambda: health_gateway.BOOT["model_route_readiness"],
+    )
 
     unauthorized = health_gateway.readyz(authorization=None)
     response = health_gateway.readyz(
@@ -4086,6 +4362,7 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
         "paused": ["nm-monday-brief"],
     }
     assert health_gateway.BOOT["cron_smoke"] == "retired-with-recurring-briefs"
+    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.5.0"
 
 
 def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):
@@ -4185,21 +4462,22 @@ def test_failed_readiness_never_publishes_the_runtime_pack():
     assert hg.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
 
 
-def test_xai_api_key_joins_recovery_first_only_when_present():
-    """The OAuth token is a six-hour credential that has already expired
-    unnoticed once. With XAI_API_KEY on the service, the same grok model over
-    the plain api-key provider recovers FIRST — an auth failure degrades
-    billing, never the model. Without the key the route must not appear:
-    it would burn a failover hop on a rung that cannot authenticate."""
+def test_unrelated_xai_api_key_cannot_expand_the_reviewed_recovery_ladder():
+    """Only the managed Codex pool and authenticated Grok route are agentic.
+
+    A stray plain-API key must not add another billed provider hop or change
+    ordering. Operators can still name an exact deliberate route override.
+    """
     with_key = render_config.fallback_providers(
         {**FULL_ENV, "XAI_API_KEY": "xai-test"},
-        primary_provider="xai-oauth",
-        primary_model="grok-4.6",
+        primary_provider="openai-codex",
+        primary_model="gpt-5.6-sol",
     )
     without_key = render_config.fallback_providers(
-        FULL_ENV, primary_provider="xai-oauth", primary_model="grok-4.6"
+        FULL_ENV,
+        primary_provider="openai-codex",
+        primary_model="gpt-5.6-sol",
     )
 
-    assert with_key[0] == {"provider": "xai", "model": "grok-4.6"}
-    assert with_key[1]["provider"] == "openrouter"
-    assert all(route["provider"] != "xai" for route in without_key)
+    assert with_key == [{"provider": "xai-oauth", "model": "grok-4.6"}]
+    assert without_key == with_key
