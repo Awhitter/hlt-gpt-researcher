@@ -127,6 +127,11 @@ def _cache_key(url: str, token: str) -> tuple[str, str]:
     return url, hashlib.sha256(token.encode()).hexdigest()
 
 
+def _evict_tool_surface(url: str, token: str) -> None:
+    with _CACHE_LOCK:
+        _TOOL_CACHE.pop(_cache_key(url, token), None)
+
+
 def _first_name(names: list[str], candidates: tuple[str, ...]) -> str:
     return next((name for name in names if name in candidates), "")
 
@@ -433,11 +438,21 @@ def draw_mission_context(
                 return result
             except Exception as async_exc:
                 if surface["registry_search"] and time.monotonic() < deadline:
-                    return registry_fallback(
-                        surface,
-                        session_id,
-                        error=f"{type(async_exc).__name__}: {str(async_exc)[:180]}",
-                    )
+                    try:
+                        return registry_fallback(
+                            surface,
+                            session_id,
+                            error=(
+                                f"{type(async_exc).__name__}: "
+                                f"{str(async_exc)[:180]}"
+                            ),
+                        )
+                    finally:
+                        # The fallback kept this turn useful, but the failed
+                        # durable start may mean this cached discovery surface
+                        # is stale. Re-list next turn instead of repeatedly
+                        # routing through a broken async tool.
+                        _evict_tool_surface(url, token)
                 raise
 
         if surface["registry_search"]:
@@ -459,8 +474,7 @@ def draw_mission_context(
         )
         return result
     except Exception as exc:  # the well fuels a turn; it never sinks one
-        with _CACHE_LOCK:
-            _TOOL_CACHE.pop(_cache_key(url, token), None)
+        _evict_tool_surface(url, token)
         result["status"] = "unavailable"
         result["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         result["context"] = (

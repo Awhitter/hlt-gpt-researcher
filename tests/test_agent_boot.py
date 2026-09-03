@@ -1142,6 +1142,32 @@ def test_k2_readiness_uses_the_installed_mcp_protocol_version():
     assert health_gateway.MCP_PROTOCOL_VERSION == LATEST_PROTOCOL_VERSION
 
 
+def test_k2_readiness_rpc_never_extends_the_hard_deadline(monkeypatch):
+    health_gateway = _load_health_gateway()
+    clock = iter([10.0, 10.49, 10.5])
+    observed_timeouts = []
+
+    monkeypatch.setattr(health_gateway.time, "monotonic", lambda: next(clock))
+
+    def fake_post(*args, **kwargs):
+        observed_timeouts.append(kwargs["timeout"])
+        raise TimeoutError("Katailyst2 stayed slow")
+
+    monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
+
+    result = health_gateway.k2_agent_readiness(
+        "https://katailyst2.vercel.app/mcp",
+        "k2-secret",
+        "agent:cleo",
+        timeout=0.5,
+    )
+
+    assert result["contract_status"] == "outage"
+    assert len(observed_timeouts) == 1
+    assert observed_timeouts[0] == pytest.approx(0.01)
+    assert observed_timeouts[0] < 0.05
+
+
 def _cleo_runtime_pack():
     return {
         "version": "agent_runtime_pack.v1",
@@ -1932,6 +1958,70 @@ def test_mission_context_uses_registry_fallback_when_needed(monkeypatch, async_e
     assert result["well_calls"] == int(async_error)
     assert result["block_count"] == 1
     assert "skill:nm-funnel-brief" in result["context"]
+
+
+def test_mission_context_async_failure_evicts_cached_tool_surface(monkeypatch):
+    runtime_context = _load(
+        "hlt_k2_runtime_context_registry_cache_recovery_test",
+        SERVICE_DIR / "hermes_plugins" / "hlt_k2_context" / "runtime_context.py",
+    )
+    runtime_context._reset_tool_cache_for_tests()
+    calls = []
+    tool_lists = 0
+
+    def fake_post(url, token, payload, **kwargs):
+        nonlocal tool_lists
+        calls.append(payload)
+        if payload["method"] == "initialize":
+            return {"result": {}}, "session-1", {"x-katailyst-repo": "katailyst2"}
+        if payload["method"] == "tools/list":
+            tool_lists += 1
+            names = ["registry.search"]
+            if tool_lists == 1:
+                names += ["katailyst.well.start", "katailyst.well.get"]
+            return (
+                {"result": {"tools": [{"name": name} for name in names]}},
+                "session-1",
+                {},
+            )
+        name = payload["params"]["name"]
+        if name == "katailyst.well.start":
+            return {"result": {"isError": True}}, "session-1", {}
+        candidate = {"typedRef": "skill:nm-funnel-brief", "name": "Funnel brief"}
+        return (
+            {"result": {"structuredContent": {"candidates": [candidate]}}},
+            "session-1",
+            {},
+        )
+
+    monkeypatch.setattr(runtime_context, "_post", fake_post)
+
+    first = runtime_context.draw_mission_context(
+        "https://katailyst2.vercel.app/mcp",
+        "bound-token",
+        mission="Find the Nursing Mastery funnel leak",
+        agent_ref="agent:cleo",
+    )
+    second = runtime_context.draw_mission_context(
+        "https://katailyst2.vercel.app/mcp",
+        "bound-token",
+        mission="Find the next Nursing Mastery funnel leak",
+        agent_ref="agent:cleo",
+    )
+
+    tool_calls = [
+        call["params"]["name"]
+        for call in calls
+        if call.get("method") == "tools/call"
+    ]
+    assert first["mode"] == "registry_search_fallback"
+    assert second["mode"] == "registry_search_fallback"
+    assert tool_lists == 2
+    assert tool_calls == [
+        "katailyst.well.start",
+        "registry.search",
+        "registry.search",
+    ]
 
 
 def test_mission_context_outage_fails_open_without_inventing_blocks(monkeypatch):

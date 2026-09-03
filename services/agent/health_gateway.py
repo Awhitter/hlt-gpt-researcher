@@ -634,7 +634,7 @@ def k2_agent_readiness(
             token,
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
             session_id=session_id,
-            timeout=max(0.05, remaining),
+            timeout=remaining,
         )
 
     try:
