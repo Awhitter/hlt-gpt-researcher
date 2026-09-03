@@ -624,19 +624,46 @@ def _runtime_pack_write_lock(home_path: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def runtime_pack_activation_mode(runtime_pack: Mapping[str, Any]) -> str:
+    """Classify the only activation states Hermes may install.
+
+    K2 can expose a reviewed offline pack before immutable host proof exists.
+    Its registry status is curated/published rather than active, while
+    ``isOnline`` proves the intended hosted body is enabled for the handshake.
+    Issue prose is intentionally ignored; the typed activation fields are the
+    contract.
+    """
+    activation = runtime_pack.get("activation")
+    activation = activation if isinstance(activation, Mapping) else {}
+    status = _text(activation.get("status"))
+    if status == "active" and activation.get("isOnline") is True:
+        return "active"
+    if (
+        status == "offline"
+        and activation.get("isOnline") is True
+        and _text(activation.get("reviewStatus")) == "reviewed"
+        and _text(activation.get("registryStatus")) in {"curated", "published"}
+    ):
+        return "preactivation"
+    return "invalid"
+
+
 def install_runtime_pack(
     runtime_pack: Mapping[str, Any],
     *,
     expected_agent_ref: str,
     home: str | os.PathLike[str] | None = None,
     env: Any = None,
+    allow_preactivation: bool = False,
 ) -> dict[str, Any]:
-    """Install one active K2 runtime pack into Hermes' real prompt files.
+    """Install one verified K2 runtime pack into Hermes' real prompt files.
 
     ``agents.runtime_pack`` is the canonical brain. The repo's SOUL/AGENTS
     files remain a reviewed outage fallback, but a successful pack read must
     materially replace the managed runtime files rather than merely making a
-    health badge green.
+    health badge green. By default only an active pack is accepted. The narrow
+    preactivation path accepts a reviewed, curated/published offline pack that
+    K2 already marks online but has not activated pending immutable proof.
     """
     env = os.environ if env is None else env
     home_path = Path(home or env.get("HERMES_HOME") or "/data/hermes")
@@ -645,6 +672,7 @@ def install_runtime_pack(
         "runtime_pack_agent_ref": "",
         "runtime_pack_agent_version": None,
         "runtime_pack_activation": "",
+        "runtime_pack_preactivation": False,
         "runtime_pack_digest": "",
         "runtime_revision_version": "",
         "runtime_revision_digest": "",
@@ -673,9 +701,22 @@ def install_runtime_pack(
     activation = runtime_pack.get("activation")
     activation = activation if isinstance(activation, Mapping) else {}
     activation_status = _text(activation.get("status"))
+    activation_mode = runtime_pack_activation_mode(runtime_pack)
+    active = activation_mode == "active"
+    preactivation = activation_mode == "preactivation"
     result["runtime_pack_activation"] = activation_status
-    if activation_status != "active" or activation.get("isOnline") is not True:
-        result["runtime_pack_error"] = "runtime pack is not active and online"
+    result["runtime_pack_preactivation"] = preactivation
+    if preactivation and not allow_preactivation:
+        result["runtime_pack_error"] = (
+            "runtime pack is eligible for preactivation but explicit allowance "
+            "was not provided"
+        )
+        return result
+    if not active and not preactivation:
+        result["runtime_pack_error"] = (
+            "runtime pack is neither active nor an eligible reviewed "
+            "preactivation pack"
+        )
         return result
 
     capability = runtime_pack.get("capability")
@@ -760,7 +801,11 @@ def install_runtime_pack(
         (
             f"Canonical K2 brain: `{agent_ref}` version "
             f"`{runtime_pack.get('agentVersion')}`. This file was composed from "
-            "the active runtime pack at boot."
+            + (
+                "the verified preactivation runtime pack at boot."
+                if preactivation
+                else "the active runtime pack at boot."
+            )
         ),
     ]
     if doctrine:
@@ -896,7 +941,11 @@ def install_runtime_pack(
             "runtime_pack_soul_chars": len(soul),
             "runtime_pack_agents_chars": len(agents),
             "runtime_pack_error": "",
-            "brain_source": "katailyst2_runtime_pack",
+            "brain_source": (
+                "katailyst2_preactivation_runtime_pack"
+                if preactivation
+                else "katailyst2_runtime_pack"
+            ),
         }
     )
     return result

@@ -385,7 +385,7 @@ SLACK_BOTS_INFO_URL = "https://slack.com/api/bots.info"
 HERMES_API_BASE_URL = "http://127.0.0.1:8642"
 MAX_HOOK_MESSAGE_CHARS = 65_536
 MAX_HOOK_TIMEOUT_SECONDS = 900
-ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v1"
+ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v2"
 RUNTIME_PROOF_CONTRACT_VERSION = "agent_host_runtime_inputs.v1"
 HEALTH_LIVENESS_CONTRACT_VERSION = "agent_host_http_liveness.v1"
 HEALTH_READINESS_CONTRACT_VERSION = "agent_host_runtime_readiness.v1"
@@ -613,6 +613,7 @@ def k2_agent_readiness(
         "activation_status": "",
         "activation_online": None,
         "activation_ready": False,
+        "preactivation_pack_ready": False,
         "shell_scopes": [],
         "outage_declared": False,
         "requested_agent_ref": expected_agent_ref,
@@ -740,9 +741,9 @@ def k2_agent_readiness(
         host_compatible = capability.get("compatible") is True
         token_scoped = "registry.read" in shell_scopes
         runtime_revision = grounding.runtime_revision_from_pack(runtime_pack)
-        active = (
-            activation.get("status") == "active" and activation.get("isOnline") is True
-        )
+        activation_mode = grounding.runtime_pack_activation_mode(runtime_pack)
+        active = activation_mode == "active"
+        preactivation_ready = activation_mode == "preactivation"
         result.update(
             {
                 "runtime_pack_callable": True,
@@ -775,13 +776,22 @@ def k2_agent_readiness(
             if runtime_revision["error"]:
                 result["error"] = str(runtime_revision["error"])
             return result
+        result["preactivation_pack_ready"] = preactivation_ready
+        if not active and not preactivation_ready:
+            result["contract_status"] = "runtime_pack_invalid"
+            result["error"] = (
+                "runtime pack activation metadata is neither active nor an "
+                "eligible reviewed preactivation state"
+            )
+            return result
         if require_active and not active:
             result["contract_status"] = "preactivation"
             return result
         if not active:
             # This exact state is the pre-activation handshake. It proves the
             # token is bound to Cleo and the pack resolves for Hermes without
-            # pretending the agent is already online.
+            # pretending K2 has activated the agent already.
+            result["_runtime_pack"] = dict(runtime_pack)
             result["contract_status"] = "preactivation"
             return result
         # Keep the canonical brain even if the independent task-context probe
@@ -1395,12 +1405,16 @@ def _codex_subscription_auth_readiness(
     )
     logged_in = bool(status.get("logged_in"))
     rate_limited = bool(status.get("rate_limited"))
+    # A redundancy target is not the same thing as an unusable credential.
+    # Collapsing the two made a healthy selectable subscription look dead and
+    # kept the entire Slack gateway offline whenever one managed profile was
+    # cooling down. Keep serving readiness truthful here; the route gate below
+    # publishes the stricter pool-redundancy signal independently.
     usable = (
         logged_in
         and not rate_limited
         and pool_has_credentials
         and pool_has_available
-        and minimum_profiles_ready
     )
     raw_source = str(status.get("source") or "")
     source_kind = "credential_pool" if raw_source.startswith("pool:") else raw_source
@@ -1408,20 +1422,7 @@ def _codex_subscription_auth_readiness(
         source_kind = ""
     error = str(status.get("error") or "")
     if logged_in and not usable and not rate_limited:
-        if not minimum_profiles_ready:
-            present = "unknown" if pool_profile_count is None else pool_profile_count
-            selectable = (
-                "unknown"
-                if pool_selectable_count is None
-                else pool_selectable_count
-            )
-            error = (
-                f"managed Codex pool requires {MIN_MANAGED_CODEX_PROFILES} "
-                f"selectable profiles; found {present} present and "
-                f"{selectable} selectable"
-            )
-        else:
-            error = "stored OAuth profile has no selectable credential-pool entry"
+        error = "stored OAuth profile has no selectable credential-pool entry"
     return {
         "logged_in": logged_in,
         "usable": usable,
@@ -1671,11 +1672,13 @@ def refresh_model_route_readiness() -> list[dict[str, Any]]:
 def authenticated_model_route_gate(
     routes: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """One strict credential gate shared by activation and real dispatch.
+    """Publish strict fleet readiness and non-silent serving readiness.
 
-    Both reviewed routes are required: three selectable managed Sol profiles
-    for the primary pool and an authenticated Grok 4.6 recovery route. A weak
-    or unreviewed third provider can never make this gate green.
+    Full readiness requires three selectable managed Sol profiles plus the
+    authenticated Grok 4.6 recovery route. Serving readiness requires at least
+    one of those reviewed routes. This keeps degraded redundancy visible while
+    preventing one cooling profile from turning a capable Slack teammate into
+    a silent process.
     """
     checked = [
         dict(route)
@@ -1704,13 +1707,56 @@ def authenticated_model_route_gate(
             render_config.DEFAULT_FALLBACK_PROVIDERS, start=1
         )
     )
+    primary_route = next(
+        (
+            route
+            for route in checked
+            if route.get("role") == "primary"
+            and route.get("provider") == render_config.DEFAULT_PROVIDER
+            and route.get("model") == render_config.DEFAULT_MODEL
+        ),
+        None,
+    )
+    primary_detail = (
+        primary_route.get("detail")
+        if isinstance(primary_route, Mapping)
+        and isinstance(primary_route.get("detail"), Mapping)
+        else {}
+    )
+    credential_pool = (
+        primary_detail.get("credential_pool")
+        if isinstance(primary_detail, Mapping)
+        and isinstance(primary_detail.get("credential_pool"), Mapping)
+        else {}
+    )
+    redundancy_ready = credential_pool.get("minimum_ready") is True
+    contract_ready = contract["ready"] is True
     return {
-        "ready": contract["ready"] is True and primary_ready and fallback_ready,
-        "contractReady": contract["ready"] is True,
+        "ready": (
+            contract_ready
+            and primary_ready
+            and fallback_ready
+            and redundancy_ready
+        ),
+        "servingReady": contract_ready and (primary_ready or fallback_ready),
+        "contractReady": contract_ready,
         "primaryReady": primary_ready,
+        "primaryRedundancyReady": redundancy_ready,
         "fallbackReady": fallback_ready,
         "routes": checked,
     }
+
+
+def _reviewed_model_route_can_serve(route_gate: Mapping[str, Any]) -> bool:
+    """Accept a reviewed working route without hiding degraded redundancy.
+
+    The ``ready`` fallback keeps compatibility with focused test doubles and
+    older cached probes that predate the explicit ``servingReady`` field.
+    """
+    return (
+        route_gate.get("servingReady") is True
+        or route_gate.get("ready") is True
+    )
 
 
 def web_search_readiness(backend: str, env: Mapping[str, str]) -> dict[str, Any]:
@@ -1879,26 +1925,70 @@ def _publish_k2_readiness(k2_readiness: dict[str, Any]) -> dict[str, Any]:
     return k2_readiness
 
 
-def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
-    """Install one positively active pack and publish its safe boot receipt."""
+def _runtime_pack_matches_readiness(k2_readiness: Mapping[str, Any]) -> bool:
+    """Whether BOOT already holds this exact activation-state revision."""
+    expected_digest = str(k2_readiness.get("runtime_revision_digest") or "")
+    return bool(
+        expected_digest
+        and BOOT.get("runtime_pack_applied") is True
+        and BOOT.get("runtime_revision_digest") == expected_digest
+        and BOOT.get("runtime_pack_activation")
+        == k2_readiness.get("activation_status")
+    )
+
+
+def _active_k2_pack_installed(k2_readiness: Mapping[str, Any]) -> bool:
+    """Require the active K2 state, exact installed revision, and active label."""
+    return bool(
+        k2_readiness.get("activation_ready") is True
+        and _runtime_pack_matches_readiness(k2_readiness)
+        and BOOT.get("runtime_pack_preactivation") is False
+        and BOOT.get("brain_source") == "katailyst2_runtime_pack"
+    )
+
+
+def _k2_brain_can_serve(k2_readiness: Mapping[str, Any]) -> bool:
+    """Allow an installed verified pack or the declared-outage fallback."""
+    return bool(
+        BOOT.get("runtime_pack_applied") is True
+        or (
+            BOOT.get("brain_source") == "bundled_outage_fallback"
+            and k2_readiness.get("outage_declared") is True
+        )
+    )
+
+
+def _install_verified_k2_pack(k2_readiness: dict[str, Any]) -> bool:
+    """Install one active or narrowly verified preactivation K2 pack."""
     runtime_pack = k2_readiness.pop("_runtime_pack", None)
     if runtime_pack is None:
         _publish_k2_readiness(k2_readiness)
         return False
+    if _runtime_pack_matches_readiness(k2_readiness):
+        _publish_k2_readiness(k2_readiness)
+        return True
     pack_install = grounding.install_runtime_pack(
         runtime_pack,
         expected_agent_ref=str(BOOT.get("agent_ref") or ""),
         home=os.getenv("HERMES_HOME", str(HERMES_HOME)),
+        allow_preactivation=(
+            k2_readiness.get("activation_ready") is False
+            and k2_readiness.get("preactivation_pack_ready") is True
+        ),
     )
-    BOOT.update(pack_install)
     if pack_install.get("runtime_pack_applied") is not True:
         k2_readiness["contract_status"] = "runtime_pack_apply_failed"
         k2_readiness["error"] = str(
             pack_install.get("runtime_pack_error") or "runtime pack install failed"
         )[:240]
         k2_readiness["outage_declared"] = False
+        # A rejected replacement must not erase a previously verified pack
+        # from this running process. Publish the failure while keeping the last
+        # complete identity/doctrine pair in memory and on disk.
+        BOOT["runtime_pack_error"] = k2_readiness["error"]
         _publish_k2_readiness(k2_readiness)
         return False
+    BOOT.update(pack_install)
     # A successful canonical install ends the declared-outage fallback. Keep
     # the public boot snapshot internally consistent so health cannot continue
     # to name a stale outage after brain_source has moved back to K2.
@@ -1908,7 +1998,7 @@ def _install_active_k2_pack(k2_readiness: dict[str, Any]) -> bool:
 
 
 def _install_available_k2_pack(k2_readiness: dict[str, Any]) -> bool:
-    """Install a verified pack even when the independent Well probe is down.
+    """Install a verified active/preactivation pack when one is available.
 
     ``k2_agent_readiness`` retains ``_runtime_pack`` after a later Well outage.
     The pack is the canonical identity and doctrine; the Well is task-time
@@ -1919,7 +2009,7 @@ def _install_available_k2_pack(k2_readiness: dict[str, Any]) -> bool:
     if "_runtime_pack" not in k2_readiness:
         _publish_k2_readiness(k2_readiness)
         return False
-    return _install_active_k2_pack(k2_readiness)
+    return _install_verified_k2_pack(k2_readiness)
 
 
 def _activation_poll_seconds() -> float:
@@ -1931,34 +2021,36 @@ def _activation_poll_seconds() -> float:
 
 
 def _try_k2_activation_once() -> bool:
-    """Promote one newly active K2 pack; return whether Hermes may start."""
+    """Refresh K2 and reviewed routes; return whether Hermes may serve Slack."""
     preactivation = _probe_k2_boot_contract(
         require_active=False,
         probe_well=False,
     )
-    _publish_k2_readiness(preactivation)
     if preactivation.get("activation_ready") is True:
         active = _probe_k2_boot_contract(require_active=True, probe_well=True)
-        if not _install_available_k2_pack(active):
-            return False
-    elif not (
-        BOOT.get("brain_source") == "bundled_outage_fallback"
-        and preactivation.get("outage_declared") is True
-    ):
-        return False
+        _install_available_k2_pack(active)
+    else:
+        _install_available_k2_pack(preactivation)
+
+    # Credential cooldowns and repairs change independently of K2 activation.
+    # Always refresh this cheap gate before deciding whether a previously
+    # blocked Slack process may start.
+    route_gate = authenticated_model_route_gate()
+    BOOT["authenticated_model_route"] = route_gate
+    k2_readiness = BOOT.get("k2_agent_readiness") or {}
+    brain_ready = _k2_brain_can_serve(k2_readiness)
     plugin = BOOT.get("k2_context_plugin") or {}
     slack_lead = BOOT.get("slack_agent_lead") or {}
     slack_lead_ready = slack_lead.get("local_agent_ready") is True and (
         slack_lead.get("required") is not True
         or slack_lead.get("roster_ready") is True
     )
-    route_gate = authenticated_model_route_gate()
-    BOOT["authenticated_model_route"] = route_gate
     BOOT["gateway_start_allowed"] = (
-        plugin.get("installed") is True
+        brain_ready
+        and plugin.get("installed") is True
         and plugin.get("enabled") is True
         and slack_lead_ready
-        and route_gate.get("ready") is True
+        and _reviewed_model_route_can_serve(route_gate)
     )
     return BOOT["gateway_start_allowed"]
 
@@ -1983,7 +2075,8 @@ def _watch_for_k2_activation() -> None:
             logger.info("Reviewed model routes recovered; starting the Hermes gateway")
             supervisor.start()
             gateway_started = True
-        if BOOT.get("brain_source") == "katailyst2_runtime_pack":
+        current_k2 = BOOT.get("k2_agent_readiness") or {}
+        if gateway_started and _active_k2_pack_installed(current_k2):
             logger.info(
                 "Katailyst2 recovered; Cleo is running the canonical runtime pack"
             )
@@ -1997,14 +2090,12 @@ def _should_watch_for_k2_activation(k2_readiness: Mapping[str, Any]) -> bool:
     """Whether this boot still needs a canonical-pack transition watcher."""
     if not BOOT.get("agent_ref"):
         return False
-    if not BOOT.get("gateway_start_allowed"):
-        # A blocked process must keep polling both K2 activation and the cheap
-        # authenticated Sol/Grok readiness gate. This includes a valid bundled
-        # outage brain whose model profiles were temporarily unavailable.
-        return True
-    return (
-        k2_readiness.get("outage_declared") is True
-        and BOOT.get("brain_source") == "bundled_outage_fallback"
+    # One loop owns both transitions: reviewed-route recovery may start a
+    # verified preactivation/outage brain, but polling ends only after K2 has
+    # activated the exact installed revision and Slack admission is live.
+    return not (
+        BOOT.get("gateway_start_allowed") is True
+        and _active_k2_pack_installed(k2_readiness)
     )
 
 
@@ -2104,11 +2195,7 @@ def boot() -> None:
         slack_lead.get("required") is not True
         or slack_lead.get("roster_ready") is True
     )
-    brain_ready = (
-        not BOOT.get("agent_ref")
-        or BOOT.get("runtime_pack_applied") is True
-        or k2_readiness.get("outage_declared") is True
-    )
+    brain_ready = not BOOT.get("agent_ref") or _k2_brain_can_serve(k2_readiness)
     route_gate = authenticated_model_route_gate(BOOT["model_route_readiness"])
     BOOT["authenticated_model_route"] = route_gate
     BOOT["gateway_start_allowed"] = bool(
@@ -2116,11 +2203,17 @@ def boot() -> None:
         and plugin_installed
         and plugin_enabled
         and slack_lead_ready
-        and route_gate.get("ready") is True
+        and _reviewed_model_route_can_serve(route_gate)
     )
     _publish_k2_readiness(k2_readiness)
     logger.info("config k2_agent_readiness: %s", k2_readiness)
-    if (
+    if BOOT.get("runtime_pack_preactivation") is True:
+        logger.warning(
+            "Katailyst2 installed the reviewed %s preactivation pack; Slack may "
+            "serve while activation remains offline and proof polling continues",
+            BOOT.get("agent_ref"),
+        )
+    elif (
         BOOT.get("agent_ref")
         and BOOT.get("runtime_pack_applied") is True
         and k2_readiness.get("well_callable") is not True
@@ -2189,9 +2282,10 @@ def boot() -> None:
     watch_for_k2 = _should_watch_for_k2_activation(k2_readiness)
     if GATEWAY_ENABLED and not BOOT["gateway_start_allowed"]:
         supervisor.block_start(
-            "gateway start blocked: Cleo requires an active or declared-outage K2 "
-            "brain, the mission-context plugin, and authenticated GPT-5.6 Sol plus "
-            "Grok 4.6 routes"
+            "gateway start blocked: Cleo requires a verified K2 brain (active, "
+            "reviewed preactivation, or declared-outage fallback), the "
+            "mission-context plugin, Slack identity, and at least one authenticated "
+            "reviewed GPT-5.6 Sol or Grok 4.6 route"
         )
     else:
         supervisor.start()
@@ -2231,6 +2325,10 @@ def activation_readiness() -> dict[str, Any]:
             and not bool(slack_auth.get("missing_core_scopes"))
         ),
         "primary_model_route_ready": route_gate["primaryReady"] is True,
+        "primary_model_pool_redundancy_ready": (
+            route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
+            is True
+        ),
         "fallback_model_route_ready": route_gate["fallbackReady"] is True,
         "model_route_contract_ready": route_gate["contractReady"] is True,
         "web_search_ready": (
@@ -2290,9 +2388,14 @@ def external_dispatch_readiness() -> dict[str, Any]:
         "slack_auth_ok": slack_auth.get("auth_ok") is True,
         "slack_scopes_ready": not bool(slack_auth.get("missing_core_scopes")),
         "primary_model_route_ready": route_gate["primaryReady"] is True,
+        "primary_model_pool_redundancy_ready": (
+            route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
+            is True
+        ),
         "fallback_model_route_ready": route_gate["fallbackReady"] is True,
         "model_route_contract_ready": route_gate["contractReady"] is True,
         "k2_runtime_pack_applied": BOOT.get("runtime_pack_applied") is True,
+        "k2_activation_ready": _active_k2_pack_installed(k2),
         "k2_agent_bound_token": k2.get("agent_bound_token") is True,
         "k2_runtime_pack_tool_callable": k2.get("runtime_pack_callable") is True,
         "k2_runtime_revision_ready": (
@@ -2341,7 +2444,12 @@ def runtime_readiness_snapshot(
         ),
         "model_route_contract_ready": route_gate["contractReady"] is True,
         "primary_model_profile_ready": route_gate["primaryReady"] is True,
+        "primary_model_pool_redundancy_ready": (
+            route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
+            is True
+        ),
         "fallback_model_profile_ready": route_gate["fallbackReady"] is True,
+        "k2_activation_ready": _active_k2_pack_installed(k2),
         "k2_runtime_ready": (
             BOOT.get("runtime_pack_applied") is True
             and k2.get("agent_bound_token") is True
@@ -2426,13 +2534,13 @@ def agent_hook(
         )
     if not _hook_authorized(authorization):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    if BOOT.get("runtime_pack_applied") is not True:
+    if not _active_k2_pack_installed(BOOT.get("k2_agent_readiness") or {}):
         return JSONResponse(
             {"ok": False, "error": "canonical Cleo runtime pack is not active"},
             status_code=503,
         )
     route_gate = authenticated_model_route_gate()
-    if route_gate["ready"] is not True:
+    if not _reviewed_model_route_can_serve(route_gate):
         return JSONResponse(
             {
                 "ok": False,
@@ -2478,6 +2586,7 @@ def health() -> dict[str, Any]:
     gateway = supervisor.snapshot()
     route_contract = model_route_contract_readiness()
     model_routes = refresh_model_route_readiness()
+    route_gate = authenticated_model_route_gate(model_routes)
 
     # A credential that cannot run inference is not a working agent: she hears
     # every message and answers each one "Provider authentication failed".
@@ -2511,6 +2620,11 @@ def health() -> dict[str, Any]:
     model_route_contract_bad = bool(BOOT.get("configured_model_route")) and (
         route_contract["ready"] is not True
     )
+    reviewed_routes_unavailable = not _reviewed_model_route_can_serve(route_gate)
+    model_pool_redundancy_bad = bool(BOOT.get("configured_model_route")) and (
+        route_gate.get("contractReady") is True
+        and route_gate.get("primaryRedundancyReady") is not True
+    )
     k2_readiness = BOOT.get("k2_agent_readiness") or {}
     web_search_bad = (BOOT.get("web_search_readiness") or {}).get("available") is False
     k2_required = bool(BOOT.get("agent_ref"))
@@ -2519,6 +2633,13 @@ def health() -> dict[str, Any]:
     )
     k2_outage_fallback = k2_required and (
         BOOT.get("brain_source") == "bundled_outage_fallback"
+    )
+    k2_preactivation = (
+        k2_required
+        and BOOT.get("runtime_pack_applied") is True
+        and BOOT.get("runtime_pack_preactivation") is True
+        and BOOT.get("runtime_pack_activation") == "offline"
+        and k2_readiness.get("activation_ready") is False
     )
     k2_brain_bad = (
         k2_required
@@ -2574,6 +2695,7 @@ def health() -> dict[str, Any]:
         gateway["running"]
         and gateway["slack_adapter_available"]
         and model_credentials_bad
+        and reviewed_routes_unavailable
     ):
         status, mode = "degraded", "gateway_no_model_credentials"
     elif gateway["running"] and gateway["slack_adapter_available"] and k2_wrong_server:
@@ -2584,6 +2706,14 @@ def health() -> dict[str, Any]:
         status, mode = "degraded", "gateway_k2_outage_fallback"
     elif gateway["running"] and gateway["slack_adapter_available"] and k2_brain_bad:
         status, mode = "degraded", "gateway_k2_brain_unavailable"
+    elif (
+        gateway["running"]
+        and gateway["slack_adapter_available"]
+        and model_pool_redundancy_bad
+    ):
+        status, mode = "degraded", "gateway_model_pool_degraded"
+    elif gateway["running"] and gateway["slack_adapter_available"] and k2_preactivation:
+        status, mode = "degraded", "gateway_k2_preactivation"
     elif gateway["running"] and gateway["slack_adapter_available"] and k2_plugin_bad:
         status, mode = "degraded", "gateway_k2_context_plugin_missing"
     elif (
@@ -2704,6 +2834,22 @@ def health() -> dict[str, Any]:
                 "message and replies 'Provider authentication failed'. A provisioning "
                 "key looks identical to an inference key — check /api/v1/key."
             )
+    elif mode == "gateway_model_pool_degraded":
+        primary = next(
+            (route for route in route_gate["routes"] if route.get("role") == "primary"),
+            {},
+        )
+        detail = primary.get("detail") if isinstance(primary, Mapping) else {}
+        detail = detail if isinstance(detail, Mapping) else {}
+        pool = detail.get("credential_pool")
+        pool = pool if isinstance(pool, Mapping) else {}
+        selectable = pool.get("selectable_count", "unknown")
+        required = pool.get("minimum_required", MIN_MANAGED_CODEX_PROFILES)
+        payload["note"] = (
+            f"Slack can still answer through a reviewed route, but only {selectable} "
+            f"of {required} managed Codex profiles are selectable. Full readiness "
+            "and K2 activation remain red until redundancy recovers."
+        )
     elif mode == "gateway_no_slack_adapter":
         payload["note"] = (
             "The gateway is running but Hermes could not build a Slack adapter, "
@@ -2722,6 +2868,13 @@ def health() -> dict[str, Any]:
             "Cleo did not boot the active agent:cleo runtime pack with an "
             "agent-bound K2 token and a compatible paperclip_hermes host profile. "
             "A mount alone is not a brain; read config.k2_agent_readiness."
+        )
+    elif mode == "gateway_k2_preactivation":
+        payload["note"] = (
+            "Cleo is answering Slack from the reviewed, token-bound K2 "
+            "preactivation pack while immutable activation proof is pending. "
+            "The external run hook and readiness stay closed until K2 returns "
+            "the same revision as active."
         )
     elif mode == "gateway_k2_wrong_server":
         payload["note"] = (
