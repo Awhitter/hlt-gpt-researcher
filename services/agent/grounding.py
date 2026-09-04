@@ -276,14 +276,24 @@ def _fence_safe_attr(value: Any) -> str:
     return re.sub(r"[^\w:.-]", "", _text(value))[:120]
 
 
-def _runtime_refs(rows: Any) -> list[str]:
+def _runtime_ref_rows(rows: Any) -> list[Mapping[str, Any]]:
     if not isinstance(rows, list):
         return []
-    refs: list[str] = []
-    for row in rows:
-        if isinstance(row, Mapping) and _text(row.get("ref")):
-            refs.append(_text(row.get("ref")))
-    return refs
+    return [
+        row
+        for row in rows
+        if isinstance(row, Mapping) and _text(row.get("ref"))
+    ]
+
+
+def _runtime_refs(
+    rows: Any, *, exclude_link_types: frozenset[str] = frozenset()
+) -> list[str]:
+    return [
+        _text(row.get("ref"))
+        for row in _runtime_ref_rows(rows)
+        if _text(row.get("linkType")) not in exclude_link_types
+    ]
 
 
 def _js_utf16_sort_key(value: str) -> bytes:
@@ -850,6 +860,29 @@ def install_runtime_pack(
     if binding_lines:
         agents_parts.append("## Operating bindings\n\n" + "\n".join(binding_lines))
 
+    product_bindings = [
+        row
+        for row in _runtime_ref_rows(shell.get("hubs"))
+        if _text(row.get("linkType")) == "product_binding"
+    ]
+    if product_bindings:
+        product_lines: list[str] = []
+        for row in product_bindings:
+            ref = _fence_safe_attr(row.get("ref"))
+            name = _fence_safe_block(row.get("name"), 200).replace("\n", " ") or ref
+            summary = _fence_safe_block(row.get("summary"), 1_000).replace("\n", " ")
+            product_lines.append(
+                f"- **{name}:** `{ref}`" + (f" — {summary}" if summary else "")
+            )
+        agents_parts.append(
+            "## Product context\n\n"
+            "These are inline runtime-pack product handles, not retrievable K2 "
+            "registry refs. Use this context directly; do not pass a `product:*` "
+            "handle to `registry.get`. Real retrievable knowledge refs remain "
+            "under Capability proclivities.\n\n"
+            + "\n".join(product_lines)
+        )
+
     policy_lines: list[str] = []
     confirmation = _text(policies.get("confirmation"))
     if confirmation:
@@ -875,7 +908,12 @@ def install_runtime_pack(
     capability_groups = [
         ("Preferred skills", shell.get("preferredSkills")),
         ("Preferred tools", shell.get("preferredTools")),
-        ("Knowledge and hubs", _runtime_refs(shell.get("hubs"))),
+        (
+            "Knowledge and hubs",
+            _runtime_refs(
+                shell.get("hubs"), exclude_link_types=frozenset({"product_binding"})
+            ),
+        ),
         ("Recipes", _runtime_refs(shell.get("recipes"))),
         ("Wired tools", _runtime_refs(shell.get("tools"))),
         ("Skills and playbooks", _runtime_refs(shell.get("skills"))),

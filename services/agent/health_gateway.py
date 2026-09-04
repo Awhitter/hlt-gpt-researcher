@@ -199,6 +199,7 @@ class GatewaySupervisor:
             return {
                 "requested": GATEWAY_ENABLED,
                 "running": running,
+                "process_id": self._proc.pid if running and self._proc else None,
                 "cli_present": self.cli_present,
                 "slack_adapter_available": self.slack_adapter_available,
                 "mcp_sdk_available": self.mcp_sdk_available,
@@ -405,12 +406,121 @@ ACTIVATION_CONTRACT_VERSION = "agent_host_activation_readiness.v2"
 RUNTIME_PROOF_CONTRACT_VERSION = "agent_host_runtime_inputs.v1"
 HEALTH_LIVENESS_CONTRACT_VERSION = "agent_host_http_liveness.v1"
 HEALTH_READINESS_CONTRACT_VERSION = "agent_host_runtime_readiness.v1"
+RESOURCE_HEADROOM_CONTRACT_VERSION = "agent_host_resource_headroom.v1"
 MIN_MANAGED_CODEX_PROFILES = 3
 SLACK_IDENTITY_CONTRACT_VERSION = "slack_agent_identity.v1"
 SLACK_IDENTITY_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 _RUN_LEDGER_LOCK = threading.Lock()
 _RUN_LEDGER: agent_run_ledger.AgentRunLedger | None = None
 _RUN_LEDGER_PATH: Path | None = None
+
+
+def _read_integer_file(path: Path) -> int | None:
+    """Read one non-negative kernel counter without making health fragile."""
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not value or value == "max":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _process_rss_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Return Linux VmRSS for one process; unsupported hosts stay unknown."""
+    try:
+        rows = (
+            (proc_root / str(pid) / "status")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+    except OSError:
+        return None
+    for row in rows:
+        if not row.startswith("VmRSS:"):
+            continue
+        fields = row.split()
+        if len(fields) < 2:
+            return None
+        try:
+            kibibytes = int(fields[1])
+        except ValueError:
+            return None
+        return kibibytes * 1024 if kibibytes >= 0 else None
+    return None
+
+
+def resource_memory_snapshot(
+    processes: Mapping[str, int | None],
+    *,
+    proc_root: Path = Path("/proc"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> dict[str, Any]:
+    """Small, dependency-free memory receipt for Render and local containers.
+
+    Cgroup v2 reports the whole service, including native libraries that RSS
+    accounting can miss. Per-process RSS still names whether the supervisor or
+    Hermes child is growing. Missing kernel files are normal on macOS and in
+    restrictive containers, so this telemetry never participates in readiness.
+    """
+    process_rows: dict[str, dict[str, int | None]] = {}
+    rss_values: list[int] = []
+    for name, pid in processes.items():
+        rss = _process_rss_bytes(pid, proc_root=proc_root) if pid else None
+        process_rows[name] = {"pid": pid, "rssBytes": rss}
+        if rss is not None:
+            rss_values.append(rss)
+
+    service_usage = _read_integer_file(cgroup_root / "memory.current")
+    service_limit = _read_integer_file(cgroup_root / "memory.max")
+    source = "cgroup_v2"
+    if service_usage is None and service_limit is None:
+        service_usage = _read_integer_file(
+            cgroup_root / "memory" / "memory.usage_in_bytes"
+        )
+        service_limit = _read_integer_file(
+            cgroup_root / "memory" / "memory.limit_in_bytes"
+        )
+        source = (
+            "cgroup_v1"
+            if service_usage is not None or service_limit is not None
+            else "proc"
+        )
+
+    process_rss = sum(rss_values) if rss_values else None
+    observed_usage = service_usage if service_usage is not None else process_rss
+    headroom = (
+        max(service_limit - observed_usage, 0)
+        if service_limit is not None and observed_usage is not None
+        else None
+    )
+    ratio = (
+        round(observed_usage / service_limit, 4)
+        if service_limit and observed_usage is not None
+        else None
+    )
+    if headroom is None:
+        state = "unknown"
+    else:
+        low_watermark = max(64 * 1024 * 1024, int(service_limit * 0.1))
+        state = "low" if headroom <= low_watermark else "ok"
+
+    return {
+        "contractVersion": RESOURCE_HEADROOM_CONTRACT_VERSION,
+        "source": source,
+        "state": state,
+        "advisory": "memory_headroom_low" if state == "low" else None,
+        "processes": process_rows,
+        "processRssBytes": process_rss,
+        "serviceUsageBytes": observed_usage,
+        "serviceLimitBytes": service_limit,
+        "headroomBytes": headroom,
+        "usageRatio": ratio,
+    }
 
 # Use the protocol revision shipped in the same MCP SDK Hermes runs. A dated
 # literal here can keep a custom health probe green after the actual client has
@@ -2651,6 +2761,12 @@ def agent_hook_run(
 @app.get("/health")
 def health() -> dict[str, Any]:
     gateway = supervisor.snapshot()
+    resources = resource_memory_snapshot(
+        {
+            "supervisor": os.getpid(),
+            "gateway": gateway.get("process_id"),
+        }
+    )
     route_contract = model_route_contract_readiness()
     model_routes = refresh_model_route_readiness()
     route_gate = authenticated_model_route_gate(model_routes)
@@ -2833,6 +2949,7 @@ def health() -> dict[str, Any]:
         "hermes_home": str(HERMES_HOME),
         "config": BOOT,
         "gateway": gateway,
+        "resources": resources,
         # Render polls this endpoint for HTTP/process liveness, so it remains
         # a 200 even when the agent is not safe to admit work. The nested
         # readiness contract names that distinction precisely and /activationz
