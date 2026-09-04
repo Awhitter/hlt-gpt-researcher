@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Retire the old recurring briefs safely; retain legacy seed helpers.
 
-Why this exists rather than granting her the `cronjob` tool: a scheduled run
-happens with nobody watching, and the tool would let anyone who can @mention her
-leave something running. Upstream is explicit that cron delivery does not need
-the tool at all — "the agent's final response is automatically delivered to the
-configured `deliver:` target, the agent does not send messages itself" — so the
-schedule stays operator-owned and her toolset stays read-of-record.
+These briefs were superseded, not a reason to remove scheduling capability.
+Cleo retains the practical cron workbench; the execution-time effect policy
+governs actual unattended work. Native delivery owns scheduled final messages.
 
 Jobs are created through `hermes cron create` rather than by writing
 `cron/jobs.json` directly: the CLI owns the record shape (ids, next-run
@@ -17,6 +14,8 @@ Boot no longer calls ``seed``. It inventories and pauses the three legacy jobs
 through ``retire_stale_briefs`` after writing a durable recovery export. The
 older seed helpers remain only for explicit operator recovery and their pinned
 regression tests; an existing job is still left exactly as it is.
+Current bounded fleet jobs live in ``fleet_durability.py`` and do not resume
+these briefs.
 """
 from __future__ import annotations
 

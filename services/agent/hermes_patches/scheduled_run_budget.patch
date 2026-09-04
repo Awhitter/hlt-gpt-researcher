@@ -1,0 +1,85 @@
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -6424,6 +6424,7 @@ def run_job(
+         except Exception as e:
+             logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+ 
++        from fleet_run_budget import attach_budget, budget_kwargs
+         agent = AIAgent(
+             model=model,
+             api_key=runtime.get("api_key"),
+@@ -6434,10 +6435,10 @@ def run_job(
+             request_overrides=runtime.get("request_overrides"),
+             acp_command=runtime.get("command"),
+             acp_args=runtime.get("args"),
+-            max_iterations=max_iterations,
++            **budget_kwargs(job, max_iterations),
+             reasoning_config=reasoning_config,
+             prefill_messages=prefill_messages,
+-            fallback_model=fallback_model,
++            fallback_model=None if job.get("hlt_run_budget") is not None else fallback_model,
+             credential_pool=credential_pool,
+             providers_allowed=pr.get("only"),
+             providers_ignored=pr.get("ignore"),
+@@ -6466,6 +6467,7 @@ def run_job(
+             session_id=_cron_session_id,
+             session_db=_session_db,
+         )
++        attach_budget(agent, job)
+         
+         # Run the agent with an *inactivity*-based timeout: the job can run
+         # for hours if it's actively calling tools / receiving stream tokens,
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -2094,6 +2094,12 @@ def run_conversation(
+         )
+ 
+     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
++        from fleet_run_budget import admit_iteration
++        if not admit_iteration(agent, messages, api_call_count):
++            failed = True
++            _turn_exit_reason = "scheduled_run_budget_exhausted"
++            break
++
+         _redirect_text = agent._drain_pending_redirect()
+         if _redirect_text:
+             _apply_active_turn_redirect(agent, messages, _redirect_text)
+@@ -3216,6 +3222,13 @@ def run_conversation(
+                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
+ 
++                from fleet_run_budget import admit_request
++                if not admit_request(agent, api_kwargs):
++                    failed = True
++                    agent.interrupt("Scheduled run budget exhausted")
++                    raise RuntimeError("Scheduled run budget exhausted before provider request")
++
++
+                 # This object is private to the in-process MoA facade.  Add it
+                 # only after middleware, hooks, and debug dumps so none of them
+                 # attempts to serialize it as part of the provider payload.
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -1602,7 +1602,7 @@ def _execute_codex_stream_direct(
+     from agent import relay_llm
+ 
+     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
+-    max_stream_retries = 1
++    max_stream_retries = 0 if getattr(agent, "_hlt_scheduled_budget", None) is not None else 1
+     # Accumulate streamed text so callers / compat shims can read it.
+     agent._codex_streamed_text_parts: list = []
+ 
+diff --git a/agent/turn_context.py b/agent/turn_context.py
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -1392,6 +1392,7 @@ def build_turn_context(
+             platform=getattr(agent, "platform", None) or "",
+             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+             sender_id=getattr(agent, "_user_id", None) or "",
++            scheduled_run_budget=getattr(agent, "_hlt_scheduled_budget", None) is not None,
+         )
+         _ctx_parts: list[str] = []
+         # Spill oversized per-hook context to disk so a runaway plugin

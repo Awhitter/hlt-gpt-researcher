@@ -1,4 +1,4 @@
-# Mastery Research sidecars on Render (codegraph + Brian).
+# Mastery Research sidecars on Render (codegraph + Cleo).
 # Apply via Render Dashboard → Blueprints after this lands on the default branch,
 # or: https://dashboard.render.com/blueprints/new?repo=https://github.com/Awhitter/hlt-gpt-researcher
 # GPT Researcher API/MCP stay on Railway; UI on Vercel.
@@ -57,7 +57,8 @@ services:
   - type: web
     name: hlt-hermes
     runtime: docker
-    plan: starter
+    # Match the existing live 2GB service; retain its identity and 5GB disk.
+    plan: standard
     region: oregon
     rootDir: services/agent
     dockerfilePath: ./Dockerfile
@@ -128,7 +129,7 @@ services:
         sync: false
       # "true" lets any workspace member talk to the agent. Hermes otherwise
       # denies unknown senders outright, so without this the bot is silent for
-      # everyone. Safe only because the Slack toolset is read-only and
+      # everyone. Practical tool access remains broad; actual effects and
       # privileged slash commands are gated to SLACK_ADMIN_USERS.
       - key: GATEWAY_ALLOW_ALL_USERS
         sync: false

@@ -446,10 +446,34 @@ model ladder, selectable profiles, active K2 runtime, and Slack transport:
 
 ### Fleet monitor and real canary
 
-The existing fleet monitor should read `GET /health` every five minutes without
-calling a model. Treat `liveness.ok: true` as HTTP/process availability and
-`readiness.ready: true` as admission readiness; alert only when readiness turns
-false or remains unknown. The readiness receipt names each non-model check under
+Boot installs three idempotent native Hermes jobs through `cron.jobs`, without
+writing the cron store by hand or re-enabling the retired product briefs:
+
+| Job | Schedule | Work |
+| --- | --- | --- |
+| `hlt-fleet-readiness-cleo-v1` | Every five minutes | Read local `/health`; no model |
+| `hlt-fleet-release-cleo-v1` | Daily 15:20 UTC (default container timezone) | Read Hermes stable release and exact commit metadata; no model/build/update |
+| `hlt-fleet-daily-canary-cleo-v1` | Daily 14:45 UTC (default container timezone) | One read-only K2 identity task, authenticated Grok 4.6/high |
+
+**The daily canary verifies K2 plus Cleo's authenticated backup, not her primary.**
+Codex's subscription wire rejects output caps, so only this explicitly budgeted
+job uses Grok. Ordinary chat remains Sol/high with the existing managed Codex
+profiles and Grok recovery route. Real Slack acceptance must independently
+verify Sol. The installer receipt at `/health.config.fleet_checks.canaryRoute`
+records this distinction; scheduled success is not evidence of primary health.
+
+All three deliver only to `slack:C0BH5997USK` (`#agent-logs`). Health and release
+scripts emit only changed findings or recovery, retrying failed native delivery.
+A red observation exits successfully so native cron keeps its five-minute
+cadence. Receipts live under `$HERMES_HOME/fleet/`; native cron retains job
+execution, model usage, and delivery history. Installation status is visible at
+`/health.config.fleet_checks`. A paused managed job stays paused on deployment.
+
+Treat `liveness.ok: true` as HTTP/process availability and `readiness.ready: true`
+as full readiness. `readiness.servingReady` requires Slack, K2, and at least one
+reviewed working route; `redundancyReady` describes the backup and profile pool
+separately. The canary can run when serving works even if a backup is degraded.
+The readiness receipt names each non-model check under
 `readiness.checks` and carries the runtime-only activation digest under
 `readiness.runtimeProof`. `primary_model_profile_ready` means at least one real
 Codex credential can serve; `primary_model_pool_redundancy_ready` stays false
@@ -458,16 +482,20 @@ stale login flag cannot make either green. `k2_activation_ready` also remains
 false while the reviewed preactivation brain is serving Slack, so liveness and
 useful degraded service never masquerade as completed K2 activation.
 
-The once-daily real canary belongs in the shared fleet scheduler, targeted only
-to `slack:C0BH5997USK` (`#agent-logs`), never a staffed product channel. Give it
-a hard ceiling of four model/tool iterations and 1,200 output tokens. Its normal
-task is one read-only `registry.get` for `agent:cleo`, followed by a concise
-identity/version result. The receipt must retain the Slack thread link, deployed
-SHA, provider/model that answered, K2 call evidence, acknowledgement latency,
-one-stream completion, and final status; alert on failure and stay quiet
-otherwise. Do not reuse Hermes' legacy recurring-brief seeder for this: this
-pinned cron schema has no per-job token ceiling, so doing so would recreate the
-unbounded unattended-spend failure this recovery is meant to remove.
+The daily canary is budgeted in code: at most four provider attempts, 1,200
+cumulative output tokens, 64,000 aggregate serialized input bytes, and a native
+120-second run budget. The small `scheduled_run_budget.patch` passes opt-in job
+limits into Hermes and clamps each provider request, including retry boosts.
+Unknown usage retains its reservation instead of authorizing another attempt.
+Budgeted jobs disable the transport's internal stream retry and model fallback;
+budget exhaustion is recorded as failure, never an empty successful reply.
+The existing mission-context hook uses the canary's supplied record instead of
+starting an additional paid wishing-well draw outside that budget.
+These limits affect only jobs carrying `hlt_run_budget`, not normal Slack/API
+work. No custom model runner, copied credentials, or GitHub Actions is involved.
+Keep a separate ordinary Slack acceptance receipt for acknowledgement latency,
+streaming, thread continuation, and Stop: a scheduled K2 read does not prove
+those interactive behaviors. Version detection never triggers an upgrade.
 
 | `mode` | Meaning |
 |--------|---------|

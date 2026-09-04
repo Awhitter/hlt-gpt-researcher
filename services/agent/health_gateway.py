@@ -2452,6 +2452,13 @@ def boot() -> None:
         BOOT["cron_briefs"] = cron_seed.retire_stale_briefs()
         BOOT["cron_smoke"] = "retired-with-recurring-briefs"
         logger.info("config cron_briefs: %s", BOOT["cron_briefs"])
+        try:
+            from fleet_durability import install as install_fleet_checks
+
+            BOOT["fleet_checks"] = install_fleet_checks()
+        except Exception as exc:
+            BOOT["fleet_checks"] = {"failed": [type(exc).__name__]}
+            logger.exception("Fleet check installation failed; Slack boot continues")
 
     watch_for_k2 = _should_watch_for_k2_activation(k2_readiness)
     if GATEWAY_ENABLED and not BOOT["gateway_start_allowed"]:
@@ -2638,6 +2645,17 @@ def runtime_readiness_snapshot(
     return {
         "ready": all(checks.values()),
         "contractVersion": HEALTH_READINESS_CONTRACT_VERSION,
+        "servingReady": route_gate.get("servingReady") is True and all(
+            passed for name, passed in checks.items()
+            if name not in {
+                "primary_model_profile_ready", "primary_model_pool_redundancy_ready",
+                "fallback_model_profile_ready",
+            }
+        ),
+        "redundancyReady": (
+            route_gate.get("primaryRedundancyReady") is True
+            and route_gate.get("fallbackReady") is True
+        ),
         "checks": checks,
         "runtimeProof": runtime_input_proof(),
     }
