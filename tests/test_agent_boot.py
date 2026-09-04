@@ -79,6 +79,13 @@ def test_slack_workbench_exposes_tools_needed_to_finish_real_work(toolset):
     assert toolset in render_config.SLACK_TOOLSETS
 
 
+def test_native_delegation_caps_children_without_disabling_slack():
+    config = render_config.build_config(FULL_ENV)
+    assert config["delegation"]["max_concurrent_children"] == 2
+    assert "delegation" in config["platform_toolsets"]["slack"]
+    assert "max_async_children" not in config["delegation"]
+
+
 def test_slack_toolset_is_pinned_in_the_config_hermes_reads():
     """The top-level `toolsets` key is deprecated and ignored upstream.
 
@@ -810,7 +817,10 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "upstream_stream_final_draft_gate.patch" in dockerfile
     assert "FROM node:22-bookworm-slim AS hermes-web" in dockerfile
     assert "npm ci --workspace=web --workspace=ui-tui" in dockerfile
-    assert "npm run build --workspace=web" in dockerfile
+    # Lazy-page CSS preloads must use the same prefix as the mounted dashboard.
+    assert "npm run build --workspace=web -- --base=/computer/" in dockerfile
+    computer_surface = (SERVICE_DIR / "computer_surface.py").read_text(encoding="utf-8")
+    assert 'DASHBOARD_PATH = "/computer"' in computer_surface
     assert "npm run build --workspace=ui-tui" in dockerfile
     assert "COPY --from=hermes-web" in dockerfile
     assert "hermes_cli/web_dist/index.html" in dockerfile
@@ -3055,6 +3065,19 @@ def test_mission_context_hook_skips_small_talk_and_draws_once(monkeypatch):
     ]
 
 
+def test_budgeted_cron_uses_explicit_k2_read_without_a_paid_well(monkeypatch):
+    plugin = _load_k2_plugin()
+    calls = []
+    monkeypatch.setattr(plugin, "draw_mission_context", lambda *args, **kwargs: calls.append(kwargs) or {})
+    result = plugin._pre_llm_call(
+        user_message="Read agent:cleo through K2.", platform="cron", scheduled_run_budget=True,
+    )
+    assert "do not start a wishing-well draw" in result["context"]
+    assert not calls
+    plugin._pre_llm_call(user_message="Research Nursing Mastery.", platform="cron")
+    assert len(calls) == 1
+
+
 def test_hosted_k2_mission_uses_supplied_handoff_without_a_second_well(monkeypatch):
     plugin = _load_k2_plugin()
 
@@ -4356,6 +4379,36 @@ def test_no_reviewed_model_route_still_blocks_serving():
     assert gate["ready"] is False
     assert gate["servingReady"] is False
     assert health_gateway._reviewed_model_route_can_serve(gate) is False
+
+
+def test_runtime_readiness_keeps_primary_serving_when_redundancy_is_degraded():
+    health_gateway = _load_health_gateway()
+    state = _preactivation_boot_state()
+    state.update({
+        "runtime_pack_applied": True,
+        "runtime_pack_activation": "active",
+        "runtime_pack_preactivation": False,
+        "brain_source": "katailyst2_runtime_pack",
+    })
+    state["k2_agent_readiness"].update({
+        "activation_ready": True, "activation_status": "active",
+    })
+    state["model_route_readiness"][0]["detail"]["credential_pool"].update({
+        "selectable_count": 1, "minimum_ready": False,
+    })
+    state["model_route_readiness"][1]["available"] = False
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT.update(state)
+    observed = health_gateway.runtime_readiness_snapshot(
+        gateway={"running": True, "slack_adapter_available": True, "slack_socket_connected": True},
+        model_routes=state["model_route_readiness"],
+    )
+    assert observed["servingReady"] is True
+    assert observed["redundancyReady"] is False
+    assert observed["ready"] is False
+    assert observed["checks"]["primary_model_profile_ready"] is True
+    assert observed["checks"]["fallback_model_profile_ready"] is False
+    assert observed["checks"]["primary_model_pool_redundancy_ready"] is False
 
 
 ACTIVATION_CHECK_KEYS = {

@@ -739,6 +739,7 @@ def _pre_llm_call(
     platform: str = "",
     session_id: str = "",
     turn_id: str = "",
+    scheduled_run_budget: bool = False,
     **_: Any,
 ) -> dict[str, str] | None:
     """Return ephemeral K2 context once per real user turn.
@@ -751,6 +752,11 @@ def _pre_llm_call(
     mission = str(user_message or "").strip()
     if str(platform or "").strip().lower() == "slack":
         _start_slack_tool_budget(turn_id=turn_id, session_id=session_id)
+    if scheduled_run_budget:
+        # This opt-in native job already names its one K2 read. An automatic
+        # well draw would spend outside its provider budget before the first
+        # model call. Ordinary Slack/cron mission discovery is unchanged.
+        return {"context": "Bounded daily K2 check: use the supplied record directly; do not start a wishing-well draw."}
     if not is_substantive_mission(mission):
         return None
 

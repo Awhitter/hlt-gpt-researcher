@@ -643,6 +643,9 @@ def build_config(
         # a third Slack namespace, and putting it in the wrong one is silently
         # ignored like every other misplaced Slack key in this file.
         "platform_hints": {"slack": {"append": SLACK_PLATFORM_HINT}},
+        # Native Hermes cap applies to both batch and background specialists.
+        # Keep the main Slack teammate available while two children work.
+        "delegation": {"max_concurrent_children": 2},
         "slack": build_slack(env),
         "platforms": build_platforms(env),
         "memory": {

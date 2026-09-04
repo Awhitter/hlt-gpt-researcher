@@ -12,8 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}"
 
 WORKDIR /opt/hermes
+# Match the mounted computer surface for lazy-loaded JS/CSS too; upstream's
+# HTML rewriting alone leaves Vite preload requests pointing at /assets/.
 RUN npm ci --workspace=web --workspace=ui-tui --include-workspace-root=false \
-    && npm run build --workspace=web \
+    && npm run build --workspace=web -- --base=/computer/ \
     && npm run build --workspace=ui-tui
 
 FROM python:3.12-slim-bookworm
@@ -62,6 +64,7 @@ ENV HLT_MANAGED_MODEL_ROUTE=1
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
 COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py
+COPY fleet_run_budget.py /app/fleet_run_budget.py
 COPY hermes_patches /tmp/hermes-patches
 RUN git init /opt/hermes \
     && git -C /opt/hermes remote add origin \
@@ -93,6 +96,8 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes apply /tmp/hermes-patches/platform_turn_budget.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/scheduled_run_budget.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/scheduled_run_budget.patch \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl,web]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
@@ -124,6 +129,7 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && python /tmp/hermes-patches/assert_k2_runtime_pack_prompt_refresh.py /opt/hermes \
     && python /tmp/hermes-patches/assert_progressive_tool_result_compaction.py /opt/hermes \
     && python /tmp/hermes-patches/assert_platform_turn_budget.py /opt/hermes \
+    && python /tmp/hermes-patches/assert_scheduled_run_budget.py /opt/hermes \
     && PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \
     && PYTHONPATH=/app python -c "from hlt_numeric_grounding import NumericGroundingLedger; assert NumericGroundingLedger('applications: 2').validate('Applications: 2').ok"
 

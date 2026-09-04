@@ -226,6 +226,14 @@ summary and use a real `hub:*` ref for retrieval. External API runs queue one
 at a time so they cannot double the worker set beside Slack; `/health.resources`
 reports cgroup headroom and per-process RSS as advisory telemetry only.
 
+Cleo's bounded fleet jobs are installed through the native Hermes scheduler by
+`services/agent/fleet_durability.py`: five-minute non-model health, daily
+metadata-only Hermes release detection, and one budgeted K2 identity canary in
+`#agent-logs`. `fleet_run_budget.py` and its pinned scheduler overlay enforce
+the opt-in canary limits; ordinary Slack/API work is unaffected. Legacy briefs
+stay paused. Runtime observations retain cadence even when service redundancy
+is degraded, and no release check starts a build or GitHub Actions run.
+
 Five rules that exist because each was once a silent no-op:
 
 1. **Capability and effect permission are separate.** `platform_toolsets.slack`
