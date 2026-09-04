@@ -549,7 +549,12 @@ def build_config(
         # Bound externally-triggered runs separately from Slack work. This is
         # the exact path the pinned API adapter reads; placing the cap in the
         # platform's `extra` mapping looks plausible but is ignored upstream.
-        "gateway": {"api_server": {"max_concurrent_runs": 2}},
+        # Cleo's Render container also owns the Slack gateway, MCP clients,
+        # dashboard, and one external API worker. A second externally-triggered
+        # run can briefly double the model/tool process set and exhaust the
+        # starter container before the supervisor can report why. Queue the
+        # second request instead; interactive Slack remains independent.
+        "gateway": {"api_server": {"max_concurrent_runs": 1}},
         # Prefer each platform's native stream when it has one, with progressive
         # edit fallback elsewhere. Slack's stream is the final message itself.
         "streaming": {

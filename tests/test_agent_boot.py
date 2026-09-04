@@ -105,7 +105,7 @@ def test_external_runs_use_the_pinned_hermes_loopback_surface():
         "enabled": True,
         "extra": {"host": "127.0.0.1", "port": 8642},
     }
-    assert config["gateway"]["api_server"]["max_concurrent_runs"] == 2
+    assert config["gateway"]["api_server"]["max_concurrent_runs"] == 1
     assert config["platform_toolsets"]["api_server"] == render_config.api_server_toolsets(
         config["mcp_servers"]
     )
@@ -243,7 +243,7 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     assert set(config["mcp_servers"]) == {"gpt-researcher", "codegraph", "katailyst2", "linear"}
     # The pinned API adapter reads its concurrency cap only from this exact
     # gateway path; putting it under platforms.api_server.extra is ignored.
-    assert config["gateway"]["api_server"]["max_concurrent_runs"] == 2
+    assert config["gateway"]["api_server"]["max_concurrent_runs"] == 1
     assert "seed_paths" not in config["memory"]
 
 
@@ -806,6 +806,8 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "grep -q 're.escape(COMPACTION_DONE_STATUS)'" in dockerfile
     assert "[slack,mcp,tts-premium,fal,firecrawl,web]" in dockerfile
     assert "from firecrawl import Firecrawl" in dockerfile
+    assert "upstream_stream_final_content_reconciliation.patch" in dockerfile
+    assert "upstream_stream_final_draft_gate.patch" in dockerfile
     assert "FROM node:22-bookworm-slim AS hermes-web" in dockerfile
     assert "npm ci --workspace=web --workspace=ui-tui" in dockerfile
     assert "npm run build --workspace=web" in dockerfile
@@ -885,6 +887,58 @@ def test_health_observes_the_route_that_actually_answered(monkeypatch):
         "source": "successful_api_call",
         "seconds_ago": 0.0,
     }
+
+
+def test_resource_memory_receipt_reports_service_headroom(tmp_path):
+    health_gateway = _load_health_gateway()
+    proc_root = tmp_path / "proc"
+    cgroup_root = tmp_path / "cgroup"
+    (proc_root / "101").mkdir(parents=True)
+    (proc_root / "202").mkdir(parents=True)
+    cgroup_root.mkdir()
+    (proc_root / "101" / "status").write_text(
+        "Name:\tsupervisor\nVmRSS:\t12000 kB\n", encoding="utf-8"
+    )
+    (proc_root / "202" / "status").write_text(
+        "Name:\thermes\nVmRSS:\t420000 kB\n", encoding="utf-8"
+    )
+    (cgroup_root / "memory.current").write_text(
+        str(500 * 1024 * 1024), encoding="utf-8"
+    )
+    (cgroup_root / "memory.max").write_text(
+        str(512 * 1024 * 1024), encoding="utf-8"
+    )
+
+    receipt = health_gateway.resource_memory_snapshot(
+        {"supervisor": 101, "gateway": 202},
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+    )
+
+    assert receipt["source"] == "cgroup_v2"
+    assert receipt["processRssBytes"] == 432000 * 1024
+    assert receipt["serviceUsageBytes"] == 500 * 1024 * 1024
+    assert receipt["serviceLimitBytes"] == 512 * 1024 * 1024
+    assert receipt["headroomBytes"] == 12 * 1024 * 1024
+    assert receipt["state"] == "low"
+    assert receipt["advisory"] == "memory_headroom_low"
+
+
+def test_resource_memory_receipt_is_unknown_when_kernel_files_are_hidden(tmp_path):
+    health_gateway = _load_health_gateway()
+
+    receipt = health_gateway.resource_memory_snapshot(
+        {"supervisor": 101, "gateway": None},
+        proc_root=tmp_path / "no-proc",
+        cgroup_root=tmp_path / "no-cgroup",
+    )
+
+    assert receipt["source"] == "proc"
+    assert receipt["state"] == "unknown"
+    assert receipt["advisory"] is None
+    assert receipt["processRssBytes"] is None
+    assert receipt["serviceLimitBytes"] is None
+    assert receipt["headroomBytes"] is None
 
 
 # --- the model credential ---------------------------------------------------
@@ -1622,6 +1676,51 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert "Use K2 with judgment" in doctrine
     assert "hlt-k2-context" in doctrine
     assert "never form an allowlist" in doctrine
+
+
+def test_runtime_pack_separates_inline_product_context_from_retrievable_hubs(
+    tmp_path,
+):
+    pack = json.loads(json.dumps(_cleo_runtime_pack()))
+    pack["shellConfig"]["hubs"] = [
+        {
+            "ref": "product:nursing-mastery",
+            "name": "Nursing Mastery",
+            "summary": (
+                "Category: career_platform. Audience: nurses making career "
+                "moves and hiring decisions."
+            ),
+            "linkType": "product_binding",
+        },
+        {
+            "ref": "hub:nursing-mastery",
+            "name": "Nursing Mastery hub",
+            "summary": "Retrievable product knowledge.",
+            "linkType": "uses_hub",
+        },
+    ]
+
+    result = grounding.install_runtime_pack(
+        pack,
+        expected_agent_ref="agent:cleo",
+        home=tmp_path,
+    )
+
+    doctrine = (tmp_path / "grounding" / "AGENTS.md").read_text(encoding="utf-8")
+    product_context = doctrine.split("## Product context\n\n", 1)[1].split(
+        "\n\n##", 1
+    )[0]
+    capability_context = doctrine.split("## Capability proclivities\n\n", 1)[
+        1
+    ].split("\n\n##", 1)[0]
+
+    assert result["runtime_pack_applied"] is True
+    assert "not retrievable K2 registry refs" in product_context
+    assert "do not pass a `product:*` handle to `registry.get`" in product_context
+    assert "`product:nursing-mastery`" in product_context
+    assert "nurses making career moves" in product_context
+    assert "hub:nursing-mastery" in capability_context
+    assert "product:nursing-mastery" not in capability_context
 
 
 @pytest.mark.parametrize("registry_status", ["curated", "published"])

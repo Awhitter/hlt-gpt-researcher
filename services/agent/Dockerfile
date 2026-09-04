@@ -69,6 +69,10 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes fetch --depth=1 origin "${HERMES_REF}" \
     && git -C /opt/hermes checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/upstream_stream_final_content_reconciliation.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/upstream_stream_final_content_reconciliation.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/upstream_stream_final_draft_gate.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/upstream_stream_final_draft_gate.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_bare_transfer_full_context.patch \

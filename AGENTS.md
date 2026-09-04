@@ -216,6 +216,15 @@ Slack uses one native evolving stream per turn. Open it immediately with a short
 acknowledgement, add polished human-readable progress there whenever useful,
 and seal it once with the final. Keep raw tool names, commands, paths, provider
 warnings, private reasoning, and separate progress bubbles out of Slack.
+The pinned image backports Hermes' post-v0.21 content-verified finalization
+fixes: a stale delivery flag or ephemeral draft must never suppress the real
+final. Keep both upstream patch assertions green when advancing the pin.
+
+K2 runtime-pack rows with `linkType: product_binding` are inline product
+context, not `registry.get` targets. Cleo should reason from that supplied
+summary and use a real `hub:*` ref for retrieval. External API runs queue one
+at a time so they cannot double the worker set beside Slack; `/health.resources`
+reports cgroup headroom and per-process RSS as advisory telemetry only.
 
 Five rules that exist because each was once a silent no-op:
 

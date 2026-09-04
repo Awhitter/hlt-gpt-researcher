@@ -33,6 +33,9 @@ def main(root: Path) -> None:
     approval_source = (root / "tools" / "approval.py").read_text(
         encoding="utf-8"
     )
+    stream_consumer_source = (
+        root / "gateway" / "stream_consumer.py"
+    ).read_text(encoding="utf-8")
     assert "draft_stream_is_message = True" in slack_source
     assert 'initial_stream_ack = "On it' in slack_source
     assert 'self._app.event("agent_session_stopped")' in slack_source
@@ -71,6 +74,28 @@ def main(root: Path) -> None:
     assert "send data to an external service (curl)" in approval_source
     assert "def _managed_execute_code_effect" in approval_source
     assert 'pattern_key = f"execute_code:{effect_kind}"' in approval_source
+    assert (
+        "if self._already_sent and self.has_delivered_text(final_text):"
+        in stream_consumer_source
+    )
+    assert "self._delivery_ambiguous = True" in stream_consumer_source
+    fresh_final_start = stream_consumer_source.index("async def _try_fresh_final")
+    fresh_final_end = stream_consumer_source.index(
+        "async def _suppress_silence_marker", fresh_final_start
+    )
+    assert (
+        "self._record_turn_final_payload(text)"
+        in stream_consumer_source[fresh_final_start:fresh_final_end]
+    )
+    send_or_edit_start = stream_consumer_source.index("async def _send_or_edit")
+    send_or_edit_source = stream_consumer_source[send_or_edit_start:]
+    optimistic_record_at = send_or_edit_source.index(
+        "self._record_turn_final_payload(text)"
+    )
+    optimistic_rollback_at = send_or_edit_source.index(
+        "self._delivered_final_text = None", optimistic_record_at
+    )
+    assert optimistic_record_at < optimistic_rollback_at
     # The sole acknowledgement stream opens immediately after admission,
     # before even session/history lookup or attachment preprocessing. The
     # exact executor worker is then published so Stop can wait for real work,
@@ -141,8 +166,67 @@ def main(root: Path) -> None:
             self.draft_frames.append((draft_id, content))
             return SendResult(success=True, message_id="stream-live")
 
+    def recordless_consumer(
+        adapter: RecordingStreamAdapter,
+        *,
+        visible_text: str = "",
+        already_sent: bool,
+        delivery_ambiguous: bool = False,
+    ) -> GatewayStreamConsumer:
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="C_AGENT_LOGS",
+            config=StreamConsumerConfig(cursor=""),
+            metadata={"thread_id": "1787140000.000100"},
+            initial_reply_to_id="1787140000.000100",
+        )
+        consumer._final_response_sent = True
+        consumer._final_content_delivered = True
+        consumer._delivered_final_text = None
+        consumer._turn_split_delivery = False
+        consumer._delivery_ambiguous = delivery_ambiguous
+        consumer._already_sent = already_sent
+        consumer._last_sent_text = visible_text
+        consumer._delivered_commentary_texts = []
+        consumer._delivered_segment_texts = []
+        return consumer
+
     async def verify() -> None:
         adapter = RecordingStreamAdapter()
+        complete = "The content package is ready for staged review."
+        partial = "The content package is ready"
+        assert (
+            recordless_consumer(
+                adapter,
+                visible_text=partial,
+                already_sent=True,
+            ).delivered_final_matches(complete)
+            is False
+        )
+        assert (
+            recordless_consumer(
+                adapter,
+                visible_text=complete,
+                already_sent=True,
+            ).delivered_final_matches(complete)
+            is True
+        )
+        assert (
+            recordless_consumer(
+                adapter,
+                visible_text=complete,
+                already_sent=False,
+            ).delivered_final_matches(complete)
+            is False
+        )
+        assert (
+            recordless_consumer(
+                adapter,
+                already_sent=True,
+                delivery_ambiguous=True,
+            ).delivered_final_matches(complete)
+            is None
+        )
         consumer = GatewayStreamConsumer(
             adapter=adapter,
             chat_id="C_AGENT_LOGS",
