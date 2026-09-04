@@ -804,8 +804,19 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert '"pre_llm_call"' in dockerfile
     assert "ENV HERMES_UPSTREAM_REF=${HERMES_REF}" in dockerfile
     assert "grep -q 're.escape(COMPACTION_DONE_STATUS)'" in dockerfile
-    assert "[slack,mcp,tts-premium,fal,firecrawl]" in dockerfile
+    assert "[slack,mcp,tts-premium,fal,firecrawl,web]" in dockerfile
     assert "from firecrawl import Firecrawl" in dockerfile
+    assert "FROM node:22-bookworm-slim AS hermes-web" in dockerfile
+    assert "npm ci --workspace=web --workspace=ui-tui" in dockerfile
+    assert "npm run build --workspace=web" in dockerfile
+    assert "npm run build --workspace=ui-tui" in dockerfile
+    assert "COPY --from=hermes-web" in dockerfile
+    assert "hermes_cli/web_dist/index.html" in dockerfile
+    assert "/usr/local/bin/node /usr/local/bin/node" in dockerfile
+    assert "/usr/local/lib/node_modules/npm" in dockerfile
+    assert "ENV HERMES_TUI_DIR=/opt/hermes/ui-tui" in dockerfile
+    assert "ui-tui/dist/entry.js" in dockerfile
+    assert "from hermes_cli.main import _make_tui_argv" in dockerfile
     assert "progressive_tool_result_compaction.patch" in dockerfile
     assert "assert_progressive_tool_result_compaction.py" in dockerfile
     assert "platform_turn_budget.patch" in dockerfile
@@ -1231,6 +1242,95 @@ def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
         "minimum_ready": False,
     }
     assert "token" not in str(result).lower()
+
+
+def test_health_route_refresh_reuses_one_provider_probe_within_cache_window(
+    monkeypatch,
+):
+    """Render liveness polling must not refresh OAuth every few seconds."""
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.update(
+        {
+            "model_provider": "openai-codex",
+            "configured_model_route": [
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                    "role": "primary",
+                }
+            ],
+        }
+    )
+    calls = []
+    refreshed = [
+        {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "role": "primary",
+            "available": False,
+            "detail": {"logged_in": False, "usable": False},
+        }
+    ]
+    monkeypatch.setattr(
+        health_gateway,
+        "model_route_readiness",
+        lambda routes, env: calls.append((routes, env)) or refreshed,
+    )
+    monkeypatch.setattr(health_gateway.time, "monotonic", lambda: 100.0)
+
+    first = health_gateway.refresh_model_route_readiness()
+    second = health_gateway.refresh_model_route_readiness()
+
+    assert first == refreshed
+    assert second == refreshed
+    assert len(calls) == 1
+    assert (
+        health_gateway._MODEL_ROUTE_READINESS_CACHE["expires_at"]
+        == 100.0 + health_gateway.MODEL_ROUTE_READINESS_DEGRADED_CACHE_SECONDS
+    )
+
+
+def test_activation_cache_invalidation_makes_operator_repair_visible(monkeypatch):
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.update(
+        {
+            "model_provider": "openai-codex",
+            "configured_model_route": [
+                {
+                    "provider": "openai-codex",
+                    "model": "gpt-5.6-sol",
+                    "role": "primary",
+                }
+            ],
+        }
+    )
+    available = {"value": False}
+    calls = []
+
+    def _readiness(routes, env):
+        calls.append(available["value"])
+        return [
+            {
+                **routes[0],
+                "available": available["value"],
+                "detail": {
+                    "logged_in": available["value"],
+                    "usable": available["value"],
+                },
+            }
+        ]
+
+    monkeypatch.setattr(health_gateway, "model_route_readiness", _readiness)
+    monkeypatch.setattr(health_gateway.time, "monotonic", lambda: 200.0)
+
+    assert health_gateway.refresh_model_route_readiness()[0]["available"] is False
+    available["value"] = True
+    assert health_gateway.refresh_model_route_readiness()[0]["available"] is False
+
+    health_gateway.invalidate_model_route_readiness_cache()
+
+    assert health_gateway.refresh_model_route_readiness()[0]["available"] is True
+    assert calls == [False, True]
 
 
 def test_subscription_readiness_does_not_publish_xai_pool_labels(monkeypatch):

@@ -107,6 +107,9 @@ services:
       # the active revision and agents.runtime_pack returns that exact version.
       - key: HLT_AGENT_REF
         value: agent:cleo
+      # Exact browser origin used by K2's one-use team-computer handoff.
+      - key: HLT_AGENT_PUBLIC_ORIGIN
+        value: https://hlt-hermes.onrender.com
       # Shared bearer for K2's external-run adapter and Hermes' loopback run
       # API. The public wrapper never exposes the loopback listener or token.
       - key: OPENCLAW_HQ_HOOK_TOKEN

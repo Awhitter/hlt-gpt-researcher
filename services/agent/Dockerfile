@@ -1,4 +1,23 @@
+ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77
+
+FROM node:22-bookworm-slim AS hermes-web
+ARG HERMES_REF
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && git init /opt/hermes \
+    && git -C /opt/hermes remote add origin https://github.com/NousResearch/hermes-agent.git \
+    && git -C /opt/hermes fetch --depth=1 origin "${HERMES_REF}" \
+    && git -C /opt/hermes checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}"
+
+WORKDIR /opt/hermes
+RUN npm ci --workspace=web --workspace=ui-tui --include-workspace-root=false \
+    && npm run build --workspace=web \
+    && npm run build --workspace=ui-tui
+
 FROM python:3.12-slim-bookworm
+ARG HERMES_REF
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates build-essential \
@@ -42,7 +61,6 @@ ENV HLT_MANAGED_MODEL_ROUTE=1
 # left no way to know whether Cleo had the MCP naming repair that registers
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
-ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77
 COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py
 COPY hermes_patches /tmp/hermes-patches
 RUN git init /opt/hermes \
@@ -71,7 +89,7 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes apply /tmp/hermes-patches/platform_turn_budget.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
-    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl]" \
+    && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl,web]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
     && { python -c "import mcp" || { echo "mcp extra missing after install"; exit 1; }; } \
@@ -104,6 +122,23 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && python /tmp/hermes-patches/assert_platform_turn_budget.py /opt/hermes \
     && PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes \
     && PYTHONPATH=/app python -c "from hlt_numeric_grounding import NumericGroundingLedger; assert NumericGroundingLedger('applications: 2').validate('Applications: 2').ok"
+
+# Upstream intentionally ignores the generated dashboard and TUI bundles.
+# Build both at the exact pinned SHA. The native Chat tab opens a PTY whose
+# child is the TUI bundle, so the web assets alone produce a polished shell
+# with a dead Chat surface.
+COPY --from=hermes-web /usr/local/bin/node /usr/local/bin/node
+COPY --from=hermes-web /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version \
+    && npm --version
+COPY --from=hermes-web /opt/hermes/hermes_cli/web_dist /opt/hermes/hermes_cli/web_dist
+COPY --from=hermes-web /opt/hermes/ui-tui/dist /opt/hermes/ui-tui/dist
+ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
+RUN test -s /opt/hermes/hermes_cli/web_dist/index.html \
+    && test -s /opt/hermes/ui-tui/dist/entry.js \
+    && python -c "from pathlib import Path; from hermes_cli.main import _make_tui_argv; argv, cwd = _make_tui_argv(Path('/opt/hermes/ui-tui'), False); assert argv[0].endswith('/node') and argv[-1] == '/opt/hermes/ui-tui/dist/entry.js' and cwd == Path('/opt/hermes/ui-tui'), (argv, cwd)"
 
 ENV HERMES_UPSTREAM_REF=${HERMES_REF}
 
