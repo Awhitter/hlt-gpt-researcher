@@ -483,8 +483,14 @@ false while the reviewed preactivation brain is serving Slack, so liveness and
 useful degraded service never masquerade as completed K2 activation.
 
 The daily canary is budgeted in code: at most four provider attempts, 1,200
-cumulative output tokens, 64,000 aggregate serialized input bytes, and a native
-120-second run budget. The small `scheduled_run_budget.patch` passes opt-in job
+cumulative output tokens, 64,000 cumulative input tokens (cached input included),
+and a native 120-second run budget. Before a request, serialized UTF-8 bytes
+reserve a conservative input-token allowance; after a response, Hermes' actual
+cache-inclusive usage replaces that request's reservation. This is not an exact
+Grok tokenizer and not a 64KB aggregate byte limit: a 42KB request reporting 12K
+input tokens leaves 52K tokens available for the next conservative reservation.
+An attempt without input usage retains its reservation, even if a later attempt
+has a usage receipt. The small `scheduled_run_budget.patch` passes opt-in job
 limits into Hermes and clamps each provider request, including retry boosts.
 Unknown usage retains its reservation instead of authorizing another attempt.
 Budgeted jobs disable the transport's internal stream retry and model fallback;

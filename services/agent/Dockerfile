@@ -12,8 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}"
 
 WORKDIR /opt/hermes
+# Match the mounted computer surface for lazy-loaded JS/CSS too; upstream's
+# HTML rewriting alone leaves Vite preload requests pointing at /assets/.
 RUN npm ci --workspace=web --workspace=ui-tui --include-workspace-root=false \
-    && npm run build --workspace=web \
+    && npm run build --workspace=web -- --base=/computer/ \
     && npm run build --workspace=ui-tui
 
 FROM python:3.12-slim-bookworm

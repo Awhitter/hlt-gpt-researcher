@@ -817,7 +817,10 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "upstream_stream_final_draft_gate.patch" in dockerfile
     assert "FROM node:22-bookworm-slim AS hermes-web" in dockerfile
     assert "npm ci --workspace=web --workspace=ui-tui" in dockerfile
-    assert "npm run build --workspace=web" in dockerfile
+    # Lazy-page CSS preloads must use the same prefix as the mounted dashboard.
+    assert "npm run build --workspace=web -- --base=/computer/" in dockerfile
+    computer_surface = (SERVICE_DIR / "computer_surface.py").read_text(encoding="utf-8")
+    assert 'DASHBOARD_PATH = "/computer"' in computer_surface
     assert "npm run build --workspace=ui-tui" in dockerfile
     assert "COPY --from=hermes-web" in dockerfile
     assert "hermes_cli/web_dist/index.html" in dockerfile

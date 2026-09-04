@@ -27,6 +27,8 @@ def agent():
     return SimpleNamespace(
         max_iterations=4, max_tokens=1200, tools=[],
         session_output_tokens=0, session_completion_tokens=0,
+        session_prompt_tokens=0, session_input_tokens=0,
+        session_cache_read_tokens=0, session_cache_write_tokens=0,
     )
 
 
@@ -64,13 +66,74 @@ def test_cumulative_output_reduces_next_request_and_blocks_grace_calls():
     assert not budget.admit_iteration(worker, [], 4)
 
 
-def test_elapsed_time_and_aggregate_input_are_bounded(monkeypatch):
+def test_elapsed_time_and_input_token_reservation_are_bounded(monkeypatch):
     worker = agent()
     budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
     assert not budget.admit_request(worker, {"messages": [{"content": "x" * 64001}], "max_tokens": 1200})
     monkeypatch.setattr(budget.time, "monotonic", lambda: worker._hlt_scheduled_started + 121)
     assert not budget.admit_iteration(worker, [], 0)
     assert budget.admit_iteration(agent(), [{"content": "x" * 64001}], 200)
+
+
+def test_input_reservation_reconciles_42kb_request_to_actual_12k_tokens():
+    worker = agent()
+    budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
+    request = {"input": "x" * 42000, "max_output_tokens": 1200}
+    assert budget.admit_request(worker, request.copy())
+    worker.session_prompt_tokens = 12000
+    worker.session_input_tokens = 12000
+    worker.session_output_tokens = 100
+    assert budget.admit_request(worker, request.copy())
+    assert worker._hlt_scheduled_observed_input == 12000
+    assert worker._hlt_scheduled_reserved_input < 43000
+    # A third full request cannot fit after another 12k tokens were consumed.
+    worker.session_prompt_tokens = worker.session_input_tokens = 24000
+    worker.session_output_tokens = 200
+    assert not budget.admit_request(worker, request.copy())
+
+
+def test_unknown_input_usage_retains_42kb_charge_despite_output_receipt():
+    worker = agent()
+    budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
+    request = {"input": "x" * 42000, "max_output_tokens": 1200}
+    assert budget.admit_request(worker, request.copy())
+    worker.session_output_tokens = 100
+    assert not budget.admit_request(worker, request.copy())
+    assert worker._hlt_scheduled_requests == 1
+
+
+@pytest.mark.parametrize("inclusive_counter", [0, 12000])
+def test_input_accounting_includes_cache_reads_and_writes_once(inclusive_counter):
+    worker = agent()
+    worker.session_prompt_tokens = inclusive_counter
+    worker.session_input_tokens = 2000
+    worker.session_cache_read_tokens = 9000
+    worker.session_cache_write_tokens = 1000
+    assert budget._observed_input_tokens(worker) == 12000
+    budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
+    assert not budget.admit_request(worker, {"input": "x" * 55000, "max_output_tokens": 1200})
+
+
+def test_later_input_receipt_does_not_erase_an_older_unknown_reservation():
+    worker = agent()
+    budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
+    request = {"input": "x" * 20000, "max_output_tokens": 1200}
+    assert budget.admit_request(worker, request.copy())
+    first_reserved = worker._hlt_scheduled_reserved_input
+    # Output accounting exists, but this attempt's input usage is missing.
+    worker.session_output_tokens = 100
+    assert budget.admit_request(worker, request.copy())
+    worker.session_prompt_tokens = worker.session_input_tokens = 5000
+    worker.session_output_tokens = 200
+    assert budget.admit_request(worker, request.copy())
+    assert worker._hlt_scheduled_reserved_input == 2 * first_reserved
+
+
+def test_input_token_exhaustion_blocks_iteration_even_with_output_remaining():
+    worker = agent()
+    budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
+    worker.session_prompt_tokens = 64000
+    assert not budget.admit_iteration(worker, [], 1)
 
 
 def test_actual_request_cap_overrides_retry_boost_and_reserves_unknown_spend():

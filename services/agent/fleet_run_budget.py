@@ -2,7 +2,8 @@
 
 Ordinary Slack/API work is unaffected. The scheduler overlay attaches this
 contract only when a job carries ``hlt_run_budget``. Native usage counters
-shrink the next output allowance; a grace call cannot bypass the run ceiling.
+reconcile conservative input reservations and shrink the next output allowance;
+a grace call cannot bypass the run ceiling.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from typing import Any
 CANARY_BUDGET = {
     "max_iterations": 4,
     "max_output_tokens": 1200,
-    "max_input_bytes": 64000,
+    "max_input_tokens": 64000,
     "max_seconds": 120,
 }
 
@@ -49,10 +50,25 @@ def attach_budget(agent: Any, job: dict[str, Any]) -> None:
         for key, ceiling in CANARY_BUDGET.items()
     }
     agent._hlt_scheduled_started = time.monotonic()
-    agent._hlt_scheduled_input_bytes = 0
+    agent._hlt_scheduled_reserved_input = 0
+    agent._hlt_scheduled_last_input_reservation = 0
+    agent._hlt_scheduled_observed_input = 0
     agent._hlt_scheduled_reserved_output = 0
     agent._hlt_scheduled_observed_output = 0
     agent._hlt_scheduled_requests = 0
+
+
+def _observed_input_tokens(agent: Any) -> int:
+    # Pinned Hermes CanonicalUsage.prompt_tokens includes uncached input plus
+    # BOTH cache buckets. session_input_tokens alone excludes cached input.
+    # Prefer the inclusive native counter, with equivalent bucket fallback;
+    # max avoids charging caches twice when both forms are available.
+    return max(
+        int(getattr(agent, "session_prompt_tokens", 0) or 0),
+        sum(int(getattr(agent, key, 0) or 0) for key in (
+            "session_input_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
+        )),
+    )
 
 
 def admit_iteration(agent: Any, messages: list[dict], api_calls: int) -> bool:
@@ -65,6 +81,7 @@ def admit_iteration(agent: Any, messages: list[dict], api_calls: int) -> bool:
     )
     if (
         remaining <= 0
+        or _observed_input_tokens(agent) >= limits["max_input_tokens"]
         or api_calls >= limits["max_iterations"]
         or time.monotonic() - agent._hlt_scheduled_started >= limits["max_seconds"]
     ):
@@ -79,6 +96,8 @@ def admit_request(agent: Any, api_kwargs: dict[str, Any]) -> bool:
     If an attempt failed before usage was recorded, keep its whole reservation:
     unknown provider billing is not permission for another unattended attempt.
     Normal successful tool calls release the unused reservation from usage.
+    Input reserves one token per serialized UTF-8 byte (not a tokenizer count),
+    then reconciles that latest reservation to cache-inclusive provider usage.
     """
     limits = getattr(agent, "_hlt_scheduled_budget", None)
     if limits is None:
@@ -94,11 +113,17 @@ def admit_request(agent: Any, api_kwargs: dict[str, Any]) -> bool:
     request_bytes = len(json.dumps(
         api_kwargs, ensure_ascii=False, default=str,
     ).encode("utf-8"))
-    used_bytes = agent._hlt_scheduled_input_bytes + request_bytes
+    observed_input = _observed_input_tokens(agent)
+    reserved_input = agent._hlt_scheduled_reserved_input
+    if observed_input > agent._hlt_scheduled_observed_input:
+        # Settle only the latest request. Older attempts without input usage
+        # remain charged even if a later response does provide a receipt.
+        reserved_input = max(0, reserved_input - agent._hlt_scheduled_last_input_reservation)
+    projected_input = observed_input + reserved_input + request_bytes
     if (
         remaining <= 0
         or agent._hlt_scheduled_requests >= limits["max_iterations"]
-        or used_bytes > limits["max_input_bytes"]
+        or projected_input > limits["max_input_tokens"]
         or time.monotonic() - agent._hlt_scheduled_started >= limits["max_seconds"]
     ):
         return False
@@ -112,7 +137,9 @@ def admit_request(agent: Any, api_kwargs: dict[str, Any]) -> bool:
     if not caps:
         return False
     agent.max_tokens = min(agent.max_tokens, remaining)
-    agent._hlt_scheduled_input_bytes = used_bytes
+    agent._hlt_scheduled_reserved_input = reserved_input + request_bytes
+    agent._hlt_scheduled_last_input_reservation = request_bytes
+    agent._hlt_scheduled_observed_input = observed_input
     agent._hlt_scheduled_requests += 1
     agent._hlt_scheduled_reserved_output = max(caps)
     agent._hlt_scheduled_observed_output = observed
