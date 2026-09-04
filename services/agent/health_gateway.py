@@ -14,6 +14,7 @@ agent is really up and really constrained.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import importlib.util
@@ -87,6 +88,21 @@ SUCCESSFUL_MODEL_ROUTE_RE = re.compile(
 # of hiding behind an endless restart loop.
 MAX_RESTARTS = 5
 BACKOFF_CAP_SECONDS = 60
+
+# Render polls /health every few seconds. Hermes' Codex status helper can refresh
+# every stored OAuth profile while answering that read, so an expired pool used
+# to hammer auth.openai.com continuously even though Grok was serving Slack.
+# Healthy state is sampled once a minute; positively unavailable OAuth state is
+# held for five minutes. The authenticated activation probe invalidates this
+# cache so an operator repair is visible immediately.
+MODEL_ROUTE_READINESS_CACHE_SECONDS = 60.0
+MODEL_ROUTE_READINESS_DEGRADED_CACHE_SECONDS = 300.0
+_MODEL_ROUTE_READINESS_CACHE_LOCK = threading.Lock()
+_MODEL_ROUTE_READINESS_CACHE: dict[str, Any] = {
+    "fingerprint": "",
+    "expires_at": 0.0,
+    "routes": [],
+}
 
 # Hermes only attaches a stderr handler when the CLI is given -v/-q, and with no
 # flag it prints WARNING and above. Every line describing whether the bot is
@@ -1633,6 +1649,31 @@ def model_route_readiness(
     ]
 
 
+def invalidate_model_route_readiness_cache() -> None:
+    """Make the next readiness read ask Hermes for fresh provider state."""
+    with _MODEL_ROUTE_READINESS_CACHE_LOCK:
+        _MODEL_ROUTE_READINESS_CACHE.update(
+            {"fingerprint": "", "expires_at": 0.0, "routes": []}
+        )
+
+
+def _model_route_readiness_cache_seconds(
+    routes: list[Mapping[str, Any]],
+) -> float:
+    """Back off longer after a confirmed OAuth failure or cooldown."""
+    oauth_unavailable = any(
+        str(route.get("provider") or "").strip().lower()
+        in {"openai-codex", "xai-oauth"}
+        and route.get("available") is False
+        for route in routes
+    )
+    return (
+        MODEL_ROUTE_READINESS_DEGRADED_CACHE_SECONDS
+        if oauth_unavailable
+        else MODEL_ROUTE_READINESS_CACHE_SECONDS
+    )
+
+
 def refresh_model_route_readiness() -> list[dict[str, Any]]:
     """Refresh credential/selectability metadata without model inference.
 
@@ -1651,8 +1692,31 @@ def refresh_model_route_readiness() -> list[dict[str, Any]]:
             for route in (BOOT.get("model_route_readiness") or [])
             if isinstance(route, Mapping)
         ]
-    refreshed = model_route_readiness(configured, os.environ)
-    BOOT["model_route_readiness"] = refreshed
+    fingerprint = hashlib.sha256(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    now = time.monotonic()
+    # Keep the provider probe inside the lock: concurrent Render/operator reads
+    # must not create their own refresh stampede at the cache boundary.
+    with _MODEL_ROUTE_READINESS_CACHE_LOCK:
+        if (
+            _MODEL_ROUTE_READINESS_CACHE["fingerprint"] == fingerprint
+            and _MODEL_ROUTE_READINESS_CACHE["routes"]
+            and now < float(_MODEL_ROUTE_READINESS_CACHE["expires_at"])
+        ):
+            return copy.deepcopy(_MODEL_ROUTE_READINESS_CACHE["routes"])
+
+        refreshed = model_route_readiness(configured, os.environ)
+        _MODEL_ROUTE_READINESS_CACHE.update(
+            {
+                "fingerprint": fingerprint,
+                "expires_at": now
+                + _model_route_readiness_cache_seconds(refreshed),
+                "routes": copy.deepcopy(refreshed),
+            }
+        )
+
+    BOOT["model_route_readiness"] = copy.deepcopy(refreshed)
     active_provider = str(BOOT.get("model_provider") or "").strip().lower()
     primary = next(
         (
@@ -1665,8 +1729,8 @@ def refresh_model_route_readiness() -> list[dict[str, Any]]:
         None,
     )
     if primary is not None and isinstance(primary.get("detail"), Mapping):
-        BOOT["subscription_auth"] = dict(primary["detail"])
-    return refreshed
+        BOOT["subscription_auth"] = copy.deepcopy(primary["detail"])
+    return copy.deepcopy(refreshed)
 
 
 def authenticated_model_route_gate(
@@ -2475,6 +2539,9 @@ def activationz(
 ) -> JSONResponse:
     if not _hook_authorized(authorization):
         return JSONResponse({"ready": False, "error": "unauthorized"}, status_code=401)
+    # Unlike Render's frequent liveness poll, this authenticated operator/K2
+    # preflight must see a newly repaired OAuth pool immediately.
+    invalidate_model_route_readiness_cache()
     readiness = activation_readiness()
     return JSONResponse(readiness, status_code=200 if readiness["ready"] else 503)
 
@@ -2956,6 +3023,25 @@ def main() -> None:
     signal.signal(signal.SIGTERM, supervisor.shutdown)
     signal.signal(signal.SIGINT, supervisor.shutdown)
     boot()
+    try:
+        from computer_surface import install_computer_surface
+
+        BOOT["computer_surface"] = install_computer_surface(
+            app,
+            hook_token=_hook_token(),
+            public_origin=os.getenv(
+                "HLT_AGENT_PUBLIC_ORIGIN", "https://hlt-hermes.onrender.com"
+            ).strip(),
+        )
+    except Exception as exc:
+        # Slack remains available if the optional browser workbench cannot
+        # mount, while /health names the missing surface for repair.
+        BOOT["computer_surface"] = {
+            "ready": False,
+            "targetKind": "hermes",
+            "error": f"{type(exc).__name__}: dashboard unavailable",
+        }
+        logger.exception("Cleo computer surface did not mount")
     try:
         uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
     finally:

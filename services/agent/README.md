@@ -121,6 +121,7 @@ leave your file alone and say so in `/health`.
 | `KATAILYST2_MCP_URL` / `KATAILYST2_MCP_TOKEN` | Registry |
 | `LINEAR_MCP_URL` / `LINEAR_MCP_TOKEN` | Roadmap (optional) |
 | `HLT_AGENT_REF` | Canonical unversioned identity; `agent:cleo` |
+| `HLT_AGENT_PUBLIC_ORIGIN` | Exact HTTPS origin used by K2's one-click computer handoff |
 | `OPENCLAW_HQ_HOOK_TOKEN` | Shared strong bearer for K2's hosted-agent hook and Hermes' loopback run API |
 | `K2_ACTIVATION_POLL_SECONDS` | Optional offline-to-active polling interval, bounded to 5–300 seconds (default 10) |
 | `HERMES_HOME` | Persistent disk path (default `/data/hermes`) |
@@ -257,6 +258,27 @@ then extends that same append-only stream with human-readable progress, and the
 turn-final answer seals it exactly once. Raw tool progress, commands, paths,
 provider warnings, logs, and private reasoning remain off. The model does not
 use a Slack send tool to duplicate its own response.
+
+## Open Cleo's computer
+
+K2's Cleo profile is the front door to the full native Hermes dashboard. Choose
+**Open computer** there; K2 authenticates the teammate, redeems a one-use handoff
+server-to-server, and opens `/computer/chat` with an HttpOnly browser session.
+There is no gateway token to copy or share. Direct visits to the Render URL
+return to Cleo's K2 profile so the next launch is always fresh.
+
+The browser workbench is deliberately the real pinned Hermes UI, not a reduced
+admin page: Chat/TUI, sessions, models, MCP, skills, browser work, usage, and
+approvals stay available. Its web and TUI bundles are built from the exact
+`HERMES_REF`, and the container build fails if either native surface is absent.
+The outer K2 session gate covers both HTTP and WebSocket traffic; a deploy simply
+expires the local session and the profile button opens another one.
+
+`HLT_AGENT_PUBLIC_ORIGIN` is the exact public HTTPS origin used by the handoff
+(production: `https://hlt-hermes.onrender.com`). It must match Cleo's
+`computerTargetOrigin` in K2. `OPENCLAW_HQ_HOOK_TOKEN` remains server-only and
+is shared with K2's logical `hlt_hermes_hook_token` binding; neither value enters
+the browser URL or response body.
 
 The checked-in manifest uses Slack's current Agent View and Agent Sessions.
 Pinned Hermes handles `app_home_opened`, `app_context_changed`, active-view
