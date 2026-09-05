@@ -198,6 +198,13 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
+Cleo's native dashboard mounts at `/computer` behind the K2 browser session.
+Its declared public hostname admits authenticated remote WebSockets; its TUI
+dials the same listener on `127.0.0.1:$PORT` using the native `/api/ws` and
+`/api/pub` aliases. Those aliases are direct-loopback-only and reject forwarded
+attribution. Preserve that separation, and prove both Chat and sidebar events
+when changing the dashboard mount or upstream pin.
+
 At boot, the K2 runtime pack is the canonical identity and doctrine while the
 Wishing Well is an independent task-context probe. If the pack succeeds and
 the Well times out, keep and run the K2 pack with context readiness shown as

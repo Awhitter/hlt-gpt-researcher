@@ -8,8 +8,11 @@ a grace call cannot bypass the run ceiling.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 CANARY_BUDGET = {
     "max_iterations": 4,
@@ -120,13 +123,36 @@ def admit_request(agent: Any, api_kwargs: dict[str, Any]) -> bool:
         # remain charged even if a later response does provide a receipt.
         reserved_input = max(0, reserved_input - agent._hlt_scheduled_last_input_reservation)
     projected_input = observed_input + reserved_input + request_bytes
-    if (
-        remaining <= 0
-        or agent._hlt_scheduled_requests >= limits["max_iterations"]
-        or projected_input > limits["max_input_tokens"]
-        or time.monotonic() - agent._hlt_scheduled_started >= limits["max_seconds"]
-    ):
+    elapsed = time.monotonic() - agent._hlt_scheduled_started
+
+    def reject(reason: str) -> bool:
+        # Numeric receipt only: retain enough to diagnose a budget refusal
+        # without logging prompts, tool schemas, arguments, or credentials.
+        detail = {
+            "reason": reason,
+            "requests": agent._hlt_scheduled_requests,
+            "max_iterations": limits["max_iterations"],
+            "request_bytes": request_bytes,
+            "observed_input_tokens": observed_input,
+            "reserved_input_tokens": reserved_input,
+            "projected_input_tokens": projected_input,
+            "max_input_tokens": limits["max_input_tokens"],
+            "remaining_output_tokens": remaining,
+            "elapsed_seconds": round(elapsed, 3),
+            "max_seconds": limits["max_seconds"],
+        }
+        agent._hlt_scheduled_rejection = detail
+        logger.warning("Scheduled run request refused: %s", json.dumps(detail, sort_keys=True))
         return False
+
+    if remaining <= 0:
+        return reject("output_tokens")
+    if agent._hlt_scheduled_requests >= limits["max_iterations"]:
+        return reject("request_count")
+    if projected_input > limits["max_input_tokens"]:
+        return reject("input_reservation")
+    if elapsed >= limits["max_seconds"]:
+        return reject("wall_time")
     for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
         if key in api_kwargs:
             api_kwargs[key] = min(int(api_kwargs[key]), remaining)
@@ -135,7 +161,7 @@ def admit_request(agent: Any, api_kwargs: dict[str, Any]) -> bool:
     # this budgeted job. Ordinary Codex/Slack work is unaffected.
     caps = [api_kwargs[key] for key in ("max_tokens", "max_completion_tokens", "max_output_tokens") if key in api_kwargs]
     if not caps:
-        return False
+        return reject("output_cap_missing")
     agent.max_tokens = min(agent.max_tokens, remaining)
     agent._hlt_scheduled_reserved_input = reserved_input + request_bytes
     agent._hlt_scheduled_last_input_reservation = request_bytes

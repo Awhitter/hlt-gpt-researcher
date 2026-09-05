@@ -3164,6 +3164,7 @@ def main() -> None:
         BOOT["computer_surface"] = install_computer_surface(
             app,
             hook_token=_hook_token(),
+            listen_port=int(os.getenv("PORT", "8080")),
             public_origin=os.getenv(
                 "HLT_AGENT_PUBLIC_ORIGIN", "https://hlt-hermes.onrender.com"
             ).strip(),

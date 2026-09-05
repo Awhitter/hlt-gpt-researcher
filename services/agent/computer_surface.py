@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
+import os
 import re
 import secrets
 import threading
@@ -25,7 +27,7 @@ from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import Any, AsyncIterator, Callable, Mapping
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 AGENT_REF = "agent:cleo"
@@ -404,17 +406,59 @@ class HermesComputerGate:
         await self.application(scoped, receive, send)
 
 
-def _load_hermes_dashboard() -> Any:
+def _load_hermes_dashboard(*, public_origin: str, listen_port: int) -> Any:
     from hermes_cli import web_server
 
-    # This app has no standalone listener. Every request passes through
-    # HermesComputerGate, so the upstream token becomes a harmless browser
-    # protocol marker and no gateway credential is exposed to the teammate.
+    # The dashboard shares the existing health listener. Browser traffic is
+    # authenticated by HermesComputerGate; native TUI traffic uses the two
+    # direct-loopback aliases below, retaining Hermes' own gateway/event protocol.
     web_server._SESSION_TOKEN = DASHBOARD_MARKER_TOKEN
     web_server.app.state.auth_required = False
-    web_server.app.state.bound_host = None
-    web_server.app.state.trusted_public_hosts = frozenset()
+    hostname = urllib.parse.urlsplit(public_origin).hostname
+    web_server.app.state.bound_host = hostname
+    web_server.app.state.bound_port = listen_port
+    web_server.app.state.trusted_public_hosts = frozenset({hostname, "127.0.0.1", "::1"})
+    # A missing bind makes upstream reject remote browser peers as loopback-only.
+    # Its separate native dial setting keeps PTY children inside this process's
+    # listener instead of dialing the public Render hostname without TLS.
+    os.environ["HERMES_DASHBOARD_WS_HOST"] = "127.0.0.1"
     return web_server.app
+
+
+def _install_native_loopback_sockets(
+    application: FastAPI, dashboard: Any, *, listen_port: int
+) -> None:
+    """Expose only Hermes' existing child RPC and event publisher locally.
+
+    Upstream builds root /api/ws and /api/pub URLs for its TUI child, not
+    browser mount URLs. No second listener, transport, or credential is needed.
+    Never accept proxy attribution as evidence that a remote caller is local.
+    """
+    async def native_socket(websocket: WebSocket) -> None:
+        scope = websocket.scope
+        headers = list(scope.get("headers") or [])
+        peer = scope.get("client")
+        try:
+            direct_loopback = bool(peer) and ipaddress.ip_address(peer[0]).is_loopback
+        except (ValueError, TypeError):
+            direct_loopback = False
+        forwarded = any(
+            key.lower() in {b"forwarded", b"x-real-ip"}
+            or key.lower().startswith(b"x-forwarded-")
+            for key, _ in headers
+        )
+        local_host = _header_value(headers, "host").lower() in {
+            f"127.0.0.1:{listen_port}", f"[::1]:{listen_port}"
+        }
+        if not direct_loopback or forwarded or not local_host:
+            await websocket.close(code=4403)
+            return
+        # The native routes still enforce their ordinary session token. Only
+        # already-local native traffic reaches them outside the browser gate.
+        await dashboard(scope, websocket.receive, websocket.send)
+
+    for path in ("/api/ws", "/api/pub"):
+        application.add_api_websocket_route(path, native_socket)
 
 
 def _compose_dashboard_lifespan(application: FastAPI, dashboard: Any) -> None:
@@ -444,6 +488,7 @@ def install_computer_surface(
     *,
     hook_token: str,
     public_origin: str = DEFAULT_PUBLIC_ORIGIN,
+    listen_port: int = 8080,
     redemption_url: str = DEFAULT_REDEMPTION_URL,
     redemption_client: RedemptionClient = redeem_k2_ticket,
     dashboard_app: Any | None = None,
@@ -451,6 +496,8 @@ def install_computer_surface(
 ) -> dict[str, Any]:
     """Install Cleo's K2 handoff and mounted native Hermes dashboard."""
     origin = _validated_https_origin(public_origin)
+    if isinstance(listen_port, bool) or not isinstance(listen_port, int) or not 1 <= listen_port <= 65535:
+        raise ValueError("computer listener port must be between 1 and 65535")
     if redemption_url != DEFAULT_REDEMPTION_URL:
         raise ValueError("computer redemption must use the exact K2 HTTPS endpoint")
     expected_redemption = DEFAULT_REDEMPTION_URL
@@ -593,7 +640,10 @@ def install_computer_surface(
         return response
 
     try:
-        mounted = dashboard_app or _load_hermes_dashboard()
+        mounted = dashboard_app or _load_hermes_dashboard(
+            public_origin=origin, listen_port=listen_port
+        )
+        _install_native_loopback_sockets(application, mounted, listen_port=listen_port)
         application.mount(
             DASHBOARD_PATH,
             HermesComputerGate(mounted, store, public_origin=origin),

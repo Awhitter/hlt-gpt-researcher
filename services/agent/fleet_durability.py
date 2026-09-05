@@ -17,6 +17,20 @@ from urllib.request import Request, urlopen
 AGENT_LOGS = "slack:C0BH5997USK"
 JOB_PREFIX = "hlt-fleet-"
 RELEASE_API = "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest"
+CANARY_REGISTRY_CALL = {
+    "name": "mcp__katailyst2__registry_get",
+    "arguments": {"ref": "agent:cleo", "format": "card"},
+}
+CANARY_PROMPT = (
+    "Read your current canonical agent:cleo record through Katailyst2. "
+    "Use Hermes' native tool_call once with this exact JSON: "
+    + json.dumps(CANARY_REGISTRY_CALL, separators=(",", ":"))
+    + ". The tool name and arguments are supplied; do not use tool_search or "
+    "tool_describe for this fixed daily read. Return your name, current role "
+    "and version with one source link, in no more than three short lines. "
+    "If that exact tool is unavailable, report that failure and stop. "
+    "This is a read-only fleet check: no delegated workers, writes or sends."
+)
 
 
 def _home() -> Path:
@@ -175,12 +189,7 @@ def install() -> dict[str, Any]:
         fields: dict[str, Any] = {
             "name": name, "schedule": schedule, "script": script,
             "no_agent": not canary, "deliver": AGENT_LOGS,
-            "prompt": (
-                "Read your current canonical agent:cleo record through Katailyst2. "
-                "Return your name, current role and version with one source link, "
-                "in no more than three short lines. This is the daily read-only fleet "
-                "check: use registry_get only, no delegated workers, writes or sends."
-            ) if canary else "",
+            "prompt": CANARY_PROMPT if canary else "",
         }
         if canary:
             import grounding

@@ -155,6 +155,30 @@ def test_budget_refuses_a_wire_without_an_output_cap():
     budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
     assert not budget.admit_request(worker, {"model": "gpt-5.6-sol", "input": []})
     assert worker._hlt_scheduled_requests == 0
+    assert worker._hlt_scheduled_rejection["reason"] == "output_cap_missing"
+
+
+def test_budget_refusal_records_only_numeric_diagnostics(caplog):
+    worker = agent()
+    budget.attach_budget(worker, {"hlt_run_budget": budget.CANARY_BUDGET})
+    worker.session_prompt_tokens = 17202
+    worker.session_output_tokens = 487
+    worker._hlt_scheduled_requests = 2
+    request = {"input": "private-payload-" + "x" * 47000, "max_output_tokens": 713}
+    assert not budget.admit_request(worker, request)
+    receipt = worker._hlt_scheduled_rejection
+    expected_bytes = len(json.dumps(request, ensure_ascii=False, default=str).encode("utf-8"))
+    assert receipt["reason"] == "input_reservation"
+    assert receipt["request_bytes"] == expected_bytes
+    assert receipt["observed_input_tokens"] == 17202
+    assert receipt["reserved_input_tokens"] == 0
+    assert receipt["projected_input_tokens"] == 17202 + expected_bytes
+    assert receipt["max_input_tokens"] == 64000
+    assert receipt["requests"] == 2
+    assert receipt["remaining_output_tokens"] == 713
+    assert all(isinstance(value, (int, float)) for key, value in receipt.items() if key != "reason")
+    assert "input_reservation" in caplog.text
+    assert "private-payload" not in caplog.text
 
 
 def health(ready=True, fallback=True):
@@ -259,6 +283,13 @@ def test_installer_idempotently_uses_native_jobs_and_keeps_retired_jobs(tmp_path
     assert canary["model"] == "grok-4.6" and canary["provider"] == "xai-oauth"
     assert canary["reasoning_effort"] == "high"
     assert canary["hlt_run_budget"] == budget.CANARY_BUDGET
+    assert canary["prompt"] == fleet.CANARY_PROMPT
+    assert json.dumps(fleet.CANARY_REGISTRY_CALL, separators=(",", ":")) in canary["prompt"]
+    assert fleet.CANARY_REGISTRY_CALL == {
+        "name": "mcp__katailyst2__registry_get",
+        "arguments": {"ref": "agent:cleo", "format": "card"},
+    }
+    assert "do not use tool_search or tool_describe" in canary["prompt"]
     assert all(row["deliver"] == "slack:C0BH5997USK" for row in records[1:])
     assert sum(row["no_agent"] for row in records[1:]) == 2
     assert all("schedule" not in fields for _, fields in updates)

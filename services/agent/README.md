@@ -274,6 +274,15 @@ approvals stay available. Its web and TUI bundles are built from the exact
 The outer K2 session gate covers both HTTP and WebSocket traffic; a deploy simply
 expires the local session and the profile button opens another one.
 
+The native dashboard declares the exact public host, so authenticated browser
+WebSockets are not mistaken for forbidden non-loopback clients. Its TUI uses
+`127.0.0.1:$PORT` on the same listener for the existing `/api/ws` gateway and
+`/api/pub` event publisher. These two root aliases accept only direct loopback
+peers with a loopback Host header and no forwarded attribution; ordinary browser
+traffic still enters through `/computer` and the K2 cookie/origin gate. Keep
+`PORT`, the native binding, and these aliases aligned: a rendered sidebar alone
+does not prove that Chat or its live event feed works.
+
 `HLT_AGENT_PUBLIC_ORIGIN` is the exact public HTTPS origin used by the handoff
 (production: `https://hlt-hermes.onrender.com`). It must match Cleo's
 `computerTargetOrigin` in K2. `OPENCLAW_HQ_HOOK_TOKEN` remains server-only and
@@ -497,6 +506,9 @@ Budgeted jobs disable the transport's internal stream retry and model fallback;
 budget exhaustion is recorded as failure, never an empty successful reply.
 The existing mission-context hook uses the canary's supplied record instead of
 starting an additional paid wishing-well draw outside that budget.
+The fixed identity lookup supplies the exact native `registry_get` bridge call
+and `card` format, avoiding redundant tool discovery; budget rejection logs
+contain numeric diagnostics only.
 These limits affect only jobs carrying `hlt_run_budget`, not normal Slack/API
 work. No custom model runner, copied credentials, or GitHub Actions is involved.
 Keep a separate ordinary Slack acceptance receipt for acknowledgement latency,
