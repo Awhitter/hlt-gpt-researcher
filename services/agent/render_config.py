@@ -201,7 +201,11 @@ SLACK_PLATFORM_HINT = (
     "with prose.\n"
     "When a tool result is marked persisted-output, use read_spillover with the "
     "saved path plus an offset and limit to retrieve only the needed page; do not "
-    "repeat the remote request just to recover omitted output.\n"
+    "repeat the remote request just to recover omitted output. For a saved K2 "
+    "JSON envelope, use view:'body' to read decoded body text and follow its "
+    "nextOffset. This works in Slack and delegated API runs; do not parse saved "
+    "results with execute_code or terminal. A denied command is not permission "
+    "to retry the equivalent code through another tool.\n"
     "For a specialist handoff, mention the named agent with a bounded output "
     "and keep working on your part; reconcile their reply instead of waiting.\n"
     "For exact interface text or labeled structure, prefer a deterministic "
@@ -471,10 +475,8 @@ def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
 
 
 def api_server_toolsets(servers: Mapping[str, Any]) -> list[str]:
-    """External-run allowlist without Slack-session-local spillover access."""
-    return [
-        toolset for toolset in slack_toolsets(servers) if toolset != "hlt-context"
-    ]
+    """Keep native reads available; spillover ownership is session-bound."""
+    return slack_toolsets(servers)
 
 
 def build_config(

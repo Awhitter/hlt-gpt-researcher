@@ -267,7 +267,11 @@ Five rules that exist because each was once a silent no-op:
    search for and call direct K2 verbs; nested K2 `tool_search` / `tool_describe`
    / `tool_execute` is the compatibility path. MCP results over 16K remain on
    the durable disk behind a bounded, session-bound `read_spillover` page
-   reader, so lowering the active-context payload does not remove capability.
+   reader on both Slack and API runs. Use `view:"body"` for K2 JSON envelopes
+   and its returned byte cursor to recover full body text; do not execute
+   Python or shell merely to decode an already-saved result. Both reader
+   views preserve session ownership and directory boundaries. Lowering the
+   active-context payload must not remove practical reading capability.
    The managed agent's automatic background review stays off because K2 owns
    durable learning.
 

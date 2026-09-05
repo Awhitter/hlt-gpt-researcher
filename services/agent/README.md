@@ -329,10 +329,27 @@ available for deeper custom behavior analysis, but do not reconstruct the
 standard readout from it when the governed tool reports a gap.
 
 An MCP result over 16,000 characters is kept in full under Hermes' durable
-spillover store and replaced in the prompt by a short preview. Slack can page
-that exact saved result with a session-bound `read_spillover` byte cursor; the
-cursor prevents a giant tool payload from crowding out the original request,
-and the external API hook never receives the reader.
+spillover store and replaced in the prompt by a short preview. Slack and
+delegated API runs can page their own saved results with the session-bound
+`read_spillover` byte cursor. For K2's escaped JSON envelopes, pass `view:"body"`
+to recover decoded `body_md`/`body`/`markdown` text, then follow `nextOffset`
+with the same view. The reader follows the known `result`/`structuredContent`
+and `tool.execute.output` envelopes. For K2's compact transport projection,
+it reads the fixed `content[0].text` sibling rather than its pointer metadata;
+no JSON path or expression is evaluated. Each page stays bounded; body decoding
+reads at most 1 MiB
+of source and larger results remain available through raw byte pages. This
+avoids one-line JSON truncation without Python, shell execution, or relaxing
+effect approvals. An absent body is reported as absent, not replaced by the
+metadata preview. Session ownership and spillover-directory checks apply on
+every surface. Never retry a denied command through an equivalent tool.
+The API agent sees the saved handle in `<persisted-output>` and the reader in
+its native deferred-tool catalog. If its schema is not loaded, call
+`tool_describe({"names":["read_spillover"]})`, then
+`tool_call({"name":"read_spillover","arguments":{"handle":"<saved path>","view":"body","offset":0,"limit":8000}})`.
+Continue with the returned `nextOffset` while `hasMore` is true. The native
+dispatcher supplies the session ID; the model cannot select another session
+or inbox through tool arguments. This grants no new AgentMail access.
 `/health.config.mcp_result_size_chars` and `/health.config.tool_search` expose
 the deployed limits. Automatic Hermes background review is disabled for this
 managed agent: K2 owns durable learning, and replaying a finished Slack turn
