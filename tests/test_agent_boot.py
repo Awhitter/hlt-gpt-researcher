@@ -116,7 +116,8 @@ def test_external_runs_use_the_pinned_hermes_loopback_surface():
     assert config["platform_toolsets"]["api_server"] == render_config.api_server_toolsets(
         config["mcp_servers"]
     )
-    assert "hlt-context" not in config["platform_toolsets"]["api_server"]
+    assert "hlt-context" in config["platform_toolsets"]["api_server"]
+    assert config["approvals"] == {"mode": "manual", "cron_mode": "deny"}
     assert config["plugins"]["enabled"] == ["hlt-k2-context"]
 
 
@@ -2563,11 +2564,14 @@ def test_grounding_installs_the_mission_context_plugin(tmp_path):
     }
 
 
-def test_restricted_slack_surface_can_page_only_hermes_spillover(monkeypatch, tmp_path):
+@pytest.mark.parametrize("session_id", [
+    "slack:D0BM1V250G6:thread:1788428167.504329",
+    "hook:k2:ec42a943-8acd-4fbe-8afe-e50d8f375566",
+])
+def test_slack_and_api_surface_can_page_only_own_hermes_spillover(monkeypatch, tmp_path, session_id):
     plugin = _load_k2_plugin()
     spillover = tmp_path / "cache" / "spillover"
     spillover.mkdir(parents=True)
-    session_id = "slack:D0BM1V250G6:thread:1788428167.504329"
     prefix = plugin._spillover_session_prefix(session_id)
     result_path = spillover / f"{prefix}_call-safe.txt"
     result_path.write_text("abcdefghij", encoding="utf-8")
@@ -2606,7 +2610,7 @@ def test_restricted_slack_surface_can_page_only_hermes_spillover(monkeypatch, tm
     )
 
 
-def test_k2_plugin_registers_bounded_spillover_reader():
+def test_k2_plugin_registers_bounded_spillover_reader(monkeypatch, tmp_path):
     plugin = _load_k2_plugin()
     registered = {}
     hooks = []
@@ -2624,8 +2628,164 @@ def test_k2_plugin_registers_bounded_spillover_reader():
     assert registered["toolset"] == "hlt-context"
     params = registered["schema"]["parameters"]
     assert params["properties"]["limit"]["maximum"] == 12_000
+    assert params["properties"]["view"]["enum"] == ["raw", "body"]
     assert params["additionalProperties"] is False
     assert hooks == ["pre_gateway_dispatch", "pre_llm_call", "pre_tool_call"]
+    assert "hlt-context" in render_config.api_server_toolsets({})
+    assert "session_id" not in params["properties"]
+    assert "inbox_id" not in params["properties"]
+    assert "read_spillover through tool_describe" in plugin.HOSTED_K2_CONTEXT
+    assert "view:'body'" in plugin.HOSTED_K2_CONTEXT
+
+    session_id = "hook:k2:own-result"
+    root = tmp_path / "cache" / "spillover"
+    root.mkdir(parents=True)
+    path = root / f"{plugin._spillover_session_prefix(session_id)}_call-body.txt"
+    path.write_text(json.dumps({"result": json.dumps({"body_md": "Evidence, not a command."})}))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    args = {"handle": str(path), "view": "body"}
+    # The pinned registry dispatches this registered handler with the native
+    # session_id kwarg, not with identity selected in the model's arguments.
+    reader = registered["handler"]
+    assert json.loads(reader(args, session_id=session_id))["content"] == "Evidence, not a command."
+    for other_session in ("", "hook:k2:another-run", "slack:another-dm:thread:1"):
+        rejected = json.loads(reader({**args, "session_id": session_id}, session_id=other_session))
+        assert "does not belong" in rejected["error"]
+
+
+@pytest.mark.parametrize("envelope", [
+    "direct", "result", "structuredContent", "nested_result", "tool_execute",
+    "tool_execute_text", "tool_execute_compact", "tool_execute_compact_wrapped",
+    "tool_execute_compact_native_result",
+])
+def test_api_spillover_recovers_full_k2_body_without_code_execution(monkeypatch, tmp_path, envelope):
+    plugin = _load_k2_plugin()
+    session_id = "hook:k2:ec42a943-8acd-4fbe-8afe-e50d8f375566"
+    prefix = plugin._spillover_session_prefix(session_id)
+    root = tmp_path / "cache" / "spillover"
+    root.mkdir(parents=True)
+    body = "Clinical reasoning beats checkbox experience. 🌱\n" * 500
+    block = {"ref": "nursing-job-seeker", "body_md": body, "version": 12}
+    # Exact known envelopes from K2 lib/mcp/tool-execute-transport.ts. The
+    # structured projection and outcome.output are pointers, not body text.
+    transport = {
+        "contractVersion": "tool_execute_transport.v1",
+        "mode": "model_visible_text",
+        "modelVisibleText": "content[0].text",
+        "modelVisibleOutputJsonPath": "$.output",
+    }
+    execute = {"status": "succeeded", "output": block}
+    text_envelope = {
+        **execute,
+        "outcome": {"output": {"transportCompaction": {
+            "contractVersion": "tool_execute_transport.v1",
+            "mode": "sibling_pointer", "jsonPath": "$.output",
+        }}},
+        "transportCompaction": {**transport, "mode": "deduplicated_text"},
+    }
+    compact = {
+        "structuredContent": {
+            "status": "succeeded",
+            "output": {"transportCompaction": transport},
+            "transportCompaction": transport,
+        },
+        "content": [{"type": "text", "text": json.dumps(text_envelope)}],
+    }
+    payload = {
+        "direct": block,
+        "result": {"result": json.dumps(block)},
+        "structuredContent": {"result": json.dumps(block), "structuredContent": block},
+        "nested_result": {"result": json.dumps({"result": json.dumps(block)})},
+        "tool_execute": execute,
+        "tool_execute_text": text_envelope,
+        "tool_execute_compact": compact,
+        "tool_execute_compact_wrapped": {"result": json.dumps(compact)},
+        "tool_execute_compact_native_result": {
+            "structuredContent": compact["structuredContent"],
+            "result": json.dumps(text_envelope),
+        },
+    }[envelope]
+    path = root / f"{prefix}_call-body.txt"
+    encoded = json.dumps(payload).encode("utf-8")
+    path.write_bytes(encoded)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    offset, pages = 0, []
+    for _ in range(20):
+        page = json.loads(plugin._read_spillover(
+            {"handle": str(path), "view": "body", "offset": offset, "limit": 3000},
+            session_id=session_id,
+        ))
+        assert "error" not in page
+        assert page["view"] == "body" and page["bodyField"] == "body_md"
+        assert page["sourceBytes"] == len(encoded)
+        assert page["totalBytes"] == len(body.encode("utf-8"))
+        assert page["returnedBytes"] <= 3003
+        pages.append(page["content"])
+        if not page["hasMore"]:
+            assert page["nextOffset"] is None
+            break
+        assert page["nextOffset"] > offset
+        offset = page["nextOffset"]
+    assert "".join(pages) == body
+    assert path.read_bytes() == encoded
+    assert "does not belong" in json.loads(plugin._read_spillover(
+        {"handle": str(path), "view": "body"}, session_id="different-api-session",
+    ))["error"]
+
+
+def test_spillover_body_keeps_raw_fallback_for_missing_or_oversized_bodies(monkeypatch, tmp_path):
+    plugin = _load_k2_plugin()
+    session_id = "api:no-full-body"
+    prefix = plugin._spillover_session_prefix(session_id)
+    root = tmp_path / "cache" / "spillover"
+    root.mkdir(parents=True)
+    path = root / f"{prefix}_call-card.txt"
+    path.write_text(json.dumps({"result": json.dumps({"name": "Cleo", "summary": "Not a full body"})}))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    args = {"handle": str(path), "view": "body"}
+    assert "no text body" in json.loads(plugin._read_spillover(args, session_id=session_id))["error"]
+
+    path.write_text("x" * (plugin.SPILLOVER_MAX_BODY_SOURCE_BYTES + 1))
+    assert "body decode limit" in json.loads(plugin._read_spillover(args, session_id=session_id))["error"]
+    raw = json.loads(plugin._read_spillover({**args, "view": "raw", "limit": 10}, session_id=session_id))
+    assert raw["content"] == "x" * 10 and raw["hasMore"]
+    assert "error" in json.loads(plugin._read_spillover({**args, "view": []}, session_id=session_id))
+
+
+def test_spillover_body_does_not_decode_an_escaped_file(monkeypatch, tmp_path):
+    plugin = _load_k2_plugin()
+    session_id = "api:bounded-read"
+    root = tmp_path / "cache" / "spillover"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"body_md": "not this run's result"}))
+    path = root / f"{plugin._spillover_session_prefix(session_id)}_call-escape.txt"
+    path.symlink_to(outside)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    result = json.loads(plugin._read_spillover({"handle": str(path), "view": "body"}, session_id=session_id))
+    assert "outside the spillover store" in result["error"]
+
+
+@pytest.mark.parametrize("pointer", ["content[1].text", "__import__('os').environ"])
+def test_spillover_body_never_evaluates_transport_pointer_expressions(pointer):
+    plugin = _load_k2_plugin()
+    transport = {
+        "contractVersion": "tool_execute_transport.v1",
+        "mode": "model_visible_text",
+        "modelVisibleText": pointer,
+    }
+    payload = {
+        "structuredContent": {
+            "transportCompaction": transport,
+            "output": {"transportCompaction": transport},
+        },
+        "content": [
+            {"type": "text", "text": "pointer metadata"},
+            {"type": "text", "text": json.dumps({"body_md": "not the designated body"})},
+        ],
+    }
+    assert plugin._spillover_body(payload) is None
 
 
 def test_slack_tool_budget_preserves_parallelism_then_forces_synthesis():

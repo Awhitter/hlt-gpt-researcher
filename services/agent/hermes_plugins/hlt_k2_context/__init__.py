@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 SPILLOVER_DEFAULT_PAGE_CHARS = 8_000
 SPILLOVER_MAX_PAGE_CHARS = 12_000
+SPILLOVER_MAX_BODY_SOURCE_BYTES = 1_048_576
 _SAFE_SPILLOVER_NAME = re.compile(r"[A-Za-z0-9_.-]{1,220}\.txt")
 SLACK_TOOL_ROUND_LIMIT = 5
 EFFECT_POLICY_VERSION = "agent_effect_policy.v1"
@@ -355,7 +356,10 @@ HOSTED_K2_CONTEXT = (
     "this turn. Do not call katailyst.well again. Follow the per-run retrieval and "
     "final-answer budget in the system instructions; use supplied refs directly, "
     "allow at most one focused recovery search, and return a useful final before "
-    "the deadline."
+    "the deadline. For a persisted K2 result, load read_spillover through "
+    "tool_describe and use tool_call with its saved handle, view:'body', and "
+    "returned nextOffset to read the full body. Do not use code or shell to "
+    "decode an already-saved result."
 )
 
 
@@ -439,6 +443,50 @@ def _pre_tool_call(
     return None
 
 
+def _spillover_body(value: Any) -> tuple[str, str] | None:
+    """Unwrap known K2 result envelopes, not arbitrary expressions or paths."""
+    for _ in range(4):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, RecursionError):
+                return None
+        if not isinstance(value, Mapping):
+            return None
+        structured = value.get("structuredContent")
+        transport = (
+            structured.get("transportCompaction")
+            if isinstance(structured, Mapping)
+            else value.get("transportCompaction")
+        )
+        if (
+            isinstance(transport, Mapping)
+            and transport.get("contractVersion") == "tool_execute_transport.v1"
+            and transport.get("mode") == "model_visible_text"
+            and transport.get("modelVisibleText") == "content[0].text"
+        ):
+            # K2's compact structured projection is only metadata. Its fixed
+            # content[0].text sibling (or Hermes' saved result text) carries
+            # the complete deduplicated envelope. Never evaluate jsonPath.
+            content = value.get("content")
+            first = content[0] if isinstance(content, list) and content else None
+            value = (
+                first.get("text")
+                if isinstance(first, Mapping) and first.get("type") == "text"
+                else value.get("result")
+            )
+            continue
+        for field in ("body_md", "body", "markdown"):
+            if isinstance(value.get(field), str) and value[field]:
+                return value[field], field
+        output = value.get("output")
+        if isinstance(output, (Mapping, str)):
+            value = output
+        else:
+            value = structured if isinstance(structured, Mapping) else value.get("result")
+    return None
+
+
 def _read_spillover(args: Any = None, **context: Any) -> str:
     """Read one bounded page from a Hermes-owned persisted tool result.
 
@@ -446,7 +494,9 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
     This narrow reader lets the model page its own prior result without using
     a new terminal/file round: it accepts only a saved result's basename (or
     the exact path shown in ``persisted-output``), cannot traverse elsewhere,
-    requires the originating session, and never mutates the file.
+    requires the originating session, and never mutates the file. ``view:body``
+    decodes a bounded K2 JSON envelope before paging its body, so one-line JSON
+    does not force a model to execute code simply to recover its own evidence.
     """
     values = args if isinstance(args, Mapping) else {}
     raw_handle = str(values.get("handle") or "").strip()
@@ -461,6 +511,10 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
     )
     if not session_prefix or not filename.startswith(f"{session_prefix}_"):
         return json.dumps({"error": "saved result does not belong to this session"})
+
+    view = values.get("view", "raw")
+    if not isinstance(view, str) or view not in {"raw", "body"}:
+        return json.dumps({"error": "view must be raw or body"})
 
     try:
         offset = int(values.get("offset", 0))
@@ -484,17 +538,40 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
 
     try:
         total_bytes = path.stat().st_size
+        source_bytes = total_bytes
+        body_field = None
+        if view == "body":
+            if source_bytes > SPILLOVER_MAX_BODY_SOURCE_BYTES:
+                return json.dumps({"error": "saved result exceeds body decode limit; use view:raw byte pages"})
+            with path.open("rb") as handle:
+                encoded = handle.read(SPILLOVER_MAX_BODY_SOURCE_BYTES + 1)
+            if len(encoded) > SPILLOVER_MAX_BODY_SOURCE_BYTES:
+                return json.dumps({"error": "saved result exceeds body decode limit; use view:raw byte pages"})
+            try:
+                decoded = _spillover_body(json.loads(encoded))
+            except (ValueError, UnicodeError, RecursionError):
+                decoded = None
+            if decoded is None:
+                return json.dumps({
+                    "error": "saved result has no text body; use view:raw for its metadata or skill.content for a needed K2 body",
+                })
+            body, body_field = decoded
+            body_bytes = body.encode("utf-8")
+            total_bytes = len(body_bytes)
         if offset > total_bytes:
             return json.dumps({"error": "offset exceeds the saved result size"})
-        with path.open("rb") as handle:
-            handle.seek(offset)
-            raw_page = handle.read(limit + 4)
-    except OSError:
+        if view == "body":
+            raw_page = body_bytes[offset:offset + limit + 4]
+        else:
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                raw_page = handle.read(limit + 4)
+    except (OSError, UnicodeError):
         return json.dumps({"error": "saved result could not be read"})
 
-    # Offsets are bytes so a late page never rereads the whole file. The
-    # persisted result is valid UTF-8; extend by at most three bytes to finish
-    # the final code point. Reject caller-chosen offsets inside a code point.
+    # Raw pages seek directly; body pages use byte cursors within the bounded
+    # decoded envelope. Extend by at most three bytes to finish the final UTF-8
+    # code point. Reject caller-chosen offsets inside a code point.
     target = min(limit, len(raw_page))
     page = None
     consumed = 0
@@ -519,6 +596,7 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
             "hasMore": next_offset < total_bytes,
             "nextOffset": next_offset if next_offset < total_bytes else None,
             "content": page,
+            **({"view": "body", "bodyField": body_field, "sourceBytes": source_bytes} if view == "body" else {}),
         },
         ensure_ascii=False,
     )
@@ -809,7 +887,10 @@ def register(ctx: Any) -> None:
     description = (
         "Read one bounded page from a large tool result Hermes already saved. "
         "Pass the exact path or filename shown inside persisted-output plus an "
-        "optional byte offset and limit. Read-only and spillover-scoped."
+        "optional byte offset and limit. For a saved K2 JSON envelope, choose "
+        "view:body to read decoded body text instead of escaped one-line JSON; "
+        "follow nextOffset using the same view. Available to Slack and API runs. "
+        "Read-only and session/spillover-scoped; no shell or code execution needed."
     )
     ctx.register_tool(
         name="read_spillover",
@@ -829,6 +910,12 @@ def register(ctx: Any) -> None:
                         "minimum": 0,
                         "default": 0,
                         "description": "UTF-8 byte offset returned by the prior page.",
+                    },
+                    "view": {
+                        "type": "string",
+                        "enum": ["raw", "body"],
+                        "default": "raw",
+                        "description": "raw pages the saved UTF-8 bytes; body decodes a K2 envelope and pages body_md/body/markdown bytes (source at most 1 MiB). Keep the same view between pages.",
                     },
                     "limit": {
                         "type": "integer",
