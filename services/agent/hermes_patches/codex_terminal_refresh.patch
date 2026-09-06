@@ -1,0 +1,48 @@
+diff --git a/agent/credential_pool.py b/agent/credential_pool.py
+--- a/agent/credential_pool.py
++++ b/agent/credential_pool.py
+@@ -1066,6 +1066,23 @@ class CredentialPool:
+         if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
+             return entry
+         try:
++            if _is_manual_source(entry.source):
++                # Manual grants own their pool row, not providers.openai-codex.
++                # Re-read under the native refresh lock to adopt a winner's
++                # rotation without borrowing another account's singleton.
++                with _auth_store_lock():
++                    persisted = next((
++                        row for row in read_credential_pool(self.provider)
++                        if isinstance(row, dict) and row.get("id") == entry.id
++                        and row.get("source") == entry.source
++                    ), None)
++                if isinstance(persisted, dict):
++                    stored = PooledCredential.from_dict(self.provider, persisted)
++                    if (stored.access_token != entry.access_token
++                            or stored.refresh_token != entry.refresh_token):
++                        self._replace_entry(entry, stored)
++                        return stored
++                return entry
+             with _auth_store_lock():
+                 auth_store = _load_auth_store()
+                 state = _load_provider_state(auth_store, "openai-codex")
+@@ -1934,6 +1951,20 @@ class CredentialPool:
+                 # remove all singleton-seeded (device_code) entries from the
+                 # in-memory pool.  Mirrors the xAI and Nous quarantine paths.
+                 if auth_mod._is_terminal_codex_oauth_refresh_error(exc):
++                    if _is_manual_source(entry.source):
++                        # Manual grants are independent of the auth singleton.
++                        # Quarantine only this grant, after checking for a winner.
++                        reason = getattr(exc, "code", None)
++                        if reason not in _TERMINAL_AUTH_REASONS:
++                            reason = "invalid_grant"
++                        with self._lock:
++                            self._mark_exhausted(entry, 401, error_context={
++                                "reason": reason,
++                                "message": "Codex OAuth grant needs a fresh login.",
++                            })
++                            if self._current_id == entry.id:
++                                self._current_id = None
++                        return None
+                     logger.debug(
+                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
+                     )
