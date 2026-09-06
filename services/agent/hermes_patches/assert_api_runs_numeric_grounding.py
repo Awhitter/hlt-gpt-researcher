@@ -100,7 +100,23 @@ funnel_application_submitted — 2 people, conversion 0.21%, drop-off 99.79%""",
             "</untrusted_tool_result>"
         ),
     )
-    pending = [fabricated, corrected]
+    human_labels = _FakeAgent(
+        None,
+        "Site people (browser) | 342 | 626\n"
+        "Recorded applications: 0.\n"
+        "Inspect the Applying view — the 0 is the product fact.\n"
+        "Opening-question count is unreadable (PostHog 504 timeout).",
+        tool_result={"output": {"readouts": [
+            {"key": "humans", "question": "How many nurses were on the site?", "value": 342},
+            {"key": "humans", "question": "How many nurses were on the site?", "value": 626},
+            {"key": "applications", "value": 0},
+        ]}},
+    )
+    wrong_column = _FakeAgent(
+        None,
+        "| Search count | 975 | 37 |",
+    )
+    pending = [fabricated, corrected, human_labels, wrong_column]
 
     def create_agent(**kwargs: Any) -> _FakeAgent:
         agent = pending.pop(0)
@@ -130,6 +146,22 @@ funnel_application_submitted — 2 people, conversion 0.21%, drop-off 99.79%""",
     assert passed["grounding"]["status"] == "passed"
     assert passed["output"] == corrected.final_response
     assert corrected.closed is True
+
+    label_response = await adapter._handle_runs(_FakeRequest({"input": "Read the metrics."}))
+    label_run = json.loads(label_response.text)["run_id"]
+    label_result = await _wait_for_terminal(adapter, label_run)
+    assert label_result["status"] == "completed"
+    assert label_result["output"] == human_labels.final_response
+    assert label_result["grounding"]["referenced_claims"] == 1
+    assert human_labels.closed is True
+
+    column_response = await adapter._handle_runs(_FakeRequest({"input": "Read the metrics."}))
+    column_run = json.loads(column_response.text)["run_id"]
+    column_result = await _wait_for_terminal(adapter, column_run)
+    assert column_result["status"] == "failed"
+    assert "output" not in column_result
+    assert column_result["grounding"]["unsupported"] == [{"value": "37", "line": 1}]
+    assert wrong_column.closed is True
 
 
 def main() -> None:
