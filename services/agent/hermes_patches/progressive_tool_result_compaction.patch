@@ -94,9 +94,9 @@ index 1fc3085..ab28826 100644
 -        "Recovery: page through the saved file with read_file (offset/limit) or "
 -        "process it with execute_code — do NOT re-request the same data from the "
 -        "remote API; the full result is already on disk.\n\n"
-+        "Use read_file with offset and limit, or the platform's read_spillover "
-+        "tool when host file access is restricted, to retrieve only the needed "
-+        "section.\n"
++        "Use read_spillover with view:schema for complete tool call inputs, "
++        "view:body for body text, or view:raw for byte pages. Do not use a "
++        "line-based reader for escaped single-line JSON.\n"
 +    )
 +    msg += (
 +        "Recovery: page through the saved result instead of re-requesting the same "
@@ -112,13 +112,17 @@ index 1fc3085..ab28826 100644
  ) -> str:
      """Layer 2: persist oversized result into the sandbox, return preview + path.
  
-@@ -344,7 +357,7 @@ def maybe_persist_tool_result(
+@@ -344,7 +357,11 @@ def maybe_persist_tool_result(
      if len(content) <= effective_threshold:
          return content
  
 -    filename = _safe_result_filename(tool_use_id)
 +    filename = _safe_result_filename(tool_use_id, session_id=session_id)
      preview, has_more = generate_preview(content, max_chars=config.preview_size)
++    from hlt_tool_result_views import tool_schema_preview
++    schema_preview = tool_schema_preview(content)
++    if schema_preview is not None:
++        preview, has_more = schema_preview, True
  
      # Always persist host-side first: $HERMES_HOME/cache/spillover is the
 @@ -400,6 +413,7 @@ def enforce_turn_budget(

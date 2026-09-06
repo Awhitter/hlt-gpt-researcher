@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _load_function(
@@ -145,6 +146,28 @@ def assert_progressive_result_contract(hermes_root: Path) -> None:
     assert "read_spillover" in persisted
     assert "re-requesting the same data" in persisted
     assert "execute_code" not in persisted
+    assert "view:schema" in persisted
+
+    # Exercise the real storage function, not just a string marker: a schema
+    # preview must be complete while the exact original is still persisted.
+    saved = {}
+    storage_namespace.update({
+        "DEFAULT_BUDGET": SimpleNamespace(preview_size=1500, resolve_threshold=lambda _name: 16000),
+        "generate_preview": lambda content, max_chars: (content[:max_chars], True),
+        "_write_to_spillover": lambda content, filename: saved.update(content=content, filename=filename) or "/data/hermes/cache/spillover/own.txt",
+        "_is_host_side_env": lambda _env: True,
+        "logger": SimpleNamespace(info=lambda *_args: None),
+    })
+    persist_result = _load_function(storage_path, "maybe_persist_tool_result", assignments=set(), namespace=storage_namespace)
+    schema = {"type": "object", "required": ["days"], "properties": {"days": {"enum": [7, 28]}}}
+    raw = json.dumps({"result": json.dumps({"detailLevel": "schema", "tool": {
+        "name": "example", "inputSchema": schema, "outputSchema": {"description": "x" * 40000},
+    }})})
+    result = persist_result(raw, "mcp__katailyst2__tool_describe", "call", session_id="own")
+    assert saved["content"] == raw
+    assert saved["filename"].startswith(session_prefix("own") + "_")
+    assert "Complete call/input schema" in result and len(result) < 10000
+    assert '"days"' in result and "40000" not in result
 
     executor_source = (hermes_root / "agent" / "tool_executor.py").read_text(
         encoding="utf-8"

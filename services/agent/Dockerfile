@@ -65,6 +65,7 @@ ENV HLT_MANAGED_MODEL_ROUTE=1
 # contract assertion below and the service gates green.
 COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py
 COPY fleet_run_budget.py /app/fleet_run_budget.py
+COPY hermes_plugins/hlt_k2_context/tool_result_views.py /app/hlt_tool_result_views.py
 COPY hermes_patches /tmp/hermes-patches
 RUN git init /opt/hermes \
     && git -C /opt/hermes remote add origin \
