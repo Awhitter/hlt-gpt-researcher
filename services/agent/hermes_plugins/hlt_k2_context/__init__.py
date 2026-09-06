@@ -351,18 +351,36 @@ def effect_policy_decision(tool_name: str, args: Any = None) -> dict[str, str] |
         "rule_key": f"{EFFECT_POLICY_VERSION}:{category}",
     }
 
+K2_TOOL_CONTEXT = (
+    "[K2 tool calling — shared across Slack and hosted work] "
+    "K2 registry_get, tool_search, tool_describe, tool_execute and read_spillover "
+    "have directly visible schemas. A tool:* capability ref is NOT a native "
+    "Hermes tool name. For a supplied ref, call mcp__katailyst2__tool_describe "
+    "with name:ref, the needed action and detailLevel:'schema', then "
+    "mcp__katailyst2__tool_execute with toolRef:ref and args matching that schema. "
+    "If the input contract is already supplied, execute immediately. Use K2 "
+    "tool_search for an unknown capability, not native tool_search for a graph ref. "
+    "Other native/MCP tools remain available through Hermes discovery.\n"
+    "For standard Nursing Mastery 7d/28d funnel counts, the current route is "
+    "tool:nm-analytics-readout, action:'readout', days:7 or 28, "
+    "keys:'humans,walk_started,email_given,applications'. Use its measured "
+    "readouts and population caveats; keep browser people, server identities and "
+    "application records distinct. Raw PostHog skills are for custom behavior "
+    "analysis, not a prerequisite or substitute for this readout.\n"
+    "For persisted-output, call read_spillover directly with the saved handle, "
+    "view:'schema' for complete call inputs or view:'body' for decoded text, "
+    "and follow nextOffset. Use a complete inline schema immediately. Do not "
+    "re-request saved data or run code/shell to decode it."
+)
+
 HOSTED_K2_CONTEXT = (
     "[Katailyst2 hosted mission — bounded handoff already supplied] "
     "K2 has already provided the mission context and any selected context refs in "
     "this turn. Do not call katailyst.well again. Follow the per-run retrieval and "
     "final-answer budget in the system instructions; use supplied refs directly, "
     "allow at most one focused recovery search, and return a useful final before "
-    "the deadline. For a persisted K2 result, load read_spillover through "
-    "tool_describe and use tool_call with its saved handle, view:'schema' for "
-    "complete call inputs or view:'body' for text, and returned nextOffset. "
-    "Use an inline complete call schema immediately when present. Do not use code or shell to "
-    "decode an already-saved result."
-)
+    "the deadline.\n"
+) + K2_TOOL_CONTEXT
 
 
 def _spillover_session_prefix(session_id: str) -> str:
@@ -890,7 +908,7 @@ def _pre_llm_call(
         turn_id[:24],
     )
     context = result.get("context")
-    return {"context": context} if isinstance(context, str) and context else None
+    return {"context": K2_TOOL_CONTEXT + ("\n" + context if isinstance(context, str) and context else "")}
 
 
 def register(ctx: Any) -> None:

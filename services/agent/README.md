@@ -317,28 +317,32 @@ at card or concise depth first and load a full body only when needed; fetching
 the runtime pack again or opening several full registry bodies just burns the
 working context without adding authority.
 
-Hermes' own progressive bridge is the first discovery door: search for a
-direct `mcp__katailyst2__<verb>`, describe one candidate, then call it. Host
-search returns three candidates by default (eight maximum), and a multi-name
-describe reveals three tools at a time while retaining each complete input
-schema. K2's compatibility `tool_describe` starts at `detailLevel: summary` and
-expands only the exact action being invoked. The PostHog `exec` bridge follows
+K2 `registry_get`, `tool_search`, `tool_describe`, `tool_execute`, and the
+`read_spillover` reader keep their native schemas directly visible through
+`tools.tool_search.always_loaded`. All other MCP/plugin capabilities stay
+progressively discoverable. The native assembly overlay only promotes tools
+already granted to the session; it does not change dispatch, approvals or
+child scope. Existing bridge calls remain valid after a restart. A `tool:*`
+registry ref is a K2 capability, not a native Hermes tool name: describe that
+ref through K2, then execute it with its authored inputs. The PostHog `exec` bridge follows
 its live CLI contract: `search`, one `info`, optional field-level `schema`, then
 `call --json`.
 
 An entity, registered tool, or authoritative source already named in a request
-is a resolved route, not a cue for another discovery sweep. Cleo describes and
-executes that exact K2 route before polling the pending Well, searching the
-catalog or registry, or loading adjacent skills; one focused recovery search is
-available if the direct route fails. Standard Nursing Mastery funnel pulses use
+is a resolved route, not a cue for another discovery sweep. One shared tool
+agreement is injected for substantive Slack and hosted turns, separately from
+the soul and without duplicating it in the permanent transcript. Cleo executes
+known inputs immediately or describes the exact capability once. Standard Nursing Mastery funnel pulses use
 the HLT-org `tool:nm-analytics-readout` for the current 7-day and 28-day
-decision readout. Cleo skips discovery for this known route and executes both
-windows in one parallel round with the bounded key set
-`humans,walk_started,email_given,applications`; a requested unreadable window
-gets one same-key retry. The response keeps the requested unfenced 7d/28d Slack
-table, measured zeroes, and explicit unreadable states. Raw PostHog remains
+decision readout, with `days:7` and `days:28` and the bounded key set
+`humans,walk_started,email_given,applications`. The response keeps the requested
+unfenced 7d/28d Slack table, measured zeroes, and explicit unreadable states. Raw PostHog remains
 available for deeper custom behavior analysis, but do not reconstruct the
 standard readout from it when the governed tool reports a gap.
+
+Boot narrowly refreshes the known September 3 persistent PostHog skill's
+standard-readout and Slack-table passages. Its custom procedures, references,
+and learned additions remain intact; unchanged/newer text is not replaced.
 
 An MCP result over 16,000 characters is kept in full under Hermes' durable
 spillover store and replaced in the prompt by a short preview. Tool descriptions
@@ -363,10 +367,8 @@ effect approvals. An absent body is reported as absent, not replaced by the
 metadata preview. Session ownership and spillover-directory checks apply on
 every surface. Prefer this byte reader over line-based `read_file` for escaped
 JSON. Never retry a denied command through an equivalent tool.
-The API agent sees the saved handle in `<persisted-output>` and the reader in
-its native deferred-tool catalog. If its schema is not loaded, call
-`tool_describe({"names":["read_spillover"]})`, then
-`tool_call({"name":"read_spillover","arguments":{"handle":"<saved path>","view":"body","offset":0,"limit":8000}})`.
+The API agent sees the saved handle in `<persisted-output>` and calls the
+directly visible `read_spillover({"handle":"<saved path>","view":"body","offset":0,"limit":8000})`.
 Continue with the returned `nextOffset` while `hasMore` is true. The native
 dispatcher supplies the session ID; the model cannot select another session
 or inbox through tool arguments. This grants no new AgentMail access.
