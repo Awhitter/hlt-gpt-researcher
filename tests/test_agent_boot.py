@@ -625,6 +625,7 @@ def test_progressive_tool_results_bound_context_without_hiding_capability(tmp_pa
         "max_search_limit": 8,
         "listing": "auto",
         "listing_max_tokens": 2_000,
+        "always_loaded": list(render_config.ALWAYS_LOADED_TOOLS),
     }
     assert config["tool_budget"]["mcp_result_size_chars"] == 16_000
     assert "hlt-context" in config["platform_toolsets"]["slack"]
@@ -635,6 +636,7 @@ def test_progressive_tool_results_bound_context_without_hiding_capability(tmp_pa
         "default_limit": 3,
         "max_limit": 8,
         "listing_max_tokens": 2_000,
+        "always_loaded": list(render_config.ALWAYS_LOADED_TOOLS),
     }
 
 
@@ -2607,7 +2609,7 @@ def test_k2_plugin_registers_bounded_spillover_reader(monkeypatch, tmp_path):
     assert "hlt-context" in render_config.api_server_toolsets({})
     assert "session_id" not in params["properties"]
     assert "inbox_id" not in params["properties"]
-    assert "read_spillover through tool_describe" in plugin.HOSTED_K2_CONTEXT
+    assert "call read_spillover directly" in plugin.HOSTED_K2_CONTEXT
     assert "view:'body'" in plugin.HOSTED_K2_CONTEXT
 
     session_id = "hook:k2:own-result"
@@ -3178,7 +3180,7 @@ def test_mission_context_hook_skips_small_talk_and_draws_once(monkeypatch):
         session_id="session-1",
         turn_id="turn-1",
     ) == {
-        "context": "one useful K2 packet"
+        "context": plugin.K2_TOOL_CONTEXT + "\none useful K2 packet"
     }
     assert calls == [
         (
@@ -5715,11 +5717,10 @@ def test_slack_gets_its_own_prompt_guidance():
     assert "at most five tool-calling rounds" in hint
     assert "plain Markdown pipe table" in hint
     assert "never a fenced code block" in hint
-    assert "describe one direct mcp__katailyst2__<verb>" in hint
-    assert "detailLevel 'summary' first" in hint
+    assert "nested tool_search/tool_describe/tool_execute compatibility" not in hint
     assert "mcp__posthog__exec as a CLI bridge" in hint
     assert "call --json <tool_name> <json_input>" in hint
-    assert "use read_spillover" in hint
+    assert "call read_spillover directly" in _load_k2_plugin().K2_TOOL_CONTEXT
 
 
 def test_cleo_fast_paths_named_k2_sources_and_governed_funnel_readout():
@@ -5729,9 +5730,8 @@ def test_cleo_fast_paths_named_k2_sources_and_governed_funnel_readout():
     ).read_text(encoding="utf-8")
     readme = (SERVICE_DIR / "README.md").read_text(encoding="utf-8")
 
-    for contract in (hint, cleo_briefing, readme):
+    for contract in (_load_k2_plugin().K2_TOOL_CONTEXT, cleo_briefing, readme):
         assert "tool:nm-analytics-readout" in contract
-        assert "do not reconstruct" in contract
 
     assert "routing is resolved: use that exact direct route" in hint
     assert "before any Well poll" in hint
@@ -5741,36 +5741,15 @@ def test_cleo_fast_paths_named_k2_sources_and_governed_funnel_readout():
 
 def test_cleo_keyed_funnel_pulse_stays_inline_and_keeps_the_native_table():
     hint = render_config.build_config(FULL_ENV)["platform_hints"]["slack"]["append"]
-    cleo_briefing = (
-        SERVICE_DIR / "grounding" / "cleo" / "AGENTS.md"
-    ).read_text(encoding="utf-8")
-    readme = (SERVICE_DIR / "README.md").read_text(encoding="utf-8")
-    contracts = (hint, cleo_briefing, readme)
-
-    for contract in contracts:
-        assert "humans,walk_started,email_given,applications" in contract
-        assert "one parallel" in contract
-        assert (
-            "one same-key retry" in contract
-            or "retry that same keyed window once" in contract
-            or "Retry a window once" in contract
-        )
-        assert "do not reconstruct" in contract
-
-    assert "skip discovery and tool_describe" in hint
-    assert "output.readouts" in hint
-    assert "How many nurses were on the site?" in hint
-    assert "How many answered an opening question?" in hint
-    assert "How many gave us an email?" in hint
-    assert "How many nurse applications did we receive?" in hint
-
-    table_header = (
-        "| Window | Site nurses | Walk answers | Emails | Applications | Read state |"
-    )
-    assert table_header in hint
-    assert table_header in cleo_briefing
-    assert "exactly 7d and 28d rows" in hint
-    assert "Do not replace this requested table with prose" in cleo_briefing
+    shared = _load_k2_plugin().K2_TOOL_CONTEXT
+    assert "humans,walk_started,email_given,applications" in shared
+    assert "days:7 or 28" in shared
+    assert "execute immediately" in shared
+    assert "not a prerequisite or substitute" in shared
+    assert "browser people, server identities" in shared
+    assert "plain Markdown pipe table" in hint
+    assert "never a fenced code block" in hint
+    assert "tool:nm-analytics-readout" not in hint  # one shared route, not a Slack-only duplicate
 
 
 # --- talking to the team, not about the plumbing ----------------------------

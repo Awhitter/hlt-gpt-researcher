@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import math
 import os
 import re
@@ -48,6 +49,64 @@ LEGACY_MARKERS = ("<!-- managed-by: hlt-brian-boot -->",)
 
 def _is_managed(text: str) -> bool:
     return MARKER in text or any(marker in text for marker in LEGACY_MARKERS)
+
+
+def refresh_analytics_skill(home: Path) -> list[str]:
+    """Correct known stale instructions without taking over a learned skill.
+
+    The September 3 persistent skill predates the governed readout and native
+    Slack tables. Retain its custom PostHog procedures, references and additions;
+    only refresh these exact observed passages. Repeated boots are no-ops.
+    """
+    root = home / "skills" / "nursing-mastery-posthog"
+    updates = {
+        "SKILL.md": (
+            ('description: "Use when counting NM landings, bounce, clicks, or conversions in PostHog. Chart splits; never call a pageview a click."',
+             'description: "Custom NM PostHog behavior analysis: page landings, bounce and clicks. Standard 7d/28d funnel counts use K2 tool:nm-analytics-readout directly."'),
+            ("## Prerequisites", "## Standard funnel readout\n\n"
+             "For current 7d/28d site people, walk answers, emails and applications, "
+             "use K2 `tool:nm-analytics-readout` first. Its `readout` action takes "
+             "`days` and `keys: humans,walk_started,email_given,applications`. "
+             "Keep each returned population and source caveat. The PostHog "
+             "procedure below is for custom behavior analysis, not a prerequisite "
+             "or substitute for that governed readout.\n\n## Prerequisites"),
+            ("one action. No process narration. Slack: code-block table, not markdown.",
+             "one action. Progress stays in the native stream. Slack tables use "
+             "unfenced Markdown pipes, rendered as native tables."),
+        ),
+        "references/three-authority-owner-readout.md": (
+            ("Use with `references/recruiting-funnel-readback.md`. This is the owner",
+             "For current standard 7d/28d counts, use K2 `tool:nm-analytics-readout` "
+             "first. This reference covers custom historical investigations.\n\n"
+             "Use with `references/recruiting-funnel-readback.md`. This was the owner"),
+            ("Slack has\nno tables — code block plus a 7d stage-bar from the same counts.",
+             "Slack supports native tables: use unfenced Markdown pipes, "
+             "with an optional stage-bar using the same measured counts."),
+        ),
+    }
+    changed = []
+    for relative, replacements in updates.items():
+        path = root / relative
+        if not path.is_file() or path.is_symlink() or root.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            continue
+        try:
+            original = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            logging.getLogger(__name__).warning("Analytics skill refresh skipped %s: %s", relative, type(exc).__name__)
+            continue
+        text = original
+        if relative == "SKILL.md" and replacements[0][0] not in original:
+            replacements = replacements[2:]  # don't add routing to an independently revised skill
+        for old, new in replacements:
+            if old in text and new not in text:
+                text = text.replace(old, new, 1)
+        if text != original:
+            try:
+                path.write_text(text, encoding="utf-8")
+                changed.append(relative)
+            except OSError as exc:
+                logging.getLogger(__name__).warning("Analytics skill refresh skipped %s: %s", relative, type(exc).__name__)
+    return changed
 
 
 GROUNDING_SRC = Path(__file__).resolve().parent / "grounding"
@@ -233,6 +292,7 @@ def install(
             )
             installed.append(skill_dir.name)
     summary["skills_installed"] = installed
+    summary["analytics_skill_refreshed"] = refresh_analytics_skill(home_path)
 
     # --- runtime plugins --------------------------------------------------
     # User plugins are the supported pinned-Hermes extension seam. Copy the

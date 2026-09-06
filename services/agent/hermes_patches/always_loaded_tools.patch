@@ -1,0 +1,51 @@
+diff --git a/tools/tool_search.py b/tools/tool_search.py
+--- a/tools/tool_search.py
++++ b/tools/tool_search.py
+@@ -119,6 +119,10 @@ class ToolSearchConfig:
+     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
+     listing_max_tokens: int = 4000
+ 
++    # Frequent tools keep their native input schemas; all other MCP/plugin
++    # tools remain searchable. This changes visibility, never session scope.
++    always_loaded: Tuple[str, ...] = ()
++
+     @classmethod
+     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
+         """Build a config from a raw dict / bool / None.
+@@ -168,6 +172,12 @@ class ToolSearchConfig:
+             listing = "auto"
+         listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
+ 
++        always_loaded_raw = raw.get("always_loaded", [])
++        always_loaded = tuple(dict.fromkeys(
++            name.strip() for name in always_loaded_raw
++            if isinstance(name, str) and name.strip()
++        )) if isinstance(always_loaded_raw, (list, tuple)) else ()
++
+         return cls(
+             enabled=enabled,
+             threshold_pct=threshold_pct,
+@@ -176,6 +187,7 @@ class ToolSearchConfig:
+             max_search_limit=max_search_limit,
+             listing=listing,
+             listing_max_tokens=listing_max_tokens,
++            always_loaded=always_loaded,
+         )
+ 
+ 
+@@ -924,5 +936,15 @@ def assemble_tool_defs(
+                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
+ 
+     visible, deferrable = classify_tools(incoming)
++    # Promote only definitions already granted to this session. Keep the
++    # classifier and bridge scope unchanged so an older conversation can still
++    # describe/call the same tool through the bridge after this config changes.
++    eager_names = frozenset(config.always_loaded)
++    if eager_names:
++        visible.extend(td for td in deferrable
++                       if (td.get("function") or {}).get("name") in eager_names)
++        deferrable = [td for td in deferrable
++                      if (td.get("function") or {}).get("name") not in eager_names]
++
+     if not deferrable:
+         return AssemblyResult(tool_defs=incoming, activated=False)

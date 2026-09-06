@@ -60,6 +60,16 @@ DEFAULT_MCP_RESULT_SIZE_CHARS = 16_000
 DEFAULT_TOOL_SEARCH_LIMIT = 3
 MAX_TOOL_SEARCH_LIMIT = 8
 TOOL_LISTING_MAX_TOKENS = 2_000
+# K2 is the daily workbench, not a cold integration. Keep only these five
+# existing tool schemas visible; the rest of the catalog remains progressive.
+# The native assembly overlay never adds tools absent from the session scope.
+ALWAYS_LOADED_TOOLS = (
+    "mcp__katailyst2__registry_get",
+    "mcp__katailyst2__tool_search",
+    "mcp__katailyst2__tool_describe",
+    "mcp__katailyst2__tool_execute",
+    "read_spillover",
+)
 # Recovery order, not a second policy engine. Hermes walks this list only when
 # the active route fails after its bounded retry. Every entry is a real model
 # id from the provider's current catalog; provider-only strings are not a valid
@@ -173,39 +183,10 @@ SLACK_PLATFORM_HINT = (
     "source, routing is resolved: use that exact direct route before any "
     "Well poll, catalog search, registry search, or skill load. Use at most one "
     "focused discovery recovery only if the direct route fails.\n"
-    "Hermes already exposes K2 progressively: use host tool_search, describe one "
-    "direct mcp__katailyst2__<verb>, then call it. Prefer that direct verb over "
-    "K2's nested tool_search/tool_describe/tool_execute compatibility bridge. "
-    "If the bridge is genuinely needed, request tool_describe detailLevel "
-    "'summary' first and ask for action plus schema only for the exact action "
-    "you are ready to invoke.\n"
     "PostHog is exposed through mcp__posthog__exec as a CLI bridge. Use search "
     "<regex> (or tools), info <tool_name> once, schema <tool_name> <field_path> "
     "only for hinted complex fields, then call --json <tool_name> <json_input>. "
     "Reuse the discovered contract; do not guess action names or wrapper shapes.\n"
-    "For a standard Nursing Mastery funnel pulse, the route and schema are already "
-    "known: skip discovery and tool_describe. In one parallel tool round, call "
-    "mcp__katailyst2__tool_execute twice with toolRef "
-    "'tool:nm-analytics-readout' and args {action:'readout', days:7, "
-    "keys:'humans,walk_started,email_given,applications'} and the same args with "
-    "days:28. Read successful results from output.readouts. Map the exact questions "
-    "'How many nurses were on the site?', 'How many answered an opening question?', "
-    "'How many gave us an email?', and 'How many nurse applications did we receive?' "
-    "to Site nurses, Walk answers, Emails, and Applications respectively. If a "
-    "requested readout is unreadable, retry that same keyed window once; if it is "
-    "still unreadable, show an em dash and name the state. Raw PostHog is for deeper "
-    "custom behavior analysis only; do not reconstruct this standard readout from "
-    "PostHog. When a standard pulse asks for a table, always return the unfenced "
-    "header '| Window | Site nurses | Walk answers | Emails | Applications | Read "
-    "state |', a separator, and exactly 7d and 28d rows. Do not replace the table "
-    "with prose.\n"
-    "When a tool result is marked persisted-output, use read_spillover with the "
-    "saved path plus an offset and limit to retrieve only the needed page; do not "
-    "repeat the remote request just to recover omitted output. For a saved K2 "
-    "JSON envelope, use view:'body' to read decoded body text and follow its "
-    "nextOffset. This works in Slack and delegated API runs; do not parse saved "
-    "results with execute_code or terminal. A denied command is not permission "
-    "to retry the equivalent code through another tool.\n"
     "For a specialist handoff, mention the named agent with a bounded output "
     "and keep working on your part; reconcile their reply instead of waiting.\n"
     "For exact interface text or labeled structure, prefer a deterministic "
@@ -620,6 +601,7 @@ def build_config(
                 "max_search_limit": MAX_TOOL_SEARCH_LIMIT,
                 "listing": "auto",
                 "listing_max_tokens": TOOL_LISTING_MAX_TOKENS,
+                "always_loaded": list(ALWAYS_LOADED_TOOLS),
             },
             "web_search": {
                 "provider": _clean(env, "WEB_SEARCH_BACKEND")
@@ -757,6 +739,7 @@ def render(
             "default_limit": config["tools"]["tool_search"]["search_default_limit"],
             "max_limit": config["tools"]["tool_search"]["max_search_limit"],
             "listing_max_tokens": config["tools"]["tool_search"]["listing_max_tokens"],
+            "always_loaded": config["tools"]["tool_search"]["always_loaded"],
         },
         "background_review_enabled": config["auxiliary"]["background_review"][
             "enabled"

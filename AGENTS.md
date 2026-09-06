@@ -270,9 +270,12 @@ Five rules that exist because each was once a silent no-op:
    SQLite session has a durable `ended_at` and `end_reason`. This is an API
    boundary guarantee for K2-hosted runs; direct Slack gateway delivery does
    not pass through it.
-5. **Keep broad MCP access progressive, not eager.** Hermes' host bridge should
-   search for and call direct K2 verbs; nested K2 `tool_search` / `tool_describe`
-   / `tool_execute` is the compatibility path. MCP results over 16K remain on
+5. **Keep frequent tools direct and the broad catalog progressive.** Config
+   `tools.tool_search.always_loaded` exposes K2 registry get/search/describe/
+   execute and the result reader without extra native discovery. All other
+   MCP/plugin tools remain searchable; session scope and old bridge calls are
+   unchanged. K2 `tool:*` refs are not native tool names. Shared ephemeral
+   calling guidance covers Slack and API without editing the soul. MCP results over 16K remain on
    the durable disk behind a bounded, session-bound `read_spillover` page
    reader on both Slack and API runs. Use `view:"body"` for K2 JSON envelopes
    and its returned byte cursor to recover full body text; do not execute
