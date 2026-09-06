@@ -1,0 +1,25 @@
+diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
+--- a/gateway/platforms/api_server_runs.py
++++ b/gateway/platforms/api_server_runs.py
+@@ -507,6 +507,13 @@ async def _handle_runs(
+ 
+     instructions = body.get("instructions")
+     previous_response_id = body.get("previous_response_id")
++    from fleet_run_budget import attach_hosted_turn_limit, validate_hosted_turn_limit
++    try:
++        max_turns = validate_hosted_turn_limit(body.get("max_iterations"), field="max_iterations")
++    except ValueError as exc:
++        return web.json_response(_openai_error(str(exc)), status=400)
++
++    # The ceiling is request-local; never alter a workspace or provider default.
+ 
+     # Accept explicit conversation_history from the request body.
+     # Precedence: explicit conversation_history > previous_response_id.
+@@ -839,6 +846,7 @@ async def _handle_runs(
+                         # background processes this run created (#76115).
+                         _publish_turn_process_ownership(agent, effective_task_id)
++                        attach_hosted_turn_limit(agent, max_turns)
+                         r = agent.run_conversation(
+                             user_message=user_message,
+                             conversation_history=conversation_history,
+                             task_id=effective_task_id,

@@ -36,6 +36,7 @@ from typing import Any
 
 import agent_run_ledger
 import cron_seed
+import fleet_run_budget
 import grounding
 import render_config
 import uvicorn
@@ -1078,6 +1079,7 @@ def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("timeoutSeconds must be an integer")
     if not 1 <= timeout_seconds <= MAX_HOOK_TIMEOUT_SECONDS:
         raise ValueError(f"timeoutSeconds must be 1..{MAX_HOOK_TIMEOUT_SECONDS}")
+    max_turns = fleet_run_budget.validate_hosted_turn_limit(payload.get("maxTurns"))
     metadata = payload.get("metadata")
     if not isinstance(metadata, Mapping):
         raise ValueError("metadata must be an object")
@@ -1101,6 +1103,7 @@ def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "message": message,
         "session_key": session_key,
         "timeout_seconds": timeout_seconds,
+        "max_turns": max_turns,
         "agent_ref": expected_ref,
         "k2_run_id": k2_run_id,
         "org_id": org_id,
@@ -1148,6 +1151,11 @@ def _hosted_k2_run_instructions(normalized: Mapping[str, Any]) -> str:
     )
     reserve_seconds = min(max(0, timeout_seconds - 1), desired_reserve_seconds)
     final_by_seconds = max(1, timeout_seconds - reserve_seconds)
+    max_turns = normalized.get("max_turns")
+    turn_contract = (
+        f"This run has at most {max_turns} model turns, including the final answer; use the last available turn to synthesize the evidence already gathered."
+        if max_turns is not None else ""
+    )
     refs = _hosted_k2_context_refs(normalized["metadata"])
     if refs:
         source_contract = (
@@ -1169,6 +1177,7 @@ def _hosted_k2_run_instructions(normalized: Mapping[str, Any]) -> str:
         (
             "This is a governed internal Katailyst2 mission for Cleo.",
             f"The hard end-to-end execution budget is {timeout_seconds} seconds; its clock starts before the first model call.",
+            turn_contract,
             f"Spend no more than {retrieval_seconds} seconds (25% of the budget) on all retrieval and tool calls combined, and begin composing the final answer no later than {final_by_seconds} seconds after start, reserving {reserve_seconds} seconds to finish.",
             source_contract,
             "Return the best evidence-bounded answer before the deadline even when some evidence remains unavailable; never trade the requested final for more discovery.",
@@ -1304,6 +1313,10 @@ def _hook_admission_fingerprint(normalized: Mapping[str, Any]) -> str:
             "message": normalized["message"],
             "sessionKey": normalized["session_key"],
             "timeoutSeconds": normalized["timeout_seconds"],
+            **(
+                {"maxTurns": normalized["max_turns"]}
+                if normalized.get("max_turns") is not None else {}
+            ),
             "agentRef": normalized["agent_ref"],
             "metadata": normalized["metadata"],
         }
@@ -1342,6 +1355,10 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "input": normalized["message"],
                 "session_id": normalized["session_key"],
                 "instructions": _hosted_k2_run_instructions(normalized),
+                **(
+                    {"max_iterations": normalized["max_turns"]}
+                    if normalized["max_turns"] is not None else {}
+                ),
             },
             timeout=8.0,
         )

@@ -1,9 +1,10 @@
-"""Small native-Hermes adapter for explicitly budgeted scheduled runs.
+"""Native-Hermes limits for explicitly budgeted scheduled and K2 runs.
 
 Ordinary Slack/API work is unaffected. The scheduler overlay attaches this
 contract only when a job carries ``hlt_run_budget``. Native usage counters
 reconcile conservative input reservations and shrink the next output allowance;
-a grace call cannot bypass the run ceiling.
+a grace call cannot bypass the run ceiling. K2 hosted runs can separately
+opt into a turn ceiling without inheriting canary token limits or model policy.
 """
 from __future__ import annotations
 
@@ -20,6 +21,25 @@ CANARY_BUDGET = {
     "max_input_tokens": 64000,
     "max_seconds": 120,
 }
+
+
+def validate_hosted_turn_limit(value: Any, *, field: str = "maxTurns") -> int | None:
+    if value is None:
+        return None
+    # Matches K2's existing StarterExecutionPlanV1, not a new host-wide cap.
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 12:
+        raise ValueError(f"{field} must be an integer from 1 to 12")
+    return value
+
+
+def attach_hosted_turn_limit(agent: Any, max_turns: int | None) -> None:
+    limit = validate_hosted_turn_limit(max_turns)
+    if limit is None:
+        return
+    if getattr(agent, "api_mode", None) == "codex_app_server":
+        raise ValueError("Hosted turn limits require the native provider loop")
+    agent.max_iterations = min(agent.max_iterations, limit)
+    agent._hlt_hosted_max_turns = agent.max_iterations
 
 
 def budget_kwargs(job: dict[str, Any], max_iterations: int) -> dict[str, Any]:
@@ -75,6 +95,9 @@ def _observed_input_tokens(agent: Any) -> int:
 
 
 def admit_iteration(agent: Any, messages: list[dict], api_calls: int) -> bool:
+    hosted_limit = getattr(agent, "_hlt_hosted_max_turns", None)
+    if hosted_limit is not None and api_calls >= hosted_limit:
+        return False
     limits = getattr(agent, "_hlt_scheduled_budget", None)
     if limits is None:
         return True

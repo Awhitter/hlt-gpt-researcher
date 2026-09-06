@@ -775,12 +775,13 @@ def _load_health_gateway():
 
     saved = {
         name: sys.modules.get(name)
-        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger")
+        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger", "fleet_run_budget")
     }
     sys.modules["grounding"] = grounding
     sys.modules["render_config"] = render_config
     sys.modules["cron_seed"] = _cron_seed()
     sys.modules["agent_run_ledger"] = agent_run_ledger
+    sys.modules["fleet_run_budget"] = _load("fleet_run_budget", SERVICE_DIR / "fleet_run_budget.py")
     try:
         return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
     finally:
@@ -953,34 +954,6 @@ def test_resource_memory_receipt_is_unknown_when_kernel_files_are_hidden(tmp_pat
 
 
 # --- the model credential ---------------------------------------------------
-
-
-def _load_health_gateway():
-    """Load health_gateway.py without putting the service dir on sys.path.
-
-    It does bare ``import grounding`` / ``import render_config``, which normally
-    needs sys.path. Pre-seeding sys.modules under those names resolves them from
-    the copies this module already loaded, so the import works and nothing leaks
-    into the modules collected after this one.
-    """
-    import sys
-
-    saved = {
-        name: sys.modules.get(name)
-        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger")
-    }
-    sys.modules["grounding"] = grounding
-    sys.modules["render_config"] = render_config
-    sys.modules["cron_seed"] = _cron_seed()
-    sys.modules["agent_run_ledger"] = agent_run_ledger
-    try:
-        return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
-    finally:
-        for name, previous in saved.items():
-            if previous is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = previous
 
 
 def _fake_openrouter(monkeypatch, *, payload=None, http_status=None, boom=False):
@@ -3663,8 +3636,9 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
         lambda run_id, token, seconds: scheduled.append((run_id, token, seconds)),
     )
 
+    payload = {**_hook_payload(), "maxTurns": 4}
     response = health_gateway.agent_hook(
-        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+        payload, authorization="Bearer a-secure-shared-hook-token"
     )
     body = json.loads(response.body)
 
@@ -3681,6 +3655,7 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
     assert calls[0][1]["token"] == "a-secure-shared-hook-token"
     assert calls[0][1]["session_key"] == f"hook:k2:{K2_RUN_ID}"
     assert calls[0][1]["payload"]["session_id"] == f"hook:k2:{K2_RUN_ID}"
+    assert calls[0][1]["payload"]["max_iterations"] == 4
     assert "25% of the budget" in calls[0][1]["payload"]["instructions"]
     assert "never trade the requested final for more discovery" in calls[0][1]["payload"]["instructions"]
     assert scheduled == [
@@ -3689,11 +3664,29 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
 
     # An exact replay returns the same wrapper receipt and never POSTs Hermes.
     replay = health_gateway.agent_hook(
-        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+        payload, authorization="Bearer a-secure-shared-hook-token"
     )
     assert replay.status_code == 202
     assert json.loads(replay.body) == body
     assert len(calls) == 1
+
+    changed_budget = health_gateway.agent_hook(
+        {**payload, "maxTurns": 8}, authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert changed_budget.status_code == 409
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("limit", [True, 0, -1, 1.5, 13, "4", {}])
+def test_agent_hook_rejects_invalid_turn_limits_before_dispatch(limit):
+    health_gateway = _load_health_gateway()
+    with pytest.raises(ValueError, match="maxTurns"):
+        health_gateway._validate_hook_payload({**_hook_payload(), "maxTurns": limit})
+
+
+def test_agent_hook_without_effort_preserves_native_default():
+    health_gateway = _load_health_gateway()
+    assert health_gateway._validate_hook_payload(_hook_payload()).get("max_turns") is None
 
 
 def test_agent_hook_is_authenticated_and_requires_the_canonical_pack(monkeypatch):
