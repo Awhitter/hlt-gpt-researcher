@@ -471,6 +471,22 @@ variables or Slack messages. A login flag alone is not proof that inference
 works: require selectability plus a bounded private tool-call canary on each
 route before rollout.
 
+Manual Codex logins are independent grants. During refresh, the pinned recovery
+overlay reloads only the exact credential-pool row under Hermes' existing
+cross-process lock; it never replaces that account with the singleton login.
+If a concurrent refresh already persisted a new pair, it adopts that pair without
+another refresh request. A terminal `refresh_token_reused` or `invalid_grant`
+marks only the failed manual grant `dead`, so subsequent selection skips it.
+Transient errors remain recoverable, and other profiles' quota/reset state is
+unchanged. A dead grant needs a fresh native OAuth login, not a cooldown reset
+or a copied refresh token from another running host. Profile row counts alone
+do not establish distinct accounts or successful inference.
+
+The image runs `assert_codex_terminal_refresh.py` against the actual patched
+Hermes methods: eleven offline cases cover terminal/transient errors, exact-row
+identity, concurrent refresh adoption, and unchanged singleton behavior. This
+small assertion needs no provider, credentials, model call, or full test suite.
+
 ## Smoke
 
 ```bash

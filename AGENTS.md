@@ -198,6 +198,13 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
+The Codex recovery overlay preserves native credential ownership: manual OAuth
+grants refresh from their exact persisted pool row, not the singleton login.
+Terminal refresh failures mark only that manual grant dead; real quota cooldowns
+and other accounts remain intact. Keep the dependency-free eleven-case assertion
+green when advancing the Hermes pin. Dead grants need fresh native login; never
+clear quota limits or copy another host's single-use refresh token as a repair.
+
 Cleo's native dashboard mounts at `/computer` behind the K2 browser session.
 Its declared public hostname admits authenticated remote WebSockets; its TUI
 dials the same listener on `127.0.0.1:$PORT` using the native `/api/ws` and
