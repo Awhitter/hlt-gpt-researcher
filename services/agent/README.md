@@ -341,9 +341,16 @@ available for deeper custom behavior analysis, but do not reconstruct the
 standard readout from it when the governed tool reports a gap.
 
 An MCP result over 16,000 characters is kept in full under Hermes' durable
-spillover store and replaced in the prompt by a short preview. Slack and
+spillover store and replaced in the prompt by a short preview. Tool descriptions
+use a complete call/input-schema preview when it fits within 8K characters;
+duplicated output schemas remain in the original file. This retains all authored
+input definitions, examples, readiness, and action requirements, without spending
+a model turn parsing output-contract detail before the tool can be called.
+Slack and
 delegated API runs can page their own saved results with the session-bound
-`read_spillover` byte cursor. For K2's escaped JSON envelopes, pass `view:"body"`
+`read_spillover` byte cursor. Use `view:"schema"` to page a larger complete input
+contract; never treat a truncated input schema as complete. For K2's escaped
+JSON envelopes, pass `view:"body"`
 to recover decoded `body_md`/`body`/`markdown` text, then follow `nextOffset`
 with the same view. The reader follows the known `result`/`structuredContent`
 and `tool.execute.output` envelopes. For K2's compact transport projection,
@@ -354,7 +361,8 @@ of source and larger results remain available through raw byte pages. This
 avoids one-line JSON truncation without Python, shell execution, or relaxing
 effect approvals. An absent body is reported as absent, not replaced by the
 metadata preview. Session ownership and spillover-directory checks apply on
-every surface. Never retry a denied command through an equivalent tool.
+every surface. Prefer this byte reader over line-based `read_file` for escaped
+JSON. Never retry a denied command through an equivalent tool.
 The API agent sees the saved handle in `<persisted-output>` and the reader in
 its native deferred-tool catalog. If its schema is not loaded, call
 `tool_describe({"names":["read_spillover"]})`, then

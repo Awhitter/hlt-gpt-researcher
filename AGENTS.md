@@ -276,9 +276,12 @@ Five rules that exist because each was once a silent no-op:
    the durable disk behind a bounded, session-bound `read_spillover` page
    reader on both Slack and API runs. Use `view:"body"` for K2 JSON envelopes
    and its returned byte cursor to recover full body text; do not execute
-   Python or shell merely to decode an already-saved result. Both reader
+   Python or shell merely to decode an already-saved result. All reader
    views preserve session ownership and directory boundaries. Lowering the
    active-context payload must not remove practical reading capability.
+   Tool descriptions surface complete input contracts inline when small;
+   larger contracts use `view:"schema"`. Output-schema bulk stays in the
+   saved original, not ahead of the inputs needed to call the capability.
    The managed agent's automatic background review stays off because K2 owns
    durable learning.
 

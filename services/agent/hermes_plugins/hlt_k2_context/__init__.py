@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .tool_result_views import tool_schema_view
 from .runtime_context import (
     draw_mission_context,
     is_substantive_mission,
@@ -357,8 +358,9 @@ HOSTED_K2_CONTEXT = (
     "final-answer budget in the system instructions; use supplied refs directly, "
     "allow at most one focused recovery search, and return a useful final before "
     "the deadline. For a persisted K2 result, load read_spillover through "
-    "tool_describe and use tool_call with its saved handle, view:'body', and "
-    "returned nextOffset to read the full body. Do not use code or shell to "
+    "tool_describe and use tool_call with its saved handle, view:'schema' for "
+    "complete call inputs or view:'body' for text, and returned nextOffset. "
+    "Use an inline complete call schema immediately when present. Do not use code or shell to "
     "decode an already-saved result."
 )
 
@@ -497,6 +499,7 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
     requires the originating session, and never mutates the file. ``view:body``
     decodes a bounded K2 JSON envelope before paging its body, so one-line JSON
     does not force a model to execute code simply to recover its own evidence.
+    ``view:schema`` pages complete call inputs without output-schema bulk.
     """
     values = args if isinstance(args, Mapping) else {}
     raw_handle = str(values.get("handle") or "").strip()
@@ -513,8 +516,8 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
         return json.dumps({"error": "saved result does not belong to this session"})
 
     view = values.get("view", "raw")
-    if not isinstance(view, str) or view not in {"raw", "body"}:
-        return json.dumps({"error": "view must be raw or body"})
+    if not isinstance(view, str) or view not in {"raw", "body", "schema"}:
+        return json.dumps({"error": "view must be raw, body, or schema"})
 
     try:
         offset = int(values.get("offset", 0))
@@ -540,7 +543,7 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
         total_bytes = path.stat().st_size
         source_bytes = total_bytes
         body_field = None
-        if view == "body":
+        if view != "raw":
             if source_bytes > SPILLOVER_MAX_BODY_SOURCE_BYTES:
                 return json.dumps({"error": "saved result exceeds body decode limit; use view:raw byte pages"})
             with path.open("rb") as handle:
@@ -548,10 +551,17 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
             if len(encoded) > SPILLOVER_MAX_BODY_SOURCE_BYTES:
                 return json.dumps({"error": "saved result exceeds body decode limit; use view:raw byte pages"})
             try:
-                decoded = _spillover_body(json.loads(encoded))
+                payload = json.loads(encoded)
+                if view == "schema":
+                    schema = tool_schema_view(payload)
+                    decoded = (schema, "tool") if schema is not None else None
+                else:
+                    decoded = _spillover_body(payload)
             except (ValueError, UnicodeError, RecursionError):
                 decoded = None
             if decoded is None:
+                if view == "schema":
+                    return json.dumps({"error": "saved result has no tool schema; use view:raw or view:body"})
                 return json.dumps({
                     "error": "saved result has no text body; use view:raw for its metadata or skill.content for a needed K2 body",
                 })
@@ -560,7 +570,7 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
             total_bytes = len(body_bytes)
         if offset > total_bytes:
             return json.dumps({"error": "offset exceeds the saved result size"})
-        if view == "body":
+        if view != "raw":
             raw_page = body_bytes[offset:offset + limit + 4]
         else:
             with path.open("rb") as handle:
@@ -596,7 +606,7 @@ def _read_spillover(args: Any = None, **context: Any) -> str:
             "hasMore": next_offset < total_bytes,
             "nextOffset": next_offset if next_offset < total_bytes else None,
             "content": page,
-            **({"view": "body", "bodyField": body_field, "sourceBytes": source_bytes} if view == "body" else {}),
+            **({"view": view, "bodyField": body_field, "sourceBytes": source_bytes} if view != "raw" else {}),
         },
         ensure_ascii=False,
     )
@@ -887,8 +897,8 @@ def register(ctx: Any) -> None:
     description = (
         "Read one bounded page from a large tool result Hermes already saved. "
         "Pass the exact path or filename shown inside persisted-output plus an "
-        "optional byte offset and limit. For a saved K2 JSON envelope, choose "
-        "view:body to read decoded body text instead of escaped one-line JSON; "
+        "optional byte offset and limit. Choose view:schema for complete tool "
+        "call inputs or view:body for decoded body text instead of escaped JSON; "
         "follow nextOffset using the same view. Available to Slack and API runs. "
         "Read-only and session/spillover-scoped; no shell or code execution needed."
     )
@@ -913,9 +923,9 @@ def register(ctx: Any) -> None:
                     },
                     "view": {
                         "type": "string",
-                        "enum": ["raw", "body"],
+                        "enum": ["raw", "body", "schema"],
                         "default": "raw",
-                        "description": "raw pages the saved UTF-8 bytes; body decodes a K2 envelope and pages body_md/body/markdown bytes (source at most 1 MiB). Keep the same view between pages.",
+                        "description": "raw pages saved UTF-8 bytes; body decodes body_md/body/markdown; schema reveals complete call/input contracts without output-schema bulk (source at most 1 MiB). Keep the same view between pages.",
                     },
                     "limit": {
                         "type": "integer",

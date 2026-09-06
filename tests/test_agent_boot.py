@@ -2601,7 +2601,7 @@ def test_k2_plugin_registers_bounded_spillover_reader(monkeypatch, tmp_path):
     assert registered["toolset"] == "hlt-context"
     params = registered["schema"]["parameters"]
     assert params["properties"]["limit"]["maximum"] == 12_000
-    assert params["properties"]["view"]["enum"] == ["raw", "body"]
+    assert params["properties"]["view"]["enum"] == ["raw", "body", "schema"]
     assert params["additionalProperties"] is False
     assert hooks == ["pre_gateway_dispatch", "pre_llm_call", "pre_tool_call"]
     assert "hlt-context" in render_config.api_server_toolsets({})
