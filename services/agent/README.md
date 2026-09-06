@@ -154,6 +154,18 @@ The working prompt still compacts at 80,000 tokens.
 `/health.config.slack_tool_round_limit`, and
 `/health.config.compression_threshold_tokens` expose the active limits.
 
+K2 can lower the native API loop's turn allowance for an explicitly bounded mission:
+`executionPlan.maxTurnsPerCycle → /hooks/agent.maxTurns → /v1/runs.max_iterations`.
+The current K2 range is 1–12; omission leaves the normal runtime default unchanged.
+The requested ceiling includes the final model turn and blocks an extra native grace
+turn. It does not change Slack defaults, reasoning, fallback selection, or tool access.
+The limit is part of the durable admission fingerprint, so changing it cannot silently
+reuse a different run. This is a model-loop turn limit, not a USD or total-token cap;
+provider-internal retries and delegated child work are not separate turns in this count.
+The Codex app-server path cannot enforce this native-loop contract and rejects an
+explicit limit instead of claiming one; the subscription-backed native provider loop
+remains supported. Canary token accounting is a separate existing contract.
+
 For Slack tables, the prompt contract requires plain Markdown pipe syntax with
 a header and separator row. Hermes can then render the table as native Slack
 blocks; fenced monospace tables are explicitly disallowed, with compact bullets

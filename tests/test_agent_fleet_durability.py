@@ -39,6 +39,36 @@ def test_budget_is_opt_in_and_uses_native_constructor_limits():
     assert budget.budget_kwargs({"hlt_run_budget": budget.CANARY_BUDGET}, 2)["max_iterations"] == 2
 
 
+def test_hosted_turn_limit_blocks_extra_grace_turn_without_changing_slack():
+    worker = agent()
+    worker._hlt_hosted_max_turns = 4
+    worker._budget_grace_call = True
+    assert budget.admit_iteration(worker, [], 3)
+    assert not budget.admit_iteration(worker, [], 4)
+    assert budget.admit_iteration(agent(), [], 24)
+
+
+def test_hosted_turn_limit_reuses_native_counter_and_preserves_tighter_limits():
+    worker = agent()
+    worker.max_iterations = 24
+    budget.attach_hosted_turn_limit(worker, 4)
+    assert worker.max_iterations == 4
+    assert worker._hlt_hosted_max_turns == 4
+    budget.attach_hosted_turn_limit(worker, 8)
+    assert worker.max_iterations == 4
+    assert worker._hlt_hosted_max_turns == 4
+    ordinary = agent()
+    budget.attach_hosted_turn_limit(ordinary, None)
+    assert not hasattr(ordinary, "_hlt_hosted_max_turns")
+
+
+def test_hosted_turn_limit_never_claims_to_bound_a_non_native_loop():
+    worker = agent()
+    worker.api_mode = "codex_app_server"
+    with pytest.raises(ValueError, match="native provider loop"):
+        budget.attach_hosted_turn_limit(worker, 4)
+
+
 def test_non_native_runtime_cannot_bypass_the_budget():
     worker = agent()
     worker.api_mode = "codex_app_server"
