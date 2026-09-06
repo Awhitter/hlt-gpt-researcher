@@ -269,7 +269,10 @@ Five rules that exist because each was once a silent no-op:
    as `run.failed` before `run.completed`, and closes the per-run agent so its
    SQLite session has a durable `ended_at` and `end_reason`. This is an API
    boundary guarantee for K2-hosted runs; direct Slack gateway delivery does
-   not pass through it.
+   not pass through it. Source-authored question labels and table row labels
+   survive reconciliation; bare backward references require an earlier
+   reconciled claim and are reported separately. A passed numeric check is
+   not proof that populations, windows, or narrative conclusions are correct.
 5. **Keep frequent tools direct and the broad catalog progressive.** Config
    `tools.tool_search.always_loaded` exposes K2 registry get/search/describe/
    execute and the result reader without extra native discovery. All other

@@ -69,6 +69,10 @@ _DATE_RE = re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b")
 _TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _VERSION_RE = re.compile(r"(?i)(?<!\w)v\d+(?:\.\d+)*\b")
 _URL_RE = re.compile(r"https?://\S+")
+_HTTP_STATUS_RE = re.compile(
+    r"(?i)\b(?:HTTP(?:\s+status)?\s+[1-5]\d{2}|"
+    r"[45]\d{2}\s+(?:timeout|gateway timeout|bad gateway|service unavailable))\b"
+)
 _ARITHMETIC_RE = re.compile(
     r"[+\-−*/×÷=]|\b(?:of|from|difference|sum)\b", re.IGNORECASE
 )
@@ -106,7 +110,7 @@ _GENERIC_LABEL_TOKENS = frozenset(
     }
 )
 _SEMANTIC_LABEL_KEYS = frozenset(
-    {"event", "key", "label", "metric", "metric_name", "name", "step", "title"}
+    {"event", "key", "label", "metric", "metric_name", "name", "question", "step", "title"}
 )
 _LABEL_ALIASES = {
     "searched": "search",
@@ -157,6 +161,7 @@ class GroundingVerdict:
     checked_claims: int
     grounded_claims: int
     derived_claims: int
+    referenced_claims: int
     future_claims: int
     labelled_nonfacts: int
     unsupported: tuple[UnsupportedClaim, ...]
@@ -170,6 +175,7 @@ class GroundingVerdict:
             "checked_claims": self.checked_claims,
             "grounded_claims": self.grounded_claims,
             "derived_claims": self.derived_claims,
+            "referenced_claims": self.referenced_claims,
             "future_claims": self.future_claims,
             "labelled_nonfacts": self.labelled_nonfacts,
             "unsupported": [
@@ -185,8 +191,9 @@ class GroundingVerdict:
         suffix = "" if len(self.unsupported) <= 8 else ", …"
         return (
             "Numeric grounding check failed before delivery: factual business "
-            f"metrics were not found in the current request or successful current-run "
-            f"tool results ({values}{suffix}). Re-run after reconciling the draft "
+            f"metrics could not be matched to their values and labels in the current "
+            f"request or successful current-run tool results ({values}{suffix}). "
+            "Reconcile the draft "
             "against the exact source values, or label future targets explicitly."
         )
 
@@ -244,6 +251,7 @@ def _masked_line(line: str) -> str:
     masked = _DATE_RE.sub(spaces, masked)
     masked = _TIME_RE.sub(spaces, masked)
     masked = _VERSION_RE.sub(spaces, masked)
+    masked = _HTTP_STATUS_RE.sub(spaces, masked)
     # Markdown list ordinals describe structure, not a metric.
     masked = re.sub(r"^\s*\d+[.)](?=\s)", spaces, masked)
     return masked
@@ -297,7 +305,9 @@ def _claim_labels(line: str, number: _Number) -> set[str]:
 
     if "|" in line:
         cells = [cell.strip() for cell in prefix.split("|") if cell.strip()]
-        local_before = cells[-1] if cells else ""
+        # Every data column retains the row's metric, not the preceding
+        # numeric cell. Otherwise a second column can pass on value alone.
+        local_before = " ".join(cells[:1] + cells[-1:]) if cells else ""
     else:
         boundary = max(
             prefix.rfind(marker)
@@ -359,6 +369,30 @@ def _is_grounded(
     if not claim_labels or _UNLABELLED in evidence_labels:
         return True
     return bool(claim_labels & evidence_labels)
+
+
+def _is_backward_reference(
+    number: _Number,
+    line: str,
+    earlier_grounded: set[tuple[str, Decimal]],
+) -> bool:
+    """Recognize a bare backward reference, never a newly named metric.
+
+    ``The 0 is the product fact`` can refer to an already reconciled count.
+    Merely seeing zero in a tool result, a target, or an unsupported earlier
+    sentence is insufficient. A clause that names a metric must reconcile it
+    normally (``the 0 applications`` / ``the 0 is our application count``).
+    """
+    if _fact_key(number) not in earlier_grounded:
+        return False
+    prefix = line[:number.start]
+    if not re.search(r"(?:^|[.!?;—])\s*(?:the|that|this)\s+$", prefix, re.I):
+        return False
+    suffix = line[number.end:]
+    if not re.match(r"\s+(?:is|was|remains)\b", suffix, re.I):
+        return False
+    clause = re.split(r"[.!?;—]", suffix, maxsplit=1)[0]
+    return not _METRIC_RE.search(clause)
 
 
 def _close_enough(candidate: Decimal, expected: Decimal, places: int) -> bool:
@@ -634,6 +668,8 @@ class NumericGroundingLedger:
         checked = 0
         grounded_count = 0
         derived_count = 0
+        referenced_count = 0
+        earlier_grounded: set[tuple[str, Decimal]] = set()
         future_count = 0
         labelled_nonfacts = 0
         unsupported: list[UnsupportedClaim] = []
@@ -691,9 +727,13 @@ class NumericGroundingLedger:
                 checked += 1
                 if _is_grounded(claim, raw_line, grounded):
                     grounded_count += 1
+                    earlier_grounded.add(_fact_key(claim))
                     continue
                 if _is_derived(claim, line_numbers, grounded, raw_line):
                     derived_count += 1
+                    continue
+                if _is_backward_reference(claim, raw_line, earlier_grounded):
+                    referenced_count += 1
                     continue
                 unsupported.append(
                     UnsupportedClaim(value=claim.raw[:32], line=line_number)
@@ -704,6 +744,7 @@ class NumericGroundingLedger:
             checked_claims=checked,
             grounded_claims=grounded_count,
             derived_claims=derived_count,
+            referenced_claims=referenced_count,
             future_claims=future_count,
             labelled_nonfacts=labelled_nonfacts,
             unsupported=tuple(unsupported),

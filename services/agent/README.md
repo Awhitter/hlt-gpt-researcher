@@ -253,6 +253,14 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
   unsupported facts end as `run.failed` with no answer output. The per-run
   agent then closes its owned SQLite session so `ended_at` and `end_reason`
   cannot remain null after terminal work.
+- Source-authored `question` labels count alongside machine metric keys;
+  every table column retains its row label. A bare backward reference such as
+  “the 0 is the product fact” is counted separately only after an earlier
+  reconciled claim. It cannot introduce a new metric or value. HTTP status
+  descriptions are not business counts. These deterministic checks catch
+  numeric mismatches; they are not proof of semantic accuracy, matching
+  populations/windows, or overall answer quality. Agents still reconcile
+  those against the source and surface unreadable values honestly.
 - This deterministic gate belongs specifically to the hosted `/v1/runs`
   boundary used by K2. Direct Slack gateway delivery does not traverse this
   route and must not be described as covered by this gate.
