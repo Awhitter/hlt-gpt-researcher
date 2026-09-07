@@ -521,11 +521,25 @@ model ladder, selectable profiles, active K2 runtime, and Slack transport:
 Boot installs three idempotent native Hermes jobs through `cron.jobs`, without
 writing the cron store by hand or re-enabling the retired product briefs:
 
-| Job | Schedule | Work |
-| --- | --- | --- |
-| `hlt-fleet-readiness-cleo-v1` | Every five minutes | Read local `/health`; no model |
-| `hlt-fleet-release-cleo-v1` | Daily 15:20 UTC (default container timezone) | Read Hermes stable release and exact commit metadata; no model/build/update |
-| `hlt-fleet-daily-canary-cleo-v1` | Daily 14:45 UTC (default container timezone) | One read-only K2 identity task, authenticated Grok 4.6/high |
+| Job | Schedule | Work | State |
+| --- | --- | --- | --- |
+| `hlt-fleet-readiness-cleo-v1` | Every five minutes | Read local `/health`; no model | **Retired 2026-09-07** |
+| `hlt-fleet-release-cleo-v1` | Daily 15:20 UTC (default container timezone) | Read Hermes stable release and exact commit metadata; no model/build/update | Scheduled |
+| `hlt-fleet-daily-canary-cleo-v1` | Daily 14:45 UTC (default container timezone) | One read-only K2 identity task, authenticated Grok 4.6/high | **Retired 2026-09-07** |
+
+`install()` still owns all three definitions and upserts them every boot, but
+`cron_seed.RETIRED_JOB_NAMES` pauses two of them first — they were the
+#agent-logs noise the owner named on 2026-09-07 (the canary delivered a whole
+model reply daily; readiness had no daily ceiling). `install()` never writes
+`enabled`, so the pause survives deploys. Bring either back with
+`hermes cron resume <job-id>`; ids are at `/health.config.fleet_checks`.
+The release check stays scheduled: it speaks once per candidate.
+
+**Nothing now watches this service's health from outside it.** Retiring the
+readiness check removed the only automated `/health` watcher; the receipt at
+`$HERMES_HOME/fleet/readiness.json` stops refreshing, so `gate()` reads stale
+and would answer `wakeAgent: false`. If an external monitor is wanted, that is
+a deliberate decision to make somewhere other than this channel.
 
 **The daily canary verifies K2 plus Cleo's authenticated backup, not her primary.**
 Codex's subscription wire rejects output caps, so only this explicitly budgeted
@@ -534,7 +548,8 @@ profiles and Grok recovery route. Real Slack acceptance must independently
 verify Sol. The installer receipt at `/health.config.fleet_checks.canaryRoute`
 records this distinction; scheduled success is not evidence of primary health.
 
-All three deliver only to `slack:C0BH5997USK` (`#agent-logs`). Health and release
+All three deliver only to `slack:C0BH5997USK` (`#agent-logs`) — the two retired
+ones would, if resumed. Health and release
 scripts emit only changed findings or recovery, retrying failed native delivery.
 A red observation exits successfully so native cron keeps its five-minute
 cadence. Receipts live under `$HERMES_HOME/fleet/`; native cron retains job

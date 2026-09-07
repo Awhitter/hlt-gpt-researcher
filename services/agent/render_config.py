@@ -668,8 +668,19 @@ def build_config(
             "progress_notices": False,
         },
         "prompt_caching": {"cache_ttl": "1h"},
-        # Scheduled briefs land in their own thread and stay continuable.
-        "cron": {"mirror_delivery": True},
+        # Back to upstream's default (off). This existed so the three product
+        # briefs would land in the home channel's session and stay continuable;
+        # those briefs are retired, and it earns nothing for what is left.
+        #
+        # It is NOT the #agent-logs noise, and turning it off does not quieten
+        # that channel — read `cron/scheduler.py` before assuming otherwise.
+        # The "Cronjob Response: … To stop or manage this job" wrapper comes
+        # from `cron.wrap_response` on the PRIMARY delivery; the mirror is
+        # explicitly given the clean, unwrapped text. Mirroring is also scoped
+        # to a job's own origin session, and the fleet checks are origin-less
+        # script jobs that deliver to #agent-logs by name, so they were never
+        # mirrored. The jobs themselves are retired in `cron_seed.py`.
+        "cron": {"mirror_delivery": False},
         # The curator archives unused skills after 90 days. Ours are shipped in
         # the image and are meant to persist.
         "curator": {"prune_builtins": False},
