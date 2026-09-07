@@ -248,6 +248,10 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     assert config["compression"]["enabled"] is True
     assert config["compression"]["threshold_tokens"] == 80_000
     assert config["compression"]["progress_notices"] is False
+    # Present-and-false, not absent: the key states the intent where the next
+    # reader looks for it. It is upstream's default, kept explicit because the
+    # briefs it was turned on for are retired.
+    assert config["cron"]["mirror_delivery"] is False
     assert set(config["mcp_servers"]) == {"gpt-researcher", "codegraph", "katailyst2", "linear"}
     # The pinned API adapter reads its concurrency cap only from this exact
     # gateway path; putting it under platforms.api_server.extra is ignored.
@@ -6078,6 +6082,132 @@ def test_an_invalid_existing_cron_export_blocks_retirement(tmp_path, monkeypatch
 
     assert result["paused"] == []
     assert result["failed"] == ["read-export"]
+
+
+def test_the_two_noisy_fleet_checks_are_retired_but_the_release_check_is_not(
+    tmp_path, monkeypatch
+):
+    """Owner, 2026-09-07: a condition speaks once when it starts, once when it
+    ends, and at most once a day while it persists. The daily canary delivered
+    a whole model reply into #agent-logs every day and the readiness check runs
+    on a five-minute tick; both are retired. The release check speaks once per
+    candidate, so it stays scheduled."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    assert cron_seed.RETIRED_FLEET_JOB_NAMES == {
+        "hlt-fleet-daily-canary-cleo-v1",
+        "hlt-fleet-readiness-cleo-v1",
+    }
+    assert cron_seed.RETIRED_JOB_NAMES == (
+        cron_seed.LEGACY_BRIEF_NAMES | cron_seed.RETIRED_FLEET_JOB_NAMES
+    )
+    assert "hlt-fleet-release-cleo-v1" not in cron_seed.RETIRED_JOB_NAMES
+
+    cron_dir = tmp_path / "cron"
+    cron_dir.mkdir()
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {"id": "canary", "name": "hlt-fleet-daily-canary-cleo-v1", "enabled": True},
+                    {"id": "readiness", "name": "hlt-fleet-readiness-cleo-v1", "enabled": True},
+                    {"id": "release", "name": "hlt-fleet-release-cleo-v1", "enabled": True},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", fake_run)
+
+    result = cron_seed.retire_stale_briefs()
+
+    assert result["paused"] == [
+        "hlt-fleet-daily-canary-cleo-v1",
+        "hlt-fleet-readiness-cleo-v1",
+    ]
+    assert result["failed"] == []
+    # Paused by exact id, so run history survives and `hermes cron resume`
+    # brings either one back.
+    assert calls == [
+        ["hermes", "cron", "pause", "canary"],
+        ["hermes", "cron", "pause", "readiness"],
+    ]
+    exported = json.loads(Path(result["export_path"]).read_text(encoding="utf-8"))
+    assert {job["id"] for job in exported["jobs"]} == {"canary", "readiness"}
+    assert exported["restore"] == "hermes cron resume <job-id>"
+
+
+def test_an_export_predating_a_newly_retired_job_is_extended_not_a_blocker(
+    tmp_path, monkeypatch
+):
+    """The live disk already holds an export covering only the three product
+    briefs. Requiring it to cover every retired job would have made this whole
+    function return `failed: ["read-export"]` and pause nothing the first time
+    the set grew — a silent no-op wearing a green test.
+
+    Records banked earlier are the pre-retirement snapshot and are never
+    rewritten; a newly retired job is appended to them."""
+    cron_seed = _cron_seed()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cron_dir = tmp_path / "cron"
+    retired = cron_dir / "retired"
+    retired.mkdir(parents=True)
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    # Already paused, and its banked record says so was not true
+                    # at export time. That older snapshot must survive.
+                    {
+                        "id": "job-monday",
+                        "name": "nm-monday-brief",
+                        "enabled": False,
+                        "state": "paused",
+                    },
+                    {"id": "canary", "name": "hlt-fleet-daily-canary-cleo-v1", "enabled": True},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (retired / cron_seed.LEGACY_EXPORT_NAME).write_text(
+        json.dumps(
+            {
+                "version": cron_seed.EXPORT_VERSION,
+                "jobs": [{"id": "job-monday", "name": "nm-monday-brief", "enabled": True}],
+                "restore": "hermes cron resume <job-id>",
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cron_seed.subprocess, "run", fake_run)
+
+    result = cron_seed.retire_stale_briefs()
+
+    assert result["failed"] == []
+    assert result["paused"] == ["hlt-fleet-daily-canary-cleo-v1"]
+    assert result["already_paused"] == ["nm-monday-brief"]
+    assert calls == [["hermes", "cron", "pause", "canary"]]
+
+    exported = json.loads(
+        (retired / cron_seed.LEGACY_EXPORT_NAME).read_text(encoding="utf-8")
+    )
+    banked = {job["id"]: job for job in exported["jobs"]}
+    assert set(banked) == {"job-monday", "canary"}
+    assert banked["job-monday"]["enabled"] is True, "the earlier snapshot was rewritten"
 
 
 def test_a_brief_delivers_to_the_home_channel_not_to_origin(tmp_path, monkeypatch):
