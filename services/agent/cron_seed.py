@@ -16,10 +16,10 @@ recovery export. The older seed helpers remain only for explicit operator
 recovery and their pinned regression tests; an existing job is still left
 exactly as it is.
 
-Two of the three fleet checks installed by ``fleet_durability.py`` are retired
-here rather than deleted there. That module still owns their definitions and
-still upserts them on every boot, but it never writes ``enabled``, so a job
-paused here stays paused across deploys and comes back with a single
+All three fleet checks installed by ``fleet_durability.py`` are retired here
+rather than deleted there. That module still owns their definitions and still
+upserts them on every boot, but it never writes ``enabled``, so a job paused
+here stays paused across deploys and comes back with a single
 ``hermes cron resume <job-id>``.
 """
 from __future__ import annotations
@@ -88,10 +88,11 @@ BRIEFS: tuple[dict[str, str], ...] = (
 )
 LEGACY_BRIEF_NAMES = frozenset(brief["name"] for brief in BRIEFS)
 
-# Two of the three `fleet_durability.py` checks deliver straight into
-# #agent-logs (`slack:C0BH5997USK`) on a clock rather than on an event, and the
-# owner named that noise on 2026-09-07: a condition should speak once when it
-# starts, once when it ends, and at most once a day while it persists.
+# All three `fleet_durability.py` checks deliver straight into #agent-logs
+# (`slack:C0BH5997USK`) on a clock rather than on an event, and the owner named
+# that noise on 2026-09-07: a condition should speak once when it starts, once
+# when it ends, and at most once a day while it persists. "i want the agents to
+# work but never ever spam like this again."
 #
 #   hlt-fleet-daily-canary-cleo-v1 — wakes a real agent every day and delivers
 #     the entire model reply, wrapped in Hermes' own "Cronjob Response: … To
@@ -100,11 +101,18 @@ LEGACY_BRIEF_NAMES = frozenset(brief["name"] for brief in BRIEFS)
 #   hlt-fleet-readiness-cleo-v1 — runs every five minutes. It is quiet while
 #     the signature holds, but a flapping check or a pending delivery retry
 #     re-posts on the five-minute tick, with no daily ceiling.
-#
-# `hlt-fleet-release-cleo-v1` is deliberately NOT retired: it speaks once per
-# release candidate, which is the cadence the ruling asks for.
+#   hlt-fleet-release-cleo-v1 — posts the same wrapped "Cronjob Response: … To
+#     stop or manage this job" block into #agent-logs on its daily 15:20 UTC
+#     tick. What it watches (the upstream Hermes stable release) is already
+#     watched by openclaw-hq's own upstream release watch, which now speaks at
+#     most once a week. The fleet does not need a second, daily one saying the
+#     same thing.
 RETIRED_FLEET_JOB_NAMES = frozenset(
-    {"hlt-fleet-daily-canary-cleo-v1", "hlt-fleet-readiness-cleo-v1"}
+    {
+        "hlt-fleet-daily-canary-cleo-v1",
+        "hlt-fleet-readiness-cleo-v1",
+        "hlt-fleet-release-cleo-v1",
+    }
 )
 RETIRED_JOB_NAMES = LEGACY_BRIEF_NAMES | RETIRED_FLEET_JOB_NAMES
 
