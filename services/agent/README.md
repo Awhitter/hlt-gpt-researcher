@@ -524,16 +524,21 @@ writing the cron store by hand or re-enabling the retired product briefs:
 | Job | Schedule | Work | State |
 | --- | --- | --- | --- |
 | `hlt-fleet-readiness-cleo-v1` | Every five minutes | Read local `/health`; no model | **Retired 2026-09-07** |
-| `hlt-fleet-release-cleo-v1` | Daily 15:20 UTC (default container timezone) | Read Hermes stable release and exact commit metadata; no model/build/update | Scheduled |
+| `hlt-fleet-release-cleo-v1` | Daily 15:20 UTC (default container timezone) | Read Hermes stable release and exact commit metadata; no model/build/update | **Retired 2026-09-07** |
 | `hlt-fleet-daily-canary-cleo-v1` | Daily 14:45 UTC (default container timezone) | One read-only K2 identity task, authenticated Grok 4.6/high | **Retired 2026-09-07** |
 
 `install()` still owns all three definitions and upserts them every boot, but
-`cron_seed.RETIRED_JOB_NAMES` pauses two of them first — they were the
+`cron_seed.RETIRED_JOB_NAMES` now pauses all three first — they were the
 #agent-logs noise the owner named on 2026-09-07 (the canary delivered a whole
-model reply daily; readiness had no daily ceiling). `install()` never writes
-`enabled`, so the pause survives deploys. Bring either back with
-`hermes cron resume <job-id>`; ids are at `/health.config.fleet_checks`.
-The release check stays scheduled: it speaks once per candidate.
+model reply daily; readiness had no daily ceiling; the release check posted its
+wrapped "Cronjob Response" block daily for an upstream release openclaw-hq's own
+watch already covers at most weekly). `install()` never writes `enabled`, so the
+pause survives deploys. Bring any of them back with `hermes cron resume
+<job-id>`; ids are at `/health.config.fleet_checks`.
+
+**No job this repo installs still posts to Slack on a clock.** The three product
+briefs and all three fleet checks are paused; Cleo keeps the cron workbench, so
+a job someone creates deliberately is the only scheduled voice left.
 
 **Nothing now watches this service's health from outside it.** Retiring the
 readiness check removed the only automated `/health` watcher; the receipt at
@@ -548,8 +553,8 @@ profiles and Grok recovery route. Real Slack acceptance must independently
 verify Sol. The installer receipt at `/health.config.fleet_checks.canaryRoute`
 records this distinction; scheduled success is not evidence of primary health.
 
-All three deliver only to `slack:C0BH5997USK` (`#agent-logs`) — the two retired
-ones would, if resumed. Health and release
+All three deliver only to `slack:C0BH5997USK` (`#agent-logs`) — they would, if
+resumed. Health and release
 scripts emit only changed findings or recovery, retrying failed native delivery.
 A red observation exits successfully so native cron keeps its five-minute
 cadence. Receipts live under `$HERMES_HOME/fleet/`; native cron retains job

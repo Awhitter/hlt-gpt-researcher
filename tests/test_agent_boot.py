@@ -6084,25 +6084,24 @@ def test_an_invalid_existing_cron_export_blocks_retirement(tmp_path, monkeypatch
     assert result["failed"] == ["read-export"]
 
 
-def test_the_two_noisy_fleet_checks_are_retired_but_the_release_check_is_not(
-    tmp_path, monkeypatch
-):
-    """Owner, 2026-09-07: a condition speaks once when it starts, once when it
-    ends, and at most once a day while it persists. The daily canary delivered
-    a whole model reply into #agent-logs every day and the readiness check runs
-    on a five-minute tick; both are retired. The release check speaks once per
-    candidate, so it stays scheduled."""
+def test_every_scheduled_fleet_check_is_retired(tmp_path, monkeypatch):
+    """Owner, 2026-09-07: "i want the agents to work but never ever spam like
+    this again." The daily canary delivered a whole model reply into #agent-logs
+    every day, the readiness check runs on a five-minute tick, and the release
+    check posts the same wrapped "Cronjob Response" block daily for a release
+    openclaw-hq's own upstream watch already covers at most weekly. All three
+    are paused; none of the three still speaks on a clock."""
     cron_seed = _cron_seed()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     assert cron_seed.RETIRED_FLEET_JOB_NAMES == {
         "hlt-fleet-daily-canary-cleo-v1",
         "hlt-fleet-readiness-cleo-v1",
+        "hlt-fleet-release-cleo-v1",
     }
     assert cron_seed.RETIRED_JOB_NAMES == (
         cron_seed.LEGACY_BRIEF_NAMES | cron_seed.RETIRED_FLEET_JOB_NAMES
     )
-    assert "hlt-fleet-release-cleo-v1" not in cron_seed.RETIRED_JOB_NAMES
 
     cron_dir = tmp_path / "cron"
     cron_dir.mkdir()
@@ -6131,16 +6130,18 @@ def test_the_two_noisy_fleet_checks_are_retired_but_the_release_check_is_not(
     assert result["paused"] == [
         "hlt-fleet-daily-canary-cleo-v1",
         "hlt-fleet-readiness-cleo-v1",
+        "hlt-fleet-release-cleo-v1",
     ]
     assert result["failed"] == []
     # Paused by exact id, so run history survives and `hermes cron resume`
-    # brings either one back.
+    # brings any one of them back.
     assert calls == [
         ["hermes", "cron", "pause", "canary"],
         ["hermes", "cron", "pause", "readiness"],
+        ["hermes", "cron", "pause", "release"],
     ]
     exported = json.loads(Path(result["export_path"]).read_text(encoding="utf-8"))
-    assert {job["id"] for job in exported["jobs"]} == {"canary", "readiness"}
+    assert {job["id"] for job in exported["jobs"]} == {"canary", "readiness", "release"}
     assert exported["restore"] == "hermes cron resume <job-id>"
 
 
