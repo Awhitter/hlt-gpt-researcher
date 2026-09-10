@@ -296,7 +296,15 @@ approvals stay available. Its web and TUI bundles are built from the exact
 `HERMES_REF`, and the container build fails if either native surface is absent.
 The build and shipped TUI use Node 24 LTS with npm 12.0.2; the Python host uses
 3.13, the newest line allowed by Hermes' `>=3.11,<3.14` requirement. Both base
-images are pinned by digest. Hermes remains at the compatible August 31
+images are pinned by digest. Dashboard and TUI JavaScript compile on the
+builder's native architecture; a separate target-platform stage supplies Node
+and npm to the final Python image. Only compiled JavaScript/assets cross that
+architecture boundary. The reviewed `web_dependency_security.patch` updates
+the pinned upstream manifests and lockfile before `npm ci`; it fixes the
+Browserslist, baseline mapping, Colord, sanitize-html, and Vitest advisory
+chains without replacing the retained runtime or upgrading unrelated majors.
+The final image retains the same corrected manifests/lockfile as its bundles.
+Hermes remains at the compatible August 31
 `29112bef099274229cadff79cdff7bf7b99c4b77` release: the September 7 release
 includes the two final-stream reconciliation fixes, but 15 of our 16 preexisting overlays
 no longer apply after upstream moved the gateway and tool execution code.

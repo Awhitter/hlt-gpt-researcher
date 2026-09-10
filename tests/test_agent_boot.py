@@ -824,7 +824,9 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "upstream_stream_final_content_reconciliation.patch" in dockerfile
     assert "upstream_stream_final_draft_gate.patch" in dockerfile
     assert "FROM node:24-bookworm-slim@sha256:" in dockerfile
+    assert "FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:" in dockerfile
     assert "AS hermes-web" in dockerfile
+    assert "AS hermes-node-runtime" in dockerfile
     assert "FROM python:3.13-slim-bookworm@sha256:" in dockerfile
     assert "ARG NPM_VERSION=12.0.2" in dockerfile
     assert "npm ci --workspace=web --workspace=ui-tui" in dockerfile
@@ -835,7 +837,12 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "npm run build --workspace=ui-tui" in dockerfile
     assert "COPY --from=hermes-web" in dockerfile
     assert "hermes_cli/web_dist/index.html" in dockerfile
-    assert "/usr/local/bin/node /usr/local/bin/node" in dockerfile
+    # Only architecture-independent bundles may come from the native compiler.
+    # A cross-platform build can otherwise pass while shipping the wrong Node.
+    assert "COPY --from=hermes-node-runtime /usr/local/bin/node /usr/local/bin/node" in dockerfile
+    assert "COPY --from=hermes-web /usr/local/bin/node" not in dockerfile
+    assert "COPY --from=hermes-node-runtime /usr/local/lib/node_modules/npm" in dockerfile
+    assert "process.arch !== expected" in dockerfile
     assert "/usr/local/lib/node_modules/npm" in dockerfile
     assert "ENV HERMES_TUI_DIR=/opt/hermes/ui-tui" in dockerfile
     assert "ui-tui/dist/entry.js" in dockerfile

@@ -1,8 +1,9 @@
 ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77
 
-# Node 24 is the supported LTS line; keep the web build and shipped TUI runtime
-# identical. Pin the image digest so rebuilds do not silently change runtimes.
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS hermes-web
+# Compile architecture-independent web/TUI JavaScript on the builder's native
+# CPU. Cross-platform TypeScript/Vite compilation can crash under emulation.
+# The shipped Node binary comes from the separate target-platform stage below.
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS hermes-web
 ARG HERMES_REF
 ARG NPM_VERSION=12.0.2
 
@@ -17,15 +18,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}"
 
 WORKDIR /opt/hermes
+COPY hermes_patches/web_dependency_security.patch /tmp/web_dependency_security.patch
+RUN git apply --check /tmp/web_dependency_security.patch \
+    && git apply /tmp/web_dependency_security.patch
 # Match the mounted computer surface for lazy-loaded JS/CSS too; upstream's
 # HTML rewriting alone leaves Vite preload requests pointing at /assets/.
 RUN npm ci --workspace=web --workspace=ui-tui --include-workspace-root=false \
     && npm run build --workspace=web -- --base=/computer/ \
     && npm run build --workspace=ui-tui
 
+# FROM defaults to the requested target platform. Never copy the native build
+# stage's Node binary into a different-architecture final Python image.
+FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS hermes-node-runtime
+ARG NPM_VERSION=12.0.2
+RUN npm install --global "npm@${NPM_VERSION}"
+
 # Hermes requires Python >=3.11,<3.14. 3.13 is the latest compatible stable line.
 FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e
 ARG HERMES_REF
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates build-essential \
@@ -79,6 +90,8 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes fetch --depth=1 origin "${HERMES_REF}" \
     && git -C /opt/hermes checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/web_dependency_security.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/web_dependency_security.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/upstream_stream_final_content_reconciliation.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/upstream_stream_final_content_reconciliation.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/upstream_stream_final_draft_gate.patch \
@@ -156,12 +169,13 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
 # Build both at the exact pinned SHA. The native Chat tab opens a PTY whose
 # child is the TUI bundle, so the web assets alone produce a polished shell
 # with a dead Chat surface.
-COPY --from=hermes-web /usr/local/bin/node /usr/local/bin/node
-COPY --from=hermes-web /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+COPY --from=hermes-node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=hermes-node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && node --version \
-    && npm --version
+    && npm --version \
+    && node -e 'const expected = {amd64: "x64", arm64: "arm64"}[process.argv[1]]; if (!expected || process.arch !== expected) throw new Error(`Node architecture ${process.arch} does not match target ${process.argv[1]}`)' "${TARGETARCH}"
 COPY --from=hermes-web /opt/hermes/hermes_cli/web_dist /opt/hermes/hermes_cli/web_dist
 COPY --from=hermes-web /opt/hermes/ui-tui/dist /opt/hermes/ui-tui/dist
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
