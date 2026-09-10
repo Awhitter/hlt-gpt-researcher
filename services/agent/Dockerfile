@@ -1,7 +1,12 @@
 ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77
 
-FROM node:22-bookworm-slim AS hermes-web
+# Node 24 is the supported LTS line; keep the web build and shipped TUI runtime
+# identical. Pin the image digest so rebuilds do not silently change runtimes.
+FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS hermes-web
 ARG HERMES_REF
+ARG NPM_VERSION=12.0.2
+
+RUN npm install --global "npm@${NPM_VERSION}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -18,7 +23,8 @@ RUN npm ci --workspace=web --workspace=ui-tui --include-workspace-root=false \
     && npm run build --workspace=web -- --base=/computer/ \
     && npm run build --workspace=ui-tui
 
-FROM python:3.12-slim-bookworm
+# Hermes requires Python >=3.11,<3.14. 3.13 is the latest compatible stable line.
+FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e
 ARG HERMES_REF
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

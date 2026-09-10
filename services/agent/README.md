@@ -291,6 +291,23 @@ The browser workbench is deliberately the real pinned Hermes UI, not a reduced
 admin page: Chat/TUI, sessions, models, MCP, skills, browser work, usage, and
 approvals stay available. Its web and TUI bundles are built from the exact
 `HERMES_REF`, and the container build fails if either native surface is absent.
+The build and shipped TUI use Node 24 LTS with npm 12.0.2; the Python host uses
+3.13, the newest line allowed by Hermes' `>=3.11,<3.14` requirement. Both base
+images are pinned by digest. Hermes remains at the compatible August 31
+`29112bef099274229cadff79cdff7bf7b99c4b77` release: the September 7 release
+includes the two final-stream reconciliation fixes, but 15 of our 16 overlays
+no longer apply after upstream moved the gateway and tool execution code.
+In particular, the K2 prompt read lock, numeric grounding, per-surface run
+budgets, independent Codex-profile refresh, and managed Slack session/model
+controls still require a port. Retain these contracts when changing the pin.
+
+Cleo's reviewed Sol-to-Grok subscription route remains active. Public API or
+AI Gateway availability of GPT-6 Astra does not prove that the managed Codex
+account can use it. The September 7 Hermes catalog discovers Astra from the
+account's live Codex model list; this older compatible runtime lacks its Astra
+metadata and account-catalog gate. Upgrade and prove that runtime contract
+before changing Cleo's default. Do not substitute a paid API route for the
+subscription route as a side effect of a model refresh.
 The outer K2 session gate covers both HTTP and WebSocket traffic; a deploy simply
 expires the local session and the profile button opens another one.
 

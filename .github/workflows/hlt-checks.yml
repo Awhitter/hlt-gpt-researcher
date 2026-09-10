@@ -23,6 +23,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  runtime-images:
+    name: Retained runtime image (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        service: [agent, codegraph]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Check whether this runtime changed
+        id: changed
+        env:
+          SERVICE: ${{ matrix.service }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ] || ! git diff --quiet HEAD^ HEAD -- "services/$SERVICE" .github/workflows/hlt-checks.yml; then
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Build only: the image assertions prove installed extras, native Hermes
+      # contracts, and web/TUI artifacts without starting an agent or deployment.
+      - name: Build the exact runtime and its embedded contract gates
+        if: steps.changed.outputs.build == 'true'
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: docker build --progress=plain --tag "hlt-$SERVICE:ci" "services/$SERVICE"
+
   python:
     name: HLT backend tests
     runs-on: ubuntu-latest

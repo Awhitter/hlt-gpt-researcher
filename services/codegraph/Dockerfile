@@ -1,10 +1,13 @@
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+ARG NPM_VERSION=12.0.2
+ARG GITNEXUS_VERSION=1.6.11
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g gitnexus@latest
+RUN npm install --global "npm@${NPM_VERSION}" \
+    && npm install --global "gitnexus@${GITNEXUS_VERSION}"
 
 WORKDIR /app
 

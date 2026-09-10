@@ -6,6 +6,11 @@ GitNexus structural indexes; `HLT-Master/hlt-web-service` and Mastery Research
 itself are deliberately source-only so account and provider answers can inspect
 current code without risking another memory-heavy graph rebuild.
 
+The image uses Node 24 LTS (pinned by digest), npm 12.0.2, and GitNexus 1.6.11.
+GitNexus is pinned to a reviewed stable release so a routine rebuild cannot
+silently change the graph format or CLI. Existing source-only repositories,
+boot-index choice, and refresh interval remain controlled by the same settings.
+
 ## Tools
 
 - Exact source evidence: `search_source`, `read_source`, `verify_source_ref`

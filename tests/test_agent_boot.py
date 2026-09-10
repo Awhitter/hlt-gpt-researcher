@@ -823,7 +823,10 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "from firecrawl import Firecrawl" in dockerfile
     assert "upstream_stream_final_content_reconciliation.patch" in dockerfile
     assert "upstream_stream_final_draft_gate.patch" in dockerfile
-    assert "FROM node:22-bookworm-slim AS hermes-web" in dockerfile
+    assert "FROM node:24-bookworm-slim@sha256:" in dockerfile
+    assert "AS hermes-web" in dockerfile
+    assert "FROM python:3.13-slim-bookworm@sha256:" in dockerfile
+    assert "ARG NPM_VERSION=12.0.2" in dockerfile
     assert "npm ci --workspace=web --workspace=ui-tui" in dockerfile
     # Lazy-page CSS preloads must use the same prefix as the mounted dashboard.
     assert "npm run build --workspace=web -- --base=/computer/" in dockerfile
