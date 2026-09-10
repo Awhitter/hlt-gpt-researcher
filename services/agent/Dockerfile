@@ -34,9 +34,21 @@ ARG NPM_VERSION=12.0.2
 RUN npm install --global "npm@${NPM_VERSION}"
 
 # Hermes requires Python >=3.11,<3.14. 3.13 is the latest compatible stable line.
+FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS hermes-sqlite
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY install_sqlite.sh /tmp/install_sqlite.sh
+RUN sh /tmp/install_sqlite.sh
+
 FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e
 ARG HERMES_REF
 ARG TARGETARCH
+
+# Copy a target-platform library, then prove Python resolves it rather than
+# Bookworm's older system copy. Headers keep later native extras consistent.
+COPY --from=hermes-sqlite /usr/local/lib/libsqlite3.so* /usr/local/lib/
+COPY --from=hermes-sqlite /usr/local/include/sqlite3*.h /usr/local/include/
+RUN ldconfig && python -c 'import sqlite3; assert sqlite3.sqlite_version == "3.53.4", sqlite3.sqlite_version'
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates build-essential \
@@ -204,6 +216,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
+RUN python /app/assert_sqlite_runtime.py
 # /app/grounding holds AGENTS.md — the selected agent's durable briefing, loaded by Hermes'
 # project-context discovery from terminal.cwd. It stays root-owned and
 # world-readable so the agent can read it but never rewrite its own facts.

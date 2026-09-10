@@ -17,9 +17,12 @@ import re
 import sqlite3
 import threading
 from collections.abc import Mapping
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from hlt_sqlite import configure_journal
 
 SCHEMA_VERSION = 1
 ADMISSION_STATES = frozenset({"queued", "dispatching", "provider_bound", "terminal"})
@@ -151,20 +154,18 @@ class AgentRunLedger:
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=8.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=8000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        # synchronous is per-connection (WAL mode persists in the header;
-        # this does not). Without it here, every real write ran at the
-        # build's default — potentially NORMAL, where a host crash right
-        # after claim_dispatch can lose the commit and replay a dispatch,
-        # the exact double-send this ledger exists to prevent.
-        conn.execute("PRAGMA synchronous=FULL")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=8000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            configure_journal(conn)
+        except BaseException:
+            conn.close()
+            raise
         return conn
 
     def _initialize(self) -> None:
-        with self._lock, self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS agent_run_admissions (
@@ -193,12 +194,12 @@ class AgentRunLedger:
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def probe(self) -> dict[str, Any]:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute("SELECT 1").fetchone()
         return {"ready": True, "schema_version": SCHEMA_VERSION}
 
     def get(self, run_id: str) -> dict[str, Any] | None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             row = conn.execute(
                 "SELECT * FROM agent_run_admissions WHERE wrapper_run_id = ?",
                 (run_id,),
@@ -216,7 +217,7 @@ class AgentRunLedger:
     ) -> tuple[dict[str, Any], bool]:
         run_id = wrapper_run_id(k2_run_id)
         now = utc_now_iso()
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
@@ -271,7 +272,7 @@ class AgentRunLedger:
 
     def claim_dispatch(self, run_id: str) -> bool:
         """Cross the no-redispatch boundary exactly once."""
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
@@ -286,7 +287,7 @@ class AgentRunLedger:
         return cursor.rowcount == 1
 
     def mark_dispatch_ambiguous(self, run_id: str, detail: Any = "") -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
@@ -304,7 +305,7 @@ class AgentRunLedger:
             )
 
     def bind_provider(self, run_id: str, provider_run_id: str) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
@@ -324,7 +325,7 @@ class AgentRunLedger:
     def note_provider_status(self, run_id: str, provider_status: str) -> None:
         if provider_status in TERMINAL_PROVIDER_STATES:
             raise AdmissionStateError("terminal provider state requires mark_terminal")
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
@@ -337,7 +338,7 @@ class AgentRunLedger:
             raise AdmissionStateError("cannot update provider status before binding")
 
     def note_provider_unknown(self, run_id: str, code: str, detail: Any = "") -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
@@ -368,7 +369,7 @@ class AgentRunLedger:
             raise ValueError("provider_status is not terminal")
         now = utc_now_iso()
         sanitized_usage = sanitize_usage(usage)
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions

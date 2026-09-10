@@ -304,6 +304,17 @@ the pinned upstream manifests and lockfile before `npm ci`; it fixes the
 Browserslist, baseline mapping, Colord, sanitize-html, and Vitest advisory
 chains without replacing the retained runtime or upgrading unrelated majors.
 The final image retains the same corrected manifests/lockfile as its bundles.
+SQLite is independently pinned to stable **3.53.4**: the target-platform build
+verifies the official source archive's SHA3-256 before compiling the shared
+library. The final Python process must report that exact version and source ID,
+with JSON, FTS5, RTree, and both HLT ledgers passing offline runtime assertions.
+This avoids inheriting Bookworm's older SQLite through an otherwise current
+Python image. No database schema or live journal migration is performed.
+Both HLT ledgers use `hlt_sqlite.py`, require FULL synchronization on every
+connection, and close their owned connections after each operation. Older local
+runtimes retain rollback journals for fresh databases; an existing WAL database
+requires an officially fixed SQLite version before application work can proceed.
+The guard never downgrades a live WAL database or guesses a locked journal mode.
 Hermes remains at the compatible August 31
 `29112bef099274229cadff79cdff7bf7b99c4b77` release: the September 7 release
 includes the two final-stream reconciliation fixes, but 15 of our 16 preexisting overlays

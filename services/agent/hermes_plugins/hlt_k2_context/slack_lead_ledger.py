@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from hlt_sqlite import configure_journal
 
 RECEIPT_SCHEMA = "slack_agent_lead_decision.v1"
 RETENTION_SECONDS = 45 * 24 * 60 * 60
@@ -28,40 +31,44 @@ class SlackLeadLedger:
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(self.path), timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS slack_agent_lead_tombstones (
-                workspace_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                message_ts TEXT NOT NULL,
-                receipt_json TEXT NOT NULL,
-                created_at_unix REAL NOT NULL,
-                PRIMARY KEY (workspace_id, channel_id, message_ts)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 5000")
+            configure_journal(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS slack_agent_lead_tombstones (
+                    workspace_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    message_ts TEXT NOT NULL,
+                    receipt_json TEXT NOT NULL,
+                    created_at_unix REAL NOT NULL,
+                    PRIMARY KEY (workspace_id, channel_id, message_ts)
+                )
+                """
             )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS slack_agent_lead_created_idx
-            ON slack_agent_lead_tombstones (created_at_unix)
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS slack_thread_participants (
-                workspace_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                thread_ts TEXT NOT NULL,
-                agent_refs_json TEXT NOT NULL,
-                mention_message_ts TEXT NOT NULL,
-                updated_at_unix REAL NOT NULL,
-                PRIMARY KEY (workspace_id, channel_id, thread_ts)
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS slack_agent_lead_created_idx
+                ON slack_agent_lead_tombstones (created_at_unix)
+                """
             )
-            """
-        )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS slack_thread_participants (
+                    workspace_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    thread_ts TEXT NOT NULL,
+                    agent_refs_json TEXT NOT NULL,
+                    mention_message_ts TEXT NOT NULL,
+                    updated_at_unix REAL NOT NULL,
+                    PRIMARY KEY (workspace_id, channel_id, thread_ts)
+                )
+                """
+            )
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
     def thread_participants(
@@ -70,7 +77,7 @@ class SlackLeadLedger:
         """Return the latest human-invited participant set for one thread."""
         if not workspace_id or not channel_id or not thread_ts:
             return ()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """
                 SELECT agent_refs_json
@@ -115,7 +122,7 @@ class SlackLeadLedger:
             raise ValueError("at least one valid agent participant is required")
         encoded = json.dumps(normalized, separators=(",", ":"))
         now = time.time()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
@@ -156,7 +163,7 @@ class SlackLeadLedger:
 
         now = time.time()
         encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 """
