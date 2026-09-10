@@ -7,9 +7,20 @@ itself are deliberately source-only so account and provider answers can inspect
 current code without risking another memory-heavy graph rebuild.
 
 The image uses Node 24 LTS (pinned by digest), npm 12.0.2, and GitNexus 1.6.11.
+The Python facade uses stable Python 3.14 on a pinned Bookworm image; Node and
+its native modules come from the same Debian release. Cleo separately keeps
+Python 3.13 because its Hermes runtime declares a lower maximum.
 GitNexus is pinned to a reviewed stable release so a routine rebuild cannot
 silently change the graph format or CLI. Existing source-only repositories,
 boot-index choice, and refresh interval remain controlled by the same settings.
+
+The Python MCP dependency intentionally remains below version 2. Current MCP
+1.30 supports Python 3.14 and retains `mcp.server.fastmcp`, which this facade
+uses; MCP 2.2 removed that module. The other Python dependency floors allow
+current stable compatible releases. The image runs `assert_runtime.py` to
+check installed versions, dependency consistency, native Node imports, actual
+public-health output, and authentication decisions. This gate does not start
+the server, clone repositories, create indexes, or load embedding models.
 
 ## Tools
 
