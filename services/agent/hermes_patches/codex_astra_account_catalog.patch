@@ -1,0 +1,82 @@
+--- a/agent/reasoning_effort.py
++++ b/agent/reasoning_effort.py
+@@ -73,8 +73,22 @@
+ )
+ 
+ 
++# Stable v2026.9.7 compatibility: Astra has no disabled/minimal wire level.
++CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
++ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
++
++
++def is_astra_model(model: Optional[str]) -> bool:
++    """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
++    The single home for the slug set: picker gating, effort vocabulary and the request sanitizer all
++    key off it, so a new Astra alias is one edit."""
++    return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
++
++
+ def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
+     """Supported effort set for an OpenAI/Codex Responses model."""
++    if is_astra_model(model):
++        return CODEX_ASTRA_EFFORTS
+     if "gpt-5.6" in (model or "").lower():
+         return CODEX_GPT56_EFFORTS
+     return CODEX_LEGACY_EFFORTS
+--- a/hermes_cli/codex_models.py
++++ b/hermes_cli/codex_models.py
+@@ -250,6 +250,14 @@
+     return deduped
+ 
+ 
++def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
++    """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
++    ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
++    from agent.reasoning_effort import is_astra_model
++
++    return [model for model in model_ids if not is_astra_model(model)]
++
++
+ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
+     """Return available Codex model IDs, trying API first, then local sources.
+     
+@@ -279,4 +287,4 @@
+         if model_id not in ordered:
+             ordered.append(model_id)
+ 
+-    return _finalize_codex_models(ordered)
++    return _finalize_codex_models(_drop_undiscovered_astra(ordered))
+--- a/agent/model_metadata.py
++++ b/agent/model_metadata.py
+@@ -453,6 +453,7 @@
+     # GPT-5.6 series (Sol/Terra/Luna, GA 2026-07-09) — 1.05M on the direct
+     # OpenAI API (same as gpt-5.5). Codex OAuth caps these at 272K.
+     # (Lookups length-sort keys at match time, so dict order is cosmetic.)
++    "gpt-6-astra": 1050000,  # stable upstream direct/API fallback; Codex resolves separately
+     "gpt-5.6-luna": 1050000,
+     "gpt-5.6-terra": 1050000,
+     "gpt-5.6-sol": 1050000,
+@@ -2494,6 +2495,7 @@
+ # Used as a fallback when the live probe fails (no token, network error).
+ # Longest keys first so substring match picks the most specific entry.
+ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
++    "gpt-6-astra": 272_000,  # advertised subscription context; no automatic large-window opt-in
+     "gpt-5.1-codex-max": 272_000,
+     "gpt-5.1-codex-mini": 272_000,
+     "gpt-5.3-codex": 272_000,
+@@ -2550,6 +2552,7 @@
+     "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
+ }
+ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
++    "gpt-6-astra": 900_000,  # stable upstream opt-in only, verified 2026-09-04
+     "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
+     "gpt-daybreak-blue-latest": 900_000,  # exact Daybreak/Sol alias verified at 911,276
+ }
+@@ -2568,6 +2571,7 @@
+ # were never probed. Dated snapshots of the routable 5.6 bases are allowed
+ # via _CODEX_900K_SNAPSHOT_RE.
+ _CODEX_900K_ELIGIBLE_BASES = frozenset({
++    "gpt-6-astra",
+     "gpt-5.6-sol",
+     "gpt-5.6-terra",
+     "gpt-5.6-luna",

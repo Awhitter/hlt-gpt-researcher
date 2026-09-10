@@ -93,6 +93,8 @@ RUN git init /opt/hermes \
     && git -C /opt/hermes apply /tmp/hermes-patches/codex_pool_readiness_counts.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/codex_terminal_refresh.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/codex_terminal_refresh.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/codex_astra_account_catalog.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/codex_astra_account_catalog.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_single_stream_progress.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/slack_single_stream_progress.patch \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
@@ -139,6 +141,7 @@ RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
     && python /tmp/hermes-patches/assert_provider_failover_request_contract.py /opt/hermes \
     && python -c "from agent.credential_pool import CredentialPool; assert callable(getattr(CredentialPool, 'readiness_counts', None))" \
     && python /tmp/hermes-patches/assert_codex_terminal_refresh.py /opt/hermes \
+    && python /tmp/hermes-patches/assert_codex_astra.py /opt/hermes \
     && python /tmp/hermes-patches/assert_slack_single_stream_progress.py /opt/hermes \
     && python /tmp/hermes-patches/assert_k2_runtime_pack_prompt_refresh.py /opt/hermes \
     && python /tmp/hermes-patches/assert_progressive_tool_result_compaction.py /opt/hermes \
