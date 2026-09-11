@@ -74,6 +74,30 @@ SOCKET_DOWN_MARKERS = (
 # A run of failures with no successful connect between them is the stuck state.
 SOCKET_FAILURE_TOLERANCE = int(os.getenv("AGENT_SOCKET_FAILURE_TOLERANCE", "5"))
 
+# ── Socket watchdog ──────────────────────────────────────────────────────────
+# Observing a dead socket (above) turned out not to be enough. 2026-09-08→11:
+# the adapter's aiohttp session closed ("RuntimeError: Session is closed"),
+# every reconnect failed instantly, and the child process never exited — so
+# `_supervise`, which only acts on EXIT, watched 77,472 failures accumulate
+# over 72 hours with `restarts: 0` while /health dutifully reported the
+# degradation nobody was polling. The watchdog closes that gap: once the
+# observed socket state has been False for this long, bounce the child and let
+# `_supervise` start a fresh interpreter with a fresh aiohttp session — the
+# same repair a human performs from the Render dashboard, minus the three
+# silent days. 0 disables the watchdog.
+SOCKET_DEAD_RESTART_SECONDS = float(
+    os.getenv("AGENT_SOCKET_DEAD_RESTART_SECONDS", "900")
+)
+# A bounce cannot fix a revoked app token or a Slack outage, so after this many
+# bounces in a row with no successful connect between them the watchdog stops
+# and says so in the snapshot (`slack_socket_watchdog.exhausted`) instead of
+# thrashing a hopeless transport forever. Any successful connect resets the
+# streak. Cron keeps running throughout — a deaf gateway still does timed work.
+SOCKET_WATCHDOG_MAX_CONSECUTIVE = int(
+    os.getenv("AGENT_SOCKET_WATCHDOG_MAX_CONSECUTIVE", "4")
+)
+SOCKET_WATCHDOG_POLL_SECONDS = 30.0
+
 # Emitted only after a provider call succeeds and reports usage. This is
 # stronger evidence than config or a pre-call "conversation turn" line: it
 # captures the route that actually answered, including a Hermes fallback.
@@ -159,6 +183,12 @@ class GatewaySupervisor:
         self._socket_last_failure: str | None = None
         self._socket_last_failure_at: float | None = None
         self._socket_failures_since_connect = 0
+        # Watchdog state. `_socket_down_since` is the moment `_socket_state()`
+        # flipped to False (not the first dropped frame — those are normal).
+        self._socket_down_since: float | None = None
+        self._watchdog_bounces_total = 0
+        self._watchdog_bounces_consecutive = 0
+        self._watchdog_kill_pending = False
         self._observed_provider: str | None = None
         self._observed_model: str | None = None
         self._observed_route_at: float | None = None
@@ -226,6 +256,21 @@ class GatewaySupervisor:
                     if self._socket_last_failure_at
                     else None
                 ),
+                "slack_socket_watchdog": {
+                    "enabled": SOCKET_DEAD_RESTART_SECONDS > 0,
+                    "restart_after_seconds": SOCKET_DEAD_RESTART_SECONDS or None,
+                    "down_for_seconds": (
+                        round(now - self._socket_down_since, 1)
+                        if self._socket_down_since
+                        else None
+                    ),
+                    "bounces_total": self._watchdog_bounces_total,
+                    "bounces_consecutive": self._watchdog_bounces_consecutive,
+                    "exhausted": (
+                        self._watchdog_bounces_consecutive
+                        >= SOCKET_WATCHDOG_MAX_CONSECUTIVE
+                    ),
+                },
                 "observed_model_route": (
                     {
                         "provider": self._observed_provider,
@@ -272,12 +317,20 @@ class GatewaySupervisor:
                 self._socket_connected_at = time.time()
                 self._socket_failures_since_connect = 0
                 self._socket_last_failure = None
+                # A live transport forgives everything: the watchdog's outage
+                # clock and its give-up streak both start over.
+                self._socket_down_since = None
+                self._watchdog_bounces_consecutive = 0
             return
         if any(marker in line for marker in SOCKET_DOWN_MARKERS):
             with self._lock:
                 self._socket_last_failure_at = time.time()
                 self._socket_last_failure = line.strip()[:300]
                 self._socket_failures_since_connect += 1
+                # Start the outage clock the moment the observed state flips to
+                # False (tolerance crossed, or a failure with no connect ever).
+                if self._socket_down_since is None and self._socket_state() is False:
+                    self._socket_down_since = self._socket_last_failure_at
 
     def _pump_output(self, proc: subprocess.Popen[str]) -> None:
         """Tee the child's log stream: through to our stdout, and past the watcher.
@@ -299,6 +352,75 @@ class GatewaySupervisor:
         except Exception:
             logger.exception("gateway log pump stopped")
 
+    def _watchdog_should_bounce(self, now: float) -> bool:
+        """The bounce decision, factored out so a test can hold it still.
+
+        True only when every one of these holds: the child process is alive
+        (a dead child is `_supervise`'s job), the observed socket state is
+        False (None is boot grace, True is healthy), the outage clock has run
+        past SOCKET_DEAD_RESTART_SECONDS, and the streak cap has not been hit.
+        Callers must hold ``self._lock``.
+        """
+        if SOCKET_DEAD_RESTART_SECONDS <= 0:
+            return False
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        if self._socket_state() is not False or self._socket_down_since is None:
+            return False
+        if self._watchdog_bounces_consecutive >= SOCKET_WATCHDOG_MAX_CONSECUTIVE:
+            return False
+        return (now - self._socket_down_since) >= SOCKET_DEAD_RESTART_SECONDS
+
+    def _watchdog(self) -> None:
+        """Bounce the child when its Slack socket has been dead too long.
+
+        `_supervise` restarts a child that EXITS; this restarts a child that
+        LIVES while its transport is gone — the exact state that held Cleo
+        deaf for 72 hours with `restarts: 0`. The bounce is a SIGTERM, so the
+        supervise loop reaps it and starts a fresh interpreter whose adapter
+        opens a fresh aiohttp session.
+        """
+        while not self._stop.wait(SOCKET_WATCHDOG_POLL_SECONDS):
+            with self._lock:
+                if not self._watchdog_should_bounce(time.time()):
+                    continue
+                proc = self._proc
+                if proc is None:  # pragma: no cover - re-checked for the type
+                    continue
+                self._watchdog_kill_pending = True
+                self._watchdog_bounces_total += 1
+                self._watchdog_bounces_consecutive += 1
+                down_for = time.time() - (self._socket_down_since or time.time())
+                bounce = self._watchdog_bounces_total
+                streak = self._watchdog_bounces_consecutive
+            logger.error(
+                "slack socket observed dead for %.0fs (threshold %.0fs); watchdog "
+                "bounce #%d (streak %d/%d): terminating the gateway for a fresh "
+                "transport",
+                down_for,
+                SOCKET_DEAD_RESTART_SECONDS,
+                bounce,
+                streak,
+                SOCKET_WATCHDOG_MAX_CONSECUTIVE,
+            )
+            if streak >= SOCKET_WATCHDOG_MAX_CONSECUTIVE:
+                logger.error(
+                    "watchdog streak hit its cap of %d; if this bounce does not "
+                    "reconnect, no further automatic restarts — check the Slack "
+                    "app token and Slack's status page, then restart the service",
+                    SOCKET_WATCHDOG_MAX_CONSECUTIVE,
+                )
+            proc.terminate()
+            # SIGTERM first. If Hermes wedges instead of exiting, escalate once;
+            # `_supervise` is blocked in proc.wait() and handles the reap.
+            deadline = time.time() + 30
+            while time.time() < deadline and proc.poll() is None:
+                if self._stop.wait(1.0):
+                    return
+            if proc.poll() is None:
+                logger.error("gateway ignored SIGTERM for 30s; sending SIGKILL")
+                proc.kill()
+
     def start(self) -> None:
         if not GATEWAY_ENABLED:
             logger.info(
@@ -319,6 +441,12 @@ class GatewaySupervisor:
         threading.Thread(
             target=self._supervise, name="hermes-gateway", daemon=True
         ).start()
+        if SOCKET_DEAD_RESTART_SECONDS > 0:
+            threading.Thread(
+                target=self._watchdog,
+                name="hermes-gateway-socket-watchdog",
+                daemon=True,
+            ).start()
 
     def block_start(self, reason: str) -> None:
         """Record a fail-closed boot gate without starting a crash loop."""
@@ -350,6 +478,11 @@ class GatewaySupervisor:
                 self._socket_last_failure = None
                 self._socket_last_failure_at = None
                 self._socket_failures_since_connect = 0
+                # Fresh child, fresh outage clock. The bounce STREAK survives on
+                # purpose — only an observed successful connect clears it, so a
+                # transport that never comes back exhausts the watchdog instead
+                # of being bounced forever.
+                self._socket_down_since = None
                 proc = self._proc
             threading.Thread(
                 target=self._pump_output,
@@ -363,7 +496,25 @@ class GatewaySupervisor:
                 return
 
             with self._lock:
+                watchdog_bounce = self._watchdog_kill_pending
+                self._watchdog_kill_pending = False
                 self._last_exit_code = exit_code
+
+            if watchdog_bounce:
+                # An intentional repair, not a crash: it must not eat into the
+                # MAX_RESTARTS give-up budget, or four socket recoveries over a
+                # long-lived container would permanently stop the gateway (and
+                # cron with it). The watchdog's own streak cap bounds this loop.
+                logger.info(
+                    "gateway exited after a watchdog bounce (code %s); starting "
+                    "a fresh one",
+                    exit_code,
+                )
+                if self._stop.wait(5):
+                    return
+                continue
+
+            with self._lock:
                 self._restarts += 1
                 restarts = self._restarts
 
@@ -3146,12 +3297,33 @@ def health() -> dict[str, Any]:
             if ago
             else "never connected since this process started"
         )
+        watchdog = gateway.get("slack_socket_watchdog") or {}
+        if not watchdog.get("enabled"):
+            repair = (
+                "The socket watchdog is disabled "
+                "(AGENT_SOCKET_DEAD_RESTART_SECONDS=0); restart the service to "
+                "reconnect."
+            )
+        elif watchdog.get("exhausted"):
+            repair = (
+                f"The socket watchdog bounced the gateway "
+                f"{watchdog.get('bounces_consecutive')} times without a successful "
+                "reconnect and has given up — this is not a stale-session hang; "
+                "check the Slack app token and Slack's status page, then restart "
+                "the service."
+            )
+        else:
+            repair = (
+                "The socket watchdog will bounce the gateway after "
+                f"{watchdog.get('restart_after_seconds')}s of observed outage "
+                f"(down {watchdog.get('down_for_seconds') or 0}s so far, "
+                f"bounces so far: {watchdog.get('bounces_total')})."
+            )
         payload["note"] = (
             "The gateway process is up and Slack authentication is fine, but the "
             "Socket Mode websocket is not connected, so Cleo cannot hear anyone — "
             f"{gateway.get('slack_socket_failures_since_connect')} consecutive connect failures, "
-            f"{last_good}. Last failure: {failure}. Restarting the service reconnects it; "
-            "if it recurs, the adapter is reusing a closed aiohttp session on reconnect."
+            f"{last_good}. Last failure: {failure}. " + repair
         )
     elif mode == "gateway_slack_auth_failed":
         payload["note"] = (

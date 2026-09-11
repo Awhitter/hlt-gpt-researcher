@@ -124,6 +124,9 @@ leave your file alone and say so in `/health`.
 | `HLT_AGENT_PUBLIC_ORIGIN` | Exact HTTPS origin used by K2's one-click computer handoff |
 | `OPENCLAW_HQ_HOOK_TOKEN` | Shared strong bearer for K2's hosted-agent hook and Hermes' loopback run API |
 | `K2_ACTIVATION_POLL_SECONDS` | Optional offline-to-active polling interval, bounded to 5–300 seconds (default 10) |
+| `AGENT_SOCKET_FAILURE_TOLERANCE` | Consecutive Socket Mode connect failures before the observed state reads disconnected (default 5) |
+| `AGENT_SOCKET_DEAD_RESTART_SECONDS` | Watchdog: bounce the gateway child after this long of observed socket outage so a live process with a dead transport cannot stay deaf for days (default 900; `0` disables) |
+| `AGENT_SOCKET_WATCHDOG_MAX_CONSECUTIVE` | Watchdog give-up cap: consecutive bounces without a successful reconnect before it stops and marks `slack_socket_watchdog.exhausted` in `/health` (default 4) |
 | `HERMES_HOME` | Persistent disk path (default `/data/hermes`) |
 
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
