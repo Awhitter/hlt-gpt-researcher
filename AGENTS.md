@@ -212,6 +212,19 @@ dials the same listener on `127.0.0.1:$PORT` using the native `/api/ws` and
 attribution. Preserve that separation, and prove both Chat and sidebar events
 when changing the dashboard mount or upstream pin.
 
+Dashboard/TUI compilation uses the Docker builder's native platform. The final
+image must copy Node/npm from the separate target-platform runtime stage, never
+from that compiler stage. The pinned upstream dependency-security overlay must
+apply cleanly before `npm ci`; preserve its manifest/lock agreement when
+advancing the runtime pin.
+
+The agent image owns its Python-linked SQLite separately from the distro:
+verify the pinned official source hash, build for the target platform, and keep
+the actual library/source-ID and two-ledger runtime assertions green. Both HLT
+ledgers share `hlt_sqlite.py`; retain FULL synchronization, deterministic
+connection closure, and refusal to use an existing WAL database on an
+unqualified older SQLite. Never live-downgrade a journal to make a check pass.
+
 At boot, the K2 runtime pack is the canonical identity and doctrine while the
 Wishing Well is an independent task-context probe. If the pack succeeds and
 the Well times out, keep and run the K2 pack with context readiness shown as

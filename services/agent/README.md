@@ -145,9 +145,12 @@ gateway when at least one reviewed Sol or Grok route can answer; the agent
 serves visibly degraded and keeps recovering its preferred route instead of
 going silent. `gateway.observed_model_route` remains
 empty until a successful model call, then names the provider/model that really
-answered — including Grok failover. Cleo caps one generated provider reply at
-32,768 tokens and keeps 24 model iterations available for long-running API/K2
-work. Interactive Slack turns have a stricter seven-iteration ceiling plus five
+answered — including Grok failover. Cleo configures a 32,768-token output ceiling
+for transports that support it. Hermes omits `max_output_tokens` on the Codex
+subscription endpoint because that endpoint rejects the field; the configured
+ceiling is not a hard Codex output bound. Cleo keeps 24 model iterations
+available for long-running API/K2 work. Interactive Slack turns have a stricter
+seven-iteration ceiling plus five
 tool-calling rounds; after that, the plugin blocks further tools and
 tells the model to synthesize from completed evidence with missing values
 labeled unknown. This preserves parallel reads and the full catalog while
@@ -294,6 +297,55 @@ The browser workbench is deliberately the real pinned Hermes UI, not a reduced
 admin page: Chat/TUI, sessions, models, MCP, skills, browser work, usage, and
 approvals stay available. Its web and TUI bundles are built from the exact
 `HERMES_REF`, and the container build fails if either native surface is absent.
+The build and shipped TUI use Node 24 LTS with npm 12.0.2; the Python host uses
+3.13, the newest line allowed by Hermes' `>=3.11,<3.14` requirement. Both base
+images are pinned by digest. Dashboard and TUI JavaScript compile on the
+builder's native architecture; a separate target-platform stage supplies Node
+and npm to the final Python image. Only compiled JavaScript/assets cross that
+architecture boundary. The reviewed `web_dependency_security.patch` updates
+the pinned upstream manifests and lockfile before `npm ci`; it fixes the
+Browserslist, baseline mapping, Colord, sanitize-html, and Vitest advisory
+chains without replacing the retained runtime or upgrading unrelated majors.
+The final image retains the same corrected manifests/lockfile as its bundles.
+SQLite is independently pinned to stable **3.53.4**: the target-platform build
+verifies the official source archive's SHA3-256 before compiling the shared
+library. The final Python process must report that exact version and source ID,
+with JSON, FTS5, RTree, and both HLT ledgers passing offline runtime assertions.
+This avoids inheriting Bookworm's older SQLite through an otherwise current
+Python image. No database schema or live journal migration is performed.
+Both HLT ledgers use `hlt_sqlite.py`, require FULL synchronization on every
+connection, and close their owned connections after each operation. Older local
+runtimes retain rollback journals for fresh databases; an existing WAL database
+requires an officially fixed SQLite version before application work can proceed.
+The guard never downgrades a live WAL database or guesses a locked journal mode.
+Hermes remains at the compatible August 31
+`29112bef099274229cadff79cdff7bf7b99c4b77` release: the September 7 release
+includes the two final-stream reconciliation fixes, but 15 of our 16 preexisting overlays
+no longer apply after upstream moved the gateway and tool execution code.
+In particular, the K2 prompt read lock, numeric grounding, per-surface run
+budgets, independent Codex-profile refresh, and managed Slack session/model
+controls still require a port. Retain these contracts when changing the pin.
+
+Cleo's reviewed Sol-to-Grok subscription route remains configured. Public API or
+AI Gateway availability of GPT-6 Astra does not prove that the managed Codex
+account can use it. The compatible runtime already reads the account's live
+Codex catalog. A focused backport from the September 7 stable release adds
+Astra's reasoning vocabulary and context metadata, and excludes Astra from
+stale local config/cache fallback when no current account catalog confirms it.
+The existing cache remains scoped by token fingerprint and distinguishes a
+fresh provider response from an in-memory hit and static fallback.
+
+The Linux image runs `assert_codex_astra.py` against the actual patched methods
+with synthetic accounts and network responses. It covers stale/denied/hidden
+catalog entries, per-account context provenance, and the actual Responses
+request builder's reasoning normalization and removal of the picker alias.
+Codex's default Astra context remains 272K; 900K is an explicit picker choice,
+and an actual changed catalog limit takes precedence. Public/API metadata
+remains separate. These are compatibility assertions, not proof that Cleo's
+managed account has Astra entitlement or that Astra answered a live turn.
+Keep Sol high and Grok recovery until that account and response/tool contract
+are proved. Do not substitute a paid API route for the subscription route as
+a side effect of a model refresh.
 The outer K2 session gate covers both HTTP and WebSocket traffic; a deploy simply
 expires the local session and the profile button opens another one.
 
