@@ -59,9 +59,10 @@ def main(root: Path) -> None:
     assert "_request_and_confirm_managed_turn_stop" in run_source
     assert "managed_turn_control: Optional[Dict[str, Any]] = None" in run_source
     assert "if not _managed_slack_stream:" in run_source
-    assert 'model = "gpt-5.6-sol"' in run_source
-    assert 'provider = "xai-oauth"' in run_source
-    assert 'model = "grok-4.6"' in run_source
+    assert 'model = "openai/gpt-6-astra"' in run_source
+    assert 'provider = "openrouter"' in run_source
+    assert 'model = "gpt-5.6-sol"' not in run_source
+    assert 'model = "grok-4.6"' not in run_source
     assert "def _managed_fallback_chain()" in run_source
     assert "_publish_managed_slack_stream_progress" in run_source
     assert run_source.count("await self._send_slack_lifecycle_notice(") == 5

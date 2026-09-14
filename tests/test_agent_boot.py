@@ -240,8 +240,8 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     render_config.render(env=FULL_ENV, home=tmp_path)
     config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
-    assert config["model"]["provider"] == "openai-codex"
-    assert config["model"]["default"] == "gpt-5.6-sol"
+    assert config["model"]["provider"] == "openrouter"
+    assert config["model"]["default"] == "openai/gpt-6-astra"
     assert config["model"]["max_tokens"] == 32_768
     assert config["agent"]["max_turns"] == 24
     assert config["agent"]["platform_max_turns"] == {"slack": 7}
@@ -374,57 +374,37 @@ def test_environment_cannot_override_the_reviewed_primary_route(tmp_path):
         "OPENROUTER_MODEL": "ignored/model",
     }
     summary = render_config.render(env=env, home=tmp_path)
-    assert summary["model_provider"] == "openai-codex"
-    assert summary["model"] == "gpt-5.6-sol"
+    assert summary["model_provider"] == "openrouter"
+    assert summary["model"] == "openai/gpt-6-astra"
 
 
-def test_subscription_provider_and_model_are_the_pinned_primary(tmp_path):
+def test_astra_provider_and_model_are_the_pinned_primary(tmp_path):
     default = render_config.render(env={}, home=tmp_path)
-    assert default["model_provider"] == "openai-codex"
-    assert default["model"] == "gpt-5.6-sol"
+    assert default["model_provider"] == "openrouter"
+    assert default["model"] == "openai/gpt-6-astra"
     assert default["reasoning_effort"] == "high"
 
     attempted_override = render_config.build_config(
         {"HERMES_INFERENCE_PROVIDER": "openrouter", "OPENROUTER_MODEL": "anthropic/claude-sonnet-5"}
     )
-    assert attempted_override["model"]["provider"] == "openai-codex"
-    assert attempted_override["model"]["default"] == "gpt-5.6-sol"
+    assert attempted_override["model"]["provider"] == "openrouter"
+    assert attempted_override["model"]["default"] == "openai/gpt-6-astra"
 
 
-def test_fallback_chain_matches_the_pinned_hermes_object_contract(tmp_path):
-    """Provider-name strings are silently discarded by pinned Hermes.
-
-    The recovery chain must therefore contain a provider and an exact model at
-    every hop. The managed Codex pool rotates internally; Grok is the only
-    independent agentic fallback. An unavailable pair must degrade rather than
-    answer through a weaker OpenRouter model.
-    """
+def test_astra_route_explicitly_clears_persisted_fallbacks(tmp_path):
     config = render_config.build_config(FULL_ENV)
-
-    assert config["fallback_providers"] == [
-        {"provider": "xai-oauth", "model": "grok-4.6"},
-    ]
-    assert all(
-        isinstance(route, dict) and set(route) == {"provider", "model"}
-        for route in config["fallback_providers"]
-    )
+    assert config["fallback_providers"] == []
     assert config["agent"]["reasoning_effort"] == "high"
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
-    assert summary["configured_model_route"][0] == {
-        "provider": "openai-codex",
-        "model": "gpt-5.6-sol",
+    assert summary["configured_model_route"] == [{
+        "provider": "openrouter",
+        "model": "openai/gpt-6-astra",
         "role": "primary",
-    }
-    assert summary["configured_model_route"][1] == {
-        "provider": "xai-oauth",
-        "model": "grok-4.6",
-        "role": "fallback-1",
-    }
-    assert len(summary["configured_model_route"]) == 2
+    }]
 
 
-def test_environment_cannot_expand_or_disable_the_reviewed_fallback():
+def test_environment_cannot_add_a_fallback_to_astra():
     for override in (
         "openrouter:moonshotai/kimi-k3",
         "openrouter:qwen/qwen3.8-max",
@@ -434,9 +414,7 @@ def test_environment_cannot_expand_or_disable_the_reviewed_fallback():
         config = render_config.build_config(
             {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": override}
         )
-        assert config["fallback_providers"] == [
-            {"provider": "xai-oauth", "model": "grok-4.6"}
-        ]
+        assert config["fallback_providers"] == []
 
 
 def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
@@ -769,7 +747,7 @@ def _cron_seed():
     return _load("cron_seed", SERVICE_DIR / "cron_seed.py")
 
 
-def _load_health_gateway():
+def _load_health_gateway(*, legacy_subscription_policy=False):
     """Load health_gateway.py without putting the service dir on sys.path.
 
     It does bare ``import grounding`` / ``import render_config``, which normally
@@ -784,7 +762,17 @@ def _load_health_gateway():
         for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger", "fleet_run_budget")
     }
     sys.modules["grounding"] = grounding
-    sys.modules["render_config"] = render_config
+    route_config = render_config
+    if legacy_subscription_policy:
+        # Preserve provider-aware OAuth recovery coverage without pretending
+        # this historical route is the current production default.
+        route_config = _load("hlt_legacy_render_config", SERVICE_DIR / "render_config.py")
+        route_config.DEFAULT_PROVIDER = "openai-codex"
+        route_config.DEFAULT_MODEL = "gpt-5.6-sol"
+        route_config.DEFAULT_FALLBACK_PROVIDERS = (
+            {"provider": "xai-oauth", "model": "grok-4.6"},
+        )
+    sys.modules["render_config"] = route_config
     sys.modules["cron_seed"] = _cron_seed()
     sys.modules["agent_run_ledger"] = agent_run_ledger
     sys.modules["fleet_run_budget"] = _load("fleet_run_budget", SERVICE_DIR / "fleet_run_budget.py")
@@ -1045,7 +1033,7 @@ def test_an_unreachable_check_never_condemns_a_working_key(monkeypatch):
 
 
 def test_every_configured_model_route_gets_a_separate_readiness_result(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setattr(
         health_gateway,
         "subscription_auth_readiness",
@@ -1230,7 +1218,7 @@ def test_codex_readiness_separates_serving_from_three_profile_redundancy():
 def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
     monkeypatch,
 ):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     health_gateway.BOOT.update(
         {
             "model_provider": "openai-codex",
@@ -1302,7 +1290,7 @@ def test_health_route_refresh_reuses_one_provider_probe_within_cache_window(
     monkeypatch,
 ):
     """Render liveness polling must not refresh OAuth every few seconds."""
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     health_gateway.BOOT.update(
         {
             "model_provider": "openai-codex",
@@ -1345,7 +1333,7 @@ def test_health_route_refresh_reuses_one_provider_probe_within_cache_window(
 
 
 def test_activation_cache_invalidation_makes_operator_repair_visible(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     health_gateway.BOOT.update(
         {
             "model_provider": "openai-codex",
@@ -2297,7 +2285,7 @@ def test_k2_preactivation_proves_binding_without_claiming_active(monkeypatch):
 def test_verified_preactivation_pack_is_a_serving_brain_but_not_active(
     monkeypatch, tmp_path
 ):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     readiness = {
         **_preactivation_boot_state()["k2_agent_readiness"],
@@ -4075,6 +4063,7 @@ def test_terminal_receipt_is_redacted_bounded_and_survives_restart(
 
 
 def _preactivation_boot_state():
+    """Historical subscription fixture; pair with legacy_subscription_policy."""
     return {
         "agent_ref": "agent:cleo",
         "runtime_lane": "hermes",
@@ -4152,7 +4141,7 @@ def _preactivation_boot_state():
 def test_boot_starts_verified_preactivation_pack_and_keeps_activation_watcher(
     monkeypatch, tmp_path
 ):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     state = _preactivation_boot_state()
     state.update(
         {
@@ -4250,7 +4239,7 @@ def test_boot_starts_verified_preactivation_pack_and_keeps_activation_watcher(
 
 
 def test_runtime_proof_changes_only_with_runtime_inputs():
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     state = _preactivation_boot_state()
     state.update(
         {
@@ -4335,7 +4324,7 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
 
 
 def test_health_is_live_but_not_ready_for_the_old_grok_to_kimi_ladder(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setattr(
         health_gateway.supervisor,
@@ -4409,7 +4398,7 @@ def test_health_is_live_but_not_ready_for_the_old_grok_to_kimi_ladder(monkeypatc
 
 
 def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     state = _preactivation_boot_state()
     health_gateway.BOOT.clear()
@@ -4494,7 +4483,7 @@ def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypa
 
 
 def test_reviewed_fallback_keeps_serving_while_codex_redundancy_is_degraded():
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     state = _preactivation_boot_state()
     state["model_route_readiness"] = [
         {
@@ -4534,7 +4523,7 @@ def test_reviewed_fallback_keeps_serving_while_codex_redundancy_is_degraded():
 
 
 def test_no_reviewed_model_route_still_blocks_serving():
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     state = _preactivation_boot_state()
     for route in state["model_route_readiness"]:
         route["available"] = False
@@ -4551,7 +4540,7 @@ def test_no_reviewed_model_route_still_blocks_serving():
 
 
 def test_runtime_readiness_keeps_primary_serving_when_redundancy_is_degraded():
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     state = _preactivation_boot_state()
     state.update({
         "runtime_pack_applied": True,
@@ -4610,7 +4599,7 @@ ACTIVATION_CHECK_KEYS = {
 
 
 def test_activation_probe_breaks_the_circle_without_claiming_active(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(
         health_gateway.supervisor,
@@ -4689,7 +4678,7 @@ def test_activation_probe_breaks_the_circle_without_claiming_active(monkeypatch)
 
 
 def test_preactivation_pack_opens_slack_proof_but_not_active_run_surfaces(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setattr(
@@ -4764,7 +4753,7 @@ def test_preactivation_pack_opens_slack_proof_but_not_active_run_surfaces(monkey
 
 
 def test_post_activation_readyz_requires_the_real_run_surface_and_reports_optional_well(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(
         health_gateway.supervisor,
@@ -4823,7 +4812,7 @@ def test_post_activation_readyz_requires_the_real_run_surface_and_reports_option
 
 
 def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     calls = []
     preactivation = {
         **_preactivation_boot_state()["k2_agent_readiness"],
@@ -4886,7 +4875,7 @@ def test_activation_transition_repeats_the_strict_active_read(monkeypatch):
 def test_activation_transition_starts_with_the_canonical_pack_when_well_times_out(
     monkeypatch,
 ):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     preactivation = {
         **_preactivation_boot_state()["k2_agent_readiness"],
         "activation_ready": True,
@@ -4999,7 +4988,7 @@ def test_running_preactivation_gateway_keeps_polling_for_immutable_k2_proof():
 
 
 def test_preactivation_route_recovery_can_start_slack_before_activation(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     preactivation = {
         **_preactivation_boot_state()["k2_agent_readiness"],
         "outage_declared": False,
@@ -5201,7 +5190,7 @@ def test_route_recovery_starts_fallback_once_but_keeps_watching_for_k2(monkeypat
 def test_health_names_a_degraded_primary_pool_without_calling_gateway_down(
     monkeypatch,
 ):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(
@@ -5269,7 +5258,7 @@ def test_health_names_a_degraded_primary_pool_without_calling_gateway_down(
 
 
 def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypatch):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setattr(
         health_gateway.supervisor,
@@ -5378,7 +5367,7 @@ def test_health_names_an_unready_slack_lead_before_generic_gateway_down(monkeypa
 def test_health_names_the_exact_k2_readiness_seam(
     monkeypatch, readiness, pack_applied, expected_mode
 ):
-    health_gateway = _load_health_gateway()
+    health_gateway = _load_health_gateway(legacy_subscription_policy=True)
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setattr(
         health_gateway.supervisor,
@@ -6451,22 +6440,120 @@ def test_failed_readiness_never_publishes_the_runtime_pack():
     assert hg.BOOT["k2_agent_readiness"]["contract_status"] == "outage"
 
 
-def test_unrelated_xai_api_key_cannot_expand_the_reviewed_recovery_ladder():
-    """Only the managed Codex pool and authenticated Grok route are agentic.
-
-    A stray plain-API key must not add another billed provider hop or change
-    ordering. Model changes require a reviewed code/config update.
-    """
+def test_unrelated_credentials_cannot_add_an_astra_fallback():
     with_key = render_config.fallback_providers(
         {**FULL_ENV, "XAI_API_KEY": "xai-test"},
-        primary_provider="openai-codex",
-        primary_model="gpt-5.6-sol",
+        primary_provider="openrouter",
+        primary_model="openai/gpt-6-astra",
     )
-    without_key = render_config.fallback_providers(
-        FULL_ENV,
-        primary_provider="openai-codex",
-        primary_model="gpt-5.6-sol",
-    )
+    assert with_key == []
 
-    assert with_key == [{"provider": "xai-oauth", "model": "grok-4.6"}]
-    assert without_key == with_key
+
+def _astra_boot_state(*, available=True):
+    state = _preactivation_boot_state()
+    state["configured_model_route"] = [{
+        "provider": "openrouter", "model": "openai/gpt-6-astra", "role": "primary",
+    }]
+    state["model_route_readiness"] = [{
+        **state["configured_model_route"][0],
+        "available": available,
+        "credential": "api_key",
+        "detail": {"kind": "inference" if available else "rejected"},
+    }]
+    state["model_provider"] = "openrouter"
+    return state
+
+
+def test_astra_readiness_requires_no_subscription_pool_or_fallback(monkeypatch):
+    hg = _load_health_gateway()
+    state = _astra_boot_state()
+    hg.BOOT.update(state)
+    monkeypatch.setattr(hg, "subscription_auth_readiness", lambda *_: pytest.fail("Astra queried OAuth"))
+    monkeypatch.setattr(hg, "openrouter_key_kind", lambda _: "inference")
+    routes = hg.model_route_readiness(state["configured_model_route"], FULL_ENV)
+
+    gate = hg.authenticated_model_route_gate(routes)
+
+    assert gate["ready"] is True
+    assert gate["servingReady"] is True
+    assert gate["primaryReady"] is True
+    assert gate["primaryRedundancyRequired"] is False
+    assert gate["primaryRedundancyReady"] is False
+    assert gate["fallbackRequired"] is False
+    assert gate["fallbackReady"] is False
+    assert all(hg._model_redundancy_checks(gate).values())
+
+
+def test_astra_refresh_updates_api_status_without_mislabeling_oauth(monkeypatch):
+    hg = _load_health_gateway()
+    hg.BOOT.update(_astra_boot_state())
+    hg.BOOT["openrouter_key_kind"] = "rejected"
+    stored_subscription = {"logged_in": False, "rate_limited": True}
+    hg.BOOT["subscription_auth"] = stored_subscription.copy()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-inference")
+    monkeypatch.setattr(hg, "openrouter_key_kind", lambda _: "inference")
+
+    routes = hg.refresh_model_route_readiness()
+
+    assert routes[0]["available"] is True
+    assert hg.BOOT["openrouter_key_present"] is True
+    assert hg.BOOT["openrouter_key_kind"] == "inference"
+    assert hg.BOOT["subscription_auth"] == stored_subscription
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    hg.invalidate_model_route_readiness_cache()
+    assert hg.refresh_model_route_readiness()[0]["available"] is False
+    assert hg.BOOT["openrouter_key_present"] is False
+    assert hg.BOOT["openrouter_key_kind"] == "missing"
+
+
+@pytest.mark.parametrize("kind", ["missing", "rejected", "provisioning", "unknown"])
+def test_astra_unusable_or_unproven_key_never_opens_dispatch(monkeypatch, kind):
+    hg = _load_health_gateway()
+    state = _astra_boot_state()
+    hg.BOOT.update(state)
+    monkeypatch.setattr(hg, "openrouter_key_kind", lambda _: kind)
+    env = {} if kind == "missing" else FULL_ENV
+    routes = hg.model_route_readiness(state["configured_model_route"], env)
+
+    gate = hg.authenticated_model_route_gate(routes)
+
+    assert gate["ready"] is False
+    assert gate["servingReady"] is False
+    assert hg._reviewed_model_route_can_serve(gate) is False
+
+
+def test_astra_policy_rejects_old_sol_route_and_injected_fallback():
+    hg = _load_health_gateway()
+    for state in [_preactivation_boot_state(), _astra_boot_state()]:
+        if state["configured_model_route"][0]["provider"] == "openrouter":
+            state["configured_model_route"].append({
+                "provider": "xai-oauth", "model": "grok-4.6", "role": "fallback-1",
+            })
+        hg.BOOT.clear()
+        hg.BOOT.update(state)
+        gate = hg.authenticated_model_route_gate(state["model_route_readiness"])
+        assert gate["contractReady"] is False
+        assert gate["servingReady"] is False
+
+
+def test_astra_activation_and_readiness_accept_exact_api_route(monkeypatch):
+    hg = _load_health_gateway()
+    state = _astra_boot_state()
+    hg.BOOT.update(state)
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setattr(hg, "refresh_model_route_readiness", lambda: state["model_route_readiness"])
+    monkeypatch.setattr(hg.supervisor, "snapshot", lambda: {
+        "running": True, "cli_present": True, "slack_adapter_available": True,
+        "mcp_sdk_available": True, "slack_socket_connected": True,
+    })
+
+    response = hg.activationz(authorization="Bearer a-secure-shared-hook-token")
+
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["ready"] is True
+    assert body["runtimeProof"]["inputs"]["modelRoute"] == state["configured_model_route"]
+    state["model_route_readiness"][0]["available"] = False
+    unavailable = hg.activationz(authorization="Bearer a-secure-shared-hook-token")
+    assert unavailable.status_code == 503
+    assert json.loads(unavailable.body)["checks"]["primary_model_route_ready"] is False

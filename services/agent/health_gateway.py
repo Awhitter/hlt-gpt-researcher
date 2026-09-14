@@ -1740,7 +1740,7 @@ def _codex_subscription_auth_readiness(
 def model_route_contract_readiness(
     boot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Prove the reviewed Sol -> Grok ladder, independent of credentials."""
+    """Prove the exact reviewed route and reasoning, independent of credentials."""
     state = BOOT if boot is None else boot
     configured = [
         {
@@ -2007,7 +2007,13 @@ def refresh_model_route_readiness() -> list[dict[str, Any]]:
         None,
     )
     if primary is not None and isinstance(primary.get("detail"), Mapping):
-        BOOT["subscription_auth"] = copy.deepcopy(primary["detail"])
+        if active_provider in {"openai-codex", "xai-oauth"}:
+            BOOT["subscription_auth"] = copy.deepcopy(primary["detail"])
+        elif active_provider == "openrouter":
+            BOOT["openrouter_key_present"] = bool(
+                os.getenv("OPENROUTER_API_KEY", "").strip()
+            )
+            BOOT["openrouter_key_kind"] = primary["detail"].get("kind", "unknown")
     return copy.deepcopy(refreshed)
 
 
@@ -2016,11 +2022,10 @@ def authenticated_model_route_gate(
 ) -> dict[str, Any]:
     """Publish strict fleet readiness and non-silent serving readiness.
 
-    Full readiness requires three selectable managed Sol profiles plus the
-    authenticated Grok 4.6 recovery route. Serving readiness requires at least
-    one of those reviewed routes. This keeps degraded redundancy visible while
-    preventing one cooling profile from turning a capable Slack teammate into
-    a silent process.
+    Readiness follows the configured provider: a managed Codex route requires
+    its selectable profile pool, while an API-key route has no OAuth pool.
+    An explicitly empty fallback policy is valid, but does not claim a backup
+    exists. Missing or rejected primary credentials still block that route.
     """
     checked = [
         dict(route)
@@ -2037,7 +2042,8 @@ def authenticated_model_route_gate(
         and route.get("available") is True
         for route in checked
     )
-    fallback_ready = len(render_config.DEFAULT_FALLBACK_PROVIDERS) > 0 and all(
+    fallback_required = bool(render_config.DEFAULT_FALLBACK_PROVIDERS)
+    fallback_ready = fallback_required and all(
         any(
             route.get("role") == f"fallback-{index}"
             and route.get("provider") == expected["provider"]
@@ -2071,21 +2077,41 @@ def authenticated_model_route_gate(
         and isinstance(primary_detail.get("credential_pool"), Mapping)
         else {}
     )
-    redundancy_ready = credential_pool.get("minimum_ready") is True
+    redundancy_required = render_config.DEFAULT_PROVIDER == "openai-codex"
+    redundancy_ready = (
+        redundancy_required and credential_pool.get("minimum_ready") is True
+    )
     contract_ready = contract["ready"] is True
     return {
         "ready": (
             contract_ready
             and primary_ready
-            and fallback_ready
-            and redundancy_ready
+            and (not fallback_required or fallback_ready)
+            and (not redundancy_required or redundancy_ready)
         ),
         "servingReady": contract_ready and (primary_ready or fallback_ready),
         "contractReady": contract_ready,
         "primaryReady": primary_ready,
+        "primaryRedundancyRequired": redundancy_required,
         "primaryRedundancyReady": redundancy_ready,
+        "fallbackRequired": fallback_required,
         "fallbackReady": fallback_ready,
         "routes": checked,
+    }
+
+
+def _model_redundancy_checks(route_gate: Mapping[str, Any]) -> dict[str, bool]:
+    """Compatibility check names mean policy satisfied, not a backup exists."""
+    return {
+        "primary_model_pool_redundancy_ready": (
+            route_gate.get("primaryRedundancyRequired") is False
+            or route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
+            is True
+        ),
+        "fallback_model_route_ready": (
+            route_gate.get("fallbackRequired") is False
+            or route_gate.get("fallbackReady") is True
+        ),
     }
 
 
@@ -2634,7 +2660,7 @@ def boot() -> None:
             "gateway start blocked: Cleo requires a verified K2 brain (active, "
             "reviewed preactivation, or declared-outage fallback), the "
             "mission-context plugin, Slack identity, and at least one authenticated "
-            "reviewed GPT-5.6 Sol or Grok 4.6 route"
+            f"reviewed {render_config.DEFAULT_PROVIDER}/{render_config.DEFAULT_MODEL} route"
         )
     else:
         supervisor.start()
@@ -2674,11 +2700,7 @@ def activation_readiness() -> dict[str, Any]:
             and not bool(slack_auth.get("missing_core_scopes"))
         ),
         "primary_model_route_ready": route_gate["primaryReady"] is True,
-        "primary_model_pool_redundancy_ready": (
-            route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
-            is True
-        ),
-        "fallback_model_route_ready": route_gate["fallbackReady"] is True,
+        **_model_redundancy_checks(route_gate),
         "model_route_contract_ready": route_gate["contractReady"] is True,
         "web_search_ready": (
             (BOOT.get("web_search_readiness") or {}).get("available") is True
@@ -2737,11 +2759,7 @@ def external_dispatch_readiness() -> dict[str, Any]:
         "slack_auth_ok": slack_auth.get("auth_ok") is True,
         "slack_scopes_ready": not bool(slack_auth.get("missing_core_scopes")),
         "primary_model_route_ready": route_gate["primaryReady"] is True,
-        "primary_model_pool_redundancy_ready": (
-            route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
-            is True
-        ),
-        "fallback_model_route_ready": route_gate["fallbackReady"] is True,
+        **_model_redundancy_checks(route_gate),
         "model_route_contract_ready": route_gate["contractReady"] is True,
         "k2_runtime_pack_applied": BOOT.get("runtime_pack_applied") is True,
         "k2_activation_ready": _active_k2_pack_installed(k2),
@@ -2793,11 +2811,12 @@ def runtime_readiness_snapshot(
         ),
         "model_route_contract_ready": route_gate["contractReady"] is True,
         "primary_model_profile_ready": route_gate["primaryReady"] is True,
-        "primary_model_pool_redundancy_ready": (
-            route_gate.get("primaryRedundancyReady", route_gate.get("ready"))
-            is True
-        ),
-        "fallback_model_profile_ready": route_gate["fallbackReady"] is True,
+        "primary_model_pool_redundancy_ready": _model_redundancy_checks(route_gate)[
+            "primary_model_pool_redundancy_ready"
+        ],
+        "fallback_model_profile_ready": _model_redundancy_checks(route_gate)[
+            "fallback_model_route_ready"
+        ],
         "k2_activation_ready": _active_k2_pack_installed(k2),
         "k2_runtime_ready": (
             BOOT.get("runtime_pack_applied") is True
@@ -2820,9 +2839,10 @@ def runtime_readiness_snapshot(
                 "fallback_model_profile_ready",
             }
         ),
-        "redundancyReady": (
-            route_gate.get("primaryRedundancyReady") is True
-            and route_gate.get("fallbackReady") is True
+        "redundancyReady": all(_model_redundancy_checks(route_gate).values()),
+        "redundancyRequired": (
+            route_gate.get("primaryRedundancyRequired") is True
+            or route_gate.get("fallbackRequired") is True
         ),
         "checks": checks,
         "runtimeProof": runtime_input_proof(),
@@ -2992,6 +3012,7 @@ def health() -> dict[str, Any]:
     reviewed_routes_unavailable = not _reviewed_model_route_can_serve(route_gate)
     model_pool_redundancy_bad = bool(BOOT.get("configured_model_route")) and (
         route_gate.get("contractReady") is True
+        and route_gate.get("primaryRedundancyRequired") is True
         and route_gate.get("primaryRedundancyReady") is not True
     )
     k2_readiness = BOOT.get("k2_agent_readiness") or {}

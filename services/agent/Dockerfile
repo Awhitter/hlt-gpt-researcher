@@ -62,9 +62,9 @@ WORKDIR /app
 # imported by patched upstream code, so make its application directory part of
 # every Python process' import path rather than only the build-time assertions.
 ENV PYTHONPATH=/app
-# This HLT image owns one reviewed model ladder. The upstream overlay uses the
-# marker to ignore durable /model and channel overrides: Sol through the
-# managed Codex profile pool, then authenticated Grok 4.6 only.
+# This HLT image owns one reviewed route. The upstream overlay uses the marker
+# to ignore durable /model and channel overrides: OpenRouter GPT-6 Astra only,
+# with no fallback model.
 ENV HLT_MANAGED_MODEL_ROUTE=1
 
 # Hermes agent from upstream WITH every extra this agent actually uses.
