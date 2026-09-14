@@ -208,6 +208,10 @@ fallback, but the same bounded watcher stays alive. When K2 recovers it installs
 the canonical pack in place, clears the stale outage receipt, and Hermes detects
 the managed pack epoch on the next message so existing Slack conversations adopt
 the new SOUL and doctrine without losing their history or restarting the socket.
+The complete optional `shellConfig.persona.style` is installed in SOUL's
+Writing style section alongside the short voice label. K2 owns that guidance;
+the host does not summarize, truncate, or copy it into a local template. Later
+pack refreshes replace it, and packs without style keep the original layout.
 Both activation stages carry `agent_host_runtime_inputs.v1`: a stable digest of
 the model ladder, reasoning, pinned Hermes runtime, active K2 pack, toolsets, and
 MCP mounts. Presentation-only fields such as portrait, card copy, display name,

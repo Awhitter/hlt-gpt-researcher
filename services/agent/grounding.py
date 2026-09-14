@@ -842,6 +842,9 @@ def install_runtime_pack(
     role = _text(identity.get("roleLabel")) or _text(persona.get("role"))
     promise = _text(identity.get("promise"))
     voice = _text(identity.get("voice")) or _text(persona.get("voice"))
+    # This is the complete authored guidance from K2, separate from the short
+    # voice label. It must not be replaced with a summary or a local template.
+    style = _text(persona.get("style"))
     system_prompt = _fence_safe_block(shell.get("systemPrompt"), 20_000)
     doctrine = _fence_safe_block(shell.get("doctrineMd"), 20_000)
     if not system_prompt and not doctrine:
@@ -857,6 +860,8 @@ def install_runtime_pack(
         soul_parts.append(f"## Promise\n\n{promise}")
     if voice:
         soul_parts.append(f"## Voice\n\n{voice}")
+    if style:
+        soul_parts.append(f"## Writing style\n\n{style}")
     if system_prompt:
         soul_parts.append(f"## Operating identity\n\n{system_prompt}")
     soul = (

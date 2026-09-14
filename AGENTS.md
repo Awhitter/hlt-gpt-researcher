@@ -206,6 +206,11 @@ Preserve native subscription grants and retired schedules. A deployment is
 proved by a bounded native run with observed model and durable output, not
 credential presence or a catalog entry alone.
 
+The K2 pack's optional `shellConfig.persona.style` is the complete authored
+writing guidance, distinct from the short voice label. `grounding.py` installs
+it in the managed SOUL file and refreshes it with the rest of the canonical
+pack. Preserve it in full; do not replace it with copied local prose.
+
 The Codex recovery overlay preserves native credential ownership: manual OAuth
 grants refresh from their exact persisted pool row, not the singleton login.
 Terminal refresh failures mark only that manual grant dead; real quota cooldowns
