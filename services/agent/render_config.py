@@ -30,13 +30,12 @@ GENERATED_BY = "hlt-render-boot"
 HOST_RUNTIME_CONTRACT_VERSION = "cleo-hermes-host.v2"
 K2_CONTEXT_PLUGIN_VERSION = "1.6.0"
 
-# Cleo's primary route is the managed Codex credential pool. Hermes rotates
-# pool entries before advancing to the provider fallback, so subscription
-# capacity is shared without copying credentials into this config. Grok 4.6 is
-# the one independent recovery route. Environment aliases cannot silently put
-# a weaker or unreviewed model in front of teammates.
-DEFAULT_PROVIDER = "openai-codex"
-DEFAULT_MODEL = "gpt-5.6-sol"
+# The owner selected Astra for Cleo, including paid API inference. Keep one
+# exact route across Slack and external runs; an unavailable Astra request
+# remains recoverable instead of silently answering through another model.
+# Existing subscription credentials stay in their native store, untouched.
+DEFAULT_PROVIDER = "openrouter"
+DEFAULT_MODEL = "openai/gpt-6-astra"
 DEFAULT_MAX_TOKENS = 32_768
 # A live Nursing Mastery funnel brief completed in 20 model iterations. Leaving
 # Hermes at its upstream 500-turn default gives one externally-triggered run
@@ -70,20 +69,9 @@ ALWAYS_LOADED_TOOLS = (
     "mcp__katailyst2__tool_execute",
     "read_spillover",
 )
-# Recovery order, not a second policy engine. Hermes walks this list only when
-# the active route fails after its bounded retry. Every entry is a real model
-# id from the provider's current catalog; provider-only strings are not a valid
-# Hermes fallback contract and are intentionally never emitted.
-#
-# The managed Codex pool rotates internally. If every selectable Codex profile
-# is unavailable, Hermes retries the original request once through the owner's
-# independently authenticated xAI subscription. Weak OpenRouter models are not
-# valid agentic recovery: when both reviewed routes are unavailable, the
-# gateway preserves the request and reports degraded service instead of
-# generating a lower-quality answer.
-DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
-    {"provider": "xai-oauth", "model": "grok-4.6"},
-)
+# Explicitly empty also clears a fallback left on the persistent Hermes disk.
+# Adding another model is a reviewed route change, never an env override.
+DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = ()
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
@@ -261,8 +249,8 @@ def fallback_providers(
     """Return the reviewed recovery ladder with no environment expansion.
 
     Primary and recovery are a code-reviewed reliability contract rather than
-    mutable environment flags. No environment value can add Kimi, Qwen,
-    DeepSeek, OpenRouter, or an unproved paid route behind the readiness gate.
+    mutable environment flags. No environment value can add another model
+    behind the readiness gate.
     """
     del env
     primary = (primary_provider.strip().lower(), primary_model.strip().lower())
@@ -517,11 +505,9 @@ def build_config(
             # containing tool/config diagnostics. Native Slack progress already
             # lives in the one evolving stream, so disable that second bubble.
             "gateway_timeout_warning": 0,
-            # Fast failover to the fallback provider rather than slow retries.
+            # Bounded same-route retry; there is no lower-model fallback.
             "api_max_retries": 1,
-            # High is the pinned Hermes recommendation for Codex-backed Slack:
-            # xhigh can consume the turn in hidden thought without visible text.
-            # Both reviewed Sol and Grok routes support high.
+            # High leaves room for visible, useful work within Slack's turn cap.
             "reasoning_effort": "high",
             "environment_hint": runtime_hint,
         },
