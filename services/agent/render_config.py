@@ -676,11 +676,11 @@ def build_config(
         "plugins": {"enabled": ["hlt-k2-context"]},
     }
 
-    fallback = fallback_providers(
+    # An explicit empty list clears any cached recovery chain from an older
+    # generated config; omission can preserve it in native consumers.
+    config["fallback_providers"] = fallback_providers(
         env, primary_provider=model_provider, primary_model=model_name
     )
-    if fallback:
-        config["fallback_providers"] = fallback
 
     if servers:
         config["mcp_servers"] = servers
