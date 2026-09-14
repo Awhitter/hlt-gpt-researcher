@@ -1666,6 +1666,50 @@ def test_active_runtime_pack_materially_replaces_the_managed_fallback(tmp_path):
     assert "never form an allowlist" in doctrine
 
 
+def test_runtime_pack_installs_complete_authored_style_alongside_voice(tmp_path):
+    pack = _cleo_runtime_pack()
+    style = (
+        "Start from the nurse's stated priority.\n\n"
+        + "Preserve concrete details and write naturally.\n" * 700
+        + "Finish with one easy next step."
+    )
+    assert len(style) > 20_000
+    pack["shellConfig"]["persona"]["style"] = style
+
+    result = grounding.install_runtime_pack(
+        pack, expected_agent_ref="agent:cleo", home=tmp_path,
+    )
+
+    soul = (tmp_path / "SOUL.md").read_text(encoding="utf-8")
+    assert result["runtime_pack_applied"] is True
+    assert f"## Writing style\n\n{style}\n\n## Operating identity" in soul
+    assert "## Voice\n\nDirect, warm, decisive." in soul
+    assert result["runtime_pack_soul_chars"] == len(soul)
+    assert soul.count("## Writing style") == 1
+
+
+def test_runtime_pack_style_refresh_replaces_and_removes_stale_guidance(tmp_path):
+    pack = _cleo_runtime_pack()
+    persona = pack["shellConfig"]["persona"]
+    for style in ["First authored style.", "Updated authored style.", None]:
+        if style is None:
+            persona.pop("style")
+        else:
+            persona["style"] = style
+        result = grounding.install_runtime_pack(
+            pack, expected_agent_ref="agent:cleo", home=tmp_path,
+        )
+        assert result["runtime_pack_applied"] is True
+        soul = (tmp_path / "SOUL.md").read_text(encoding="utf-8")
+        if style is None:
+            assert "## Writing style" not in soul
+            assert "authored style." not in soul
+        else:
+            assert style in soul
+            if style.startswith("Updated"):
+                assert "First authored style." not in soul
+
+
 def test_runtime_pack_separates_inline_product_context_from_retrievable_hubs(
     tmp_path,
 ):
