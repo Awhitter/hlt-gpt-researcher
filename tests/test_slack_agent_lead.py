@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "services" / "agent" / "hermes_plugins" / "hlt_k2_context"
 
 
-def _load_plugin():
+def _load_plugin(*, stub_coordination=True):
     name = "hlt_k2_context_lead_test"
     spec = importlib.util.spec_from_file_location(
         name,
@@ -27,6 +27,14 @@ def _load_plugin():
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
+        if stub_coordination:
+            def claim(_url, _token, args):
+                return {
+                    "schemaVersion": "agent_coordination.v1", "coordinationId": "coordination-test",
+                    "revision": 1, "source": args["source"], "leadAgentRef": args["callerAgentRef"],
+                    "callerRole": "lead", "mayRespond": True, "mayComplete": True,
+                }
+            module.claim_coordination = claim
         return module
     finally:
         sys.modules.pop(name, None)
@@ -671,7 +679,7 @@ def test_multi_agent_invitation_keeps_every_invited_agent_conversational(
         )
     )
 
-    assert plugin._pre_gateway_dispatch(event=invitation) is None
+    assert plugin._pre_gateway_dispatch(event=invitation)["action"] == "rewrite"
     ledger = plugin.SlackLeadLedger(tmp_path / "slack-agent-lead.sqlite3")
     assert ledger.thread_participants(
         workspace_id="T_HLT",
@@ -689,7 +697,7 @@ def test_multi_agent_invitation_keeps_every_invited_agent_conversational(
             ts="1787141352.524009",
         )
     )
-    assert plugin._pre_gateway_dispatch(event=followup) is None
+    assert plugin._pre_gateway_dispatch(event=followup)["action"] == "rewrite"
 
 
 def test_repeated_human_mentions_form_one_exact_participant_set(lead):
@@ -766,7 +774,7 @@ def test_hook_records_private_receipt_then_suppresses_restart_replay(
         first = plugin._pre_gateway_dispatch(event=event)
         replay = plugin._pre_gateway_dispatch(event=event)
 
-    assert first is None
+    assert first["action"] == "rewrite"
     assert replay == {"action": "skip", "reason": "durable_replay_tombstone"}
 
     connection = sqlite3.connect(tmp_path / "slack-agent-lead.sqlite3")
@@ -814,7 +822,8 @@ def test_bare_cleo_transfer_recovers_the_parent_task_and_recent_thread_context(
     result = plugin._pre_gateway_dispatch(event=event)
 
     assert result["action"] == "rewrite"
-    assert result["channel_context"] == ""
+    assert "coordination-test" in result["channel_context"]
+    assert parent_task not in result["channel_context"]
     assert parent_task in result["text"]
     assert recent_context in result["text"]
     assert "explicitly transferred this thread to cleo" in result["text"]
@@ -826,7 +835,7 @@ def test_bare_cleo_transfer_recovers_the_parent_task_and_recent_thread_context(
             ts="1787141400.000001",
         )
     )
-    assert plugin._pre_gateway_dispatch(event=followup) is None
+    assert plugin._pre_gateway_dispatch(event=followup)["action"] == "rewrite"
 
 
 def test_valid_json_corruption_in_replay_tombstone_fails_closed(monkeypatch, tmp_path):
@@ -834,7 +843,7 @@ def test_valid_json_corruption_in_replay_tombstone_fails_closed(monkeypatch, tmp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HLT_AGENT_REF", "agent:cleo")
     event = _event(_raw("<@U0BM3ULM210> answer"))
-    assert plugin._pre_gateway_dispatch(event=event) is None
+    assert plugin._pre_gateway_dispatch(event=event) ["action"] == "rewrite"
 
     connection = sqlite3.connect(tmp_path / "slack-agent-lead.sqlite3")
     connection.execute(
@@ -991,95 +1000,19 @@ def test_plugin_registers_lead_selection_before_mission_context():
 
 def test_manifest_and_image_pin_the_supported_pretyping_hook():
     manifest = (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
-    dockerfile = (ROOT / "services" / "agent" / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    patch = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "pre_gateway_dispatch_before_typing.patch"
-    ).read_text(encoding="utf-8")
-    bare_transfer_patch = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "slack_bare_transfer_full_context.patch"
-    ).read_text(encoding="utf-8")
-    quiet_failover_patch = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "quiet_slack_provider_failover.patch"
-    ).read_text(encoding="utf-8")
-    single_stream_patch = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "slack_single_stream_progress.patch"
-    ).read_text(encoding="utf-8")
-    single_stream_assertion = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "assert_slack_single_stream_progress.py"
-    ).read_text(encoding="utf-8")
-    lifecycle_patch = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "slack_native_agent_lifecycle_recovery.patch"
-    ).read_text(encoding="utf-8")
-    failover_assertion = (
-        ROOT
-        / "services"
-        / "agent"
-        / "hermes_patches"
-        / "assert_provider_failover_request_contract.py"
-    ).read_text(encoding="utf-8")
-
+    dockerfile = (ROOT / "services/agent/Dockerfile").read_text(encoding="utf-8")
+    patch = (ROOT / "services/agent/hermes_patches/hlt_runtime_contract.patch").read_text(encoding="utf-8")
     assert "- pre_gateway_dispatch" in manifest
-    assert "version: 1.6.0" in manifest
-    assert "hermes_cli/plugins.py" in dockerfile
-    assert "pre_gateway_dispatch skip" in dockerfile
-    assert "ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile
+    assert "version: 1.7.0" in manifest
+    assert "ARG HERMES_REF=f97608f178d1ffeca59860195ab7da295f7c8e5f" in dockerfile
     assert "git -C /opt/hermes apply --check" in dockerfile
-    assert "assert_pre_gateway_dispatch.py /opt/hermes" in dockerfile
-    assert patch.count("diff --git") == 3
-    assert "skip before adapter processing" in patch
-    assert "_hermes_pre_gateway_dispatch_done" in patch
-    assert "_hermes_sender_is_bot" in patch
-    assert "_hermes_verified_human_app_relay" in patch
-    assert "fail_closed=True" in patch
-    assert 'payload.get("ok") is not False' in patch
-    assert 'str(user.get("id") or "") != str(user_id)' in patch
-    assert 'or user.get("is_app_user")' in patch
-    assert "slack_bare_transfer_full_context.patch" in dockerfile
-    assert "quiet_slack_provider_failover.patch" in dockerfile
-    assert "slack_single_stream_progress.patch" in dockerfile
-    assert "slack_native_agent_lifecycle_recovery.patch" in dockerfile
-    assert "assert_provider_failover_request_contract.py /opt/hermes" in dockerfile
-    assert "assert_slack_single_stream_progress.py /opt/hermes" in dockerfile
-    assert "bare_agent_transfer" in bare_transfer_patch
-    assert 'watermark_ts = ""' in bare_transfer_patch
-    assert '"channel_context" in _result' in patch
-    assert "both model routes are" in quiet_failover_patch
-    assert "Your request is preserved in this thread" in quiet_failover_patch
-    assert "return None" in quiet_failover_patch
-    assert "original_user_message = _ctx.original_user_message" in failover_assertion
-    assert "draft_stream_is_message = True" in single_stream_patch
-    assert 'initial_stream_ack = "On it' in single_stream_patch
-    assert "meaningful progress" in single_stream_patch
-    assert "len(draft_ids) == 1" in single_stream_assertion
-    assert 'self._app.event("agent_session_stopped")' in lifecycle_patch
-    assert "await _early_consumer.prime()" in lifecycle_patch
-    assert "_finalized_streams" in lifecycle_patch
+    assert "hlt_runtime_contract.patch" in dockerfile
+    for gate in ("assert_pre_gateway_dispatch.py", "assert_provider_failover_request_contract.py", "assert_slack_single_stream_progress.py"):
+        assert f"{gate} /opt/hermes" in dockerfile
+    for behavior in ("_hermes_pre_gateway_dispatch_done", "_hermes_sender_is_bot", "_hermes_verified_human_app_relay",
+                     "fail_closed=True", "bare_agent_transfer", "gateway/run_managed_slack.py",
+                     "_prime_managed_slack_turn_stream", "_request_and_confirm_managed_turn_stop", "_finalized_streams"):
+        assert behavior in patch
 
 
 def test_single_line_fence_does_not_swallow_the_mention_after_it(lead):

@@ -1,4 +1,4 @@
-ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77
+ARG HERMES_REF=f97608f178d1ffeca59860195ab7da295f7c8e5f
 
 # Compile architecture-independent web/TUI JavaScript on the builder's native
 # CPU. Cross-platform TypeScript/Vite compilation can crash under emulation.
@@ -63,8 +63,8 @@ WORKDIR /app
 # every Python process' import path rather than only the build-time assertions.
 ENV PYTHONPATH=/app
 # This HLT image owns one reviewed route. The upstream overlay uses the marker
-# to ignore durable /model and channel overrides: OpenRouter GPT-6 Astra only,
-# with no fallback model.
+# to ignore stale durable /model and channel overrides: subscription Codex
+# first, with the funded OpenRouter Astra route as fallback.
 ENV HLT_MANAGED_MODEL_ROUTE=1
 
 # Hermes agent from upstream WITH every extra this agent actually uses.
@@ -104,40 +104,8 @@ RUN git init /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_REF}" \
     && git -C /opt/hermes apply --check /tmp/hermes-patches/web_dependency_security.patch \
     && git -C /opt/hermes apply /tmp/hermes-patches/web_dependency_security.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/upstream_stream_final_content_reconciliation.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/upstream_stream_final_content_reconciliation.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/upstream_stream_final_draft_gate.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/upstream_stream_final_draft_gate.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/pre_gateway_dispatch_before_typing.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_bare_transfer_full_context.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/slack_bare_transfer_full_context.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/quiet_slack_provider_failover.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/quiet_slack_provider_failover.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/codex_pool_readiness_counts.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/codex_pool_readiness_counts.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/codex_terminal_refresh.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/codex_terminal_refresh.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/codex_astra_account_catalog.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/codex_astra_account_catalog.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_single_stream_progress.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/slack_single_stream_progress.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/k2_runtime_pack_prompt_refresh.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/api_runs_numeric_grounding.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/api_runs_numeric_grounding.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/progressive_tool_result_compaction.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/progressive_tool_result_compaction.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/always_loaded_tools.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/always_loaded_tools.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/platform_turn_budget.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/platform_turn_budget.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/slack_native_agent_lifecycle_recovery.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/scheduled_run_budget.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/scheduled_run_budget.patch \
-    && git -C /opt/hermes apply --check /tmp/hermes-patches/api_runs_turn_budget.patch \
-    && git -C /opt/hermes apply /tmp/hermes-patches/api_runs_turn_budget.patch \
+    && git -C /opt/hermes apply --check /tmp/hermes-patches/hlt_runtime_contract.patch \
+    && git -C /opt/hermes apply /tmp/hermes-patches/hlt_runtime_contract.patch \
     && pip install --no-cache-dir -e "/opt/hermes[slack,mcp,tts-premium,fal,firecrawl,web]" \
     && { command -v hermes >/dev/null || { echo "hermes CLI missing after install"; exit 1; }; } \
     && { python -c "import slack_bolt, slack_sdk" || { echo "slack extra missing after install"; exit 1; }; } \
@@ -149,17 +117,14 @@ RUN git init /opt/hermes \
 # Regression for the exact Slack failure Alec saw:
 # `Model generated invalid tool call: mcp__codegraph__context`.
 # The name must be the registry name, not merely a model-facing alias.
-RUN python -c "from tools.mcp_tool import mcp_prefixed_tool_name; assert mcp_prefixed_tool_name('codegraph', 'context') == 'mcp__codegraph__context'"
+RUN python -c "from tools.mcp_tool_schema import mcp_prefixed_tool_name; assert mcp_prefixed_tool_name('codegraph', 'context') == 'mcp__codegraph__context'"
 
 # Cleo's K2 body adapter intentionally builds on these two supported Hermes
 # seams. Keep an upstream upgrade from deploying a wrapper whose async dispatch
 # or one-per-turn context hook has silently disappeared.
-RUN grep -q 'POST /v1/runs' /opt/hermes/gateway/platforms/api_server.py \
-    && grep -q 'GET  /v1/runs/{run_id}' /opt/hermes/gateway/platforms/api_server.py \
+RUN grep -q '"POST", "/v1/runs"' /opt/hermes/gateway/platforms/api_server_runs.py \
+    && grep -q '"GET", "/v1/runs/{run_id}"' /opt/hermes/gateway/platforms/api_server_runs.py \
     && grep -q '"pre_gateway_dispatch"' /opt/hermes/hermes_cli/plugins.py \
-    && grep -q 'skip before adapter processing' /opt/hermes/gateway/platforms/base.py \
-    && grep -q '_hermes_pre_gateway_dispatch_done' /opt/hermes/gateway/run.py \
-    && grep -q 'pre_gateway_dispatch skip' /opt/hermes/gateway/run.py \
     && grep -q 're.escape(COMPACTION_DONE_STATUS)' /opt/hermes/gateway/run.py \
     && grep -q '"pre_llm_call"' /opt/hermes/agent/turn_context.py \
     && python /tmp/hermes-patches/assert_pre_gateway_dispatch.py /opt/hermes \
@@ -193,7 +158,7 @@ COPY --from=hermes-web /opt/hermes/ui-tui/dist /opt/hermes/ui-tui/dist
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 RUN test -s /opt/hermes/hermes_cli/web_dist/index.html \
     && test -s /opt/hermes/ui-tui/dist/entry.js \
-    && python -c "from pathlib import Path; from hermes_cli.main import _make_tui_argv; argv, cwd = _make_tui_argv(Path('/opt/hermes/ui-tui'), False); assert argv[0].endswith('/node') and argv[-1] == '/opt/hermes/ui-tui/dist/entry.js' and cwd == Path('/opt/hermes/ui-tui'), (argv, cwd)"
+    && python -c "from pathlib import Path; from hermes_cli.main_tui_launch import _make_tui_argv; argv, cwd = _make_tui_argv(Path('/opt/hermes/ui-tui'), False); assert argv[0].endswith('/node') and argv[-1] == '/opt/hermes/ui-tui/dist/entry.js' and cwd == Path('/opt/hermes/ui-tui'), (argv, cwd)"
 
 ENV HERMES_UPSTREAM_REF=${HERMES_REF}
 

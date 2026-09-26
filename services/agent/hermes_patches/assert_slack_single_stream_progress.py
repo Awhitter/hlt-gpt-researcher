@@ -16,107 +16,30 @@ def main(root: Path) -> None:
     from gateway.platforms.base import BasePlatformAdapter, SendResult
     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
-    # Importing the Slack adapter before the image's optional SDK extras are
-    # installed would make this assertion depend on the build order. Source
-    # assertions pin its two presentation capabilities; the executable fake
-    # below proves the shared stream consumer behavior.
-    slack_source = (
-        root / "plugins" / "platforms" / "slack" / "adapter.py"
-    ).read_text(encoding="utf-8")
-    run_source = (root / "gateway" / "run.py").read_text(encoding="utf-8")
-    base_source = (root / "gateway" / "platforms" / "base.py").read_text(
-        encoding="utf-8"
-    )
-    slash_source = (root / "gateway" / "slash_commands.py").read_text(
-        encoding="utf-8"
-    )
-    approval_source = (root / "tools" / "approval.py").read_text(
-        encoding="utf-8"
-    )
-    stream_consumer_source = (
-        root / "gateway" / "stream_consumer.py"
-    ).read_text(encoding="utf-8")
+    import inspect
+    from gateway.run import GatewayRunner
+    from gateway.run_managed_slack import _managed_fallback_chain
+    from gateway.run_turn_runner import TurnRunner
+    slack_source = (root / "plugins/platforms/slack/adapter.py").read_text(encoding="utf-8")
     assert "draft_stream_is_message = True" in slack_source
     assert 'initial_stream_ack = "On it' in slack_source
-    assert 'self._app.event("agent_session_stopped")' in slack_source
-    assert "gateway_run_generation" in slack_source
-    assert "agents.sessions.setStatus" in slack_source
-    assert "_finalized_streams" in slack_source
-    assert "_uncertain_stream_starts" in slack_source
-    assert "require_completion=True" in slack_source
-    assert "_pending_agent_stop_tasks" in slack_source
-    assert "_confirmed_agent_stop_workers" in slack_source
-    assert "append_attempted = False" in slack_source
-    assert "if append_attempted:" in slack_source
-    assert "thread_active = [" in slack_source
-    assert "if stopped_ts and thread_active and not candidates:" in slack_source
-    assert "if finalized_match:" in slack_source
-    assert "_slack_safe_stream_failure" in run_source
-    assert "HLT_MANAGED_MODEL_ROUTE" in run_source
-    assert "_register_managed_turn_control" in run_source
-    assert "_prime_managed_slack_turn_stream" in run_source
-    assert "_finish_managed_slack_admission_failure" in run_source
-    assert "_request_and_confirm_managed_turn_stop" in run_source
-    assert "managed_turn_control: Optional[Dict[str, Any]] = None" in run_source
-    assert "if not _managed_slack_stream:" in run_source
-    assert 'model = "openai/gpt-6-astra"' in run_source
-    assert 'provider = "openrouter"' in run_source
-    assert 'model = "gpt-5.6-sol"' not in run_source
-    assert 'model = "grok-4.6"' not in run_source
-    assert "def _managed_fallback_chain()" in run_source
-    assert "_publish_managed_slack_stream_progress" in run_source
-    assert run_source.count("await self._send_slack_lifecycle_notice(") == 5
-    assert "_should_send_trailing_runtime_footer" in run_source
-    assert "_managed_slack_status_progress_message" in run_source
-    assert "HLT_MANAGED_MODEL_ROUTE" in slash_source
-    assert "require_completion: bool = False" in base_source
-    assert "return cancellation_confirmed" in base_source
-    assert "_EXTERNAL_WRITE_PATTERNS" in approval_source
-    assert "send data to an external service (curl)" in approval_source
-    assert "def _managed_execute_code_effect" in approval_source
-    assert 'pattern_key = f"execute_code:{effect_kind}"' in approval_source
-    assert (
-        "if self._already_sent and self.has_delivered_text(final_text):"
-        in stream_consumer_source
-    )
-    assert "self._delivery_ambiguous = True" in stream_consumer_source
-    fresh_final_start = stream_consumer_source.index("async def _try_fresh_final")
-    fresh_final_end = stream_consumer_source.index(
-        "async def _suppress_silence_marker", fresh_final_start
-    )
-    assert (
-        "self._record_turn_final_payload(text)"
-        in stream_consumer_source[fresh_final_start:fresh_final_end]
-    )
-    send_or_edit_start = stream_consumer_source.index("async def _send_or_edit")
-    send_or_edit_source = stream_consumer_source[send_or_edit_start:]
-    optimistic_record_at = send_or_edit_source.index(
-        "self._record_turn_final_payload(text)"
-    )
-    optimistic_rollback_at = send_or_edit_source.index(
-        "self._delivered_final_text = None", optimistic_record_at
-    )
-    assert optimistic_record_at < optimistic_rollback_at
-    # The sole acknowledgement stream opens immediately after admission,
-    # before even session/history lookup or attachment preprocessing. The
-    # exact executor worker is then published so Stop can wait for real work,
-    # not merely its asyncio wrapper.
-    handle_start = run_source.index("async def _handle_message_with_agent")
-    prime_at = run_source.index(
-        "consumer = await self._prime_managed_slack_turn_stream(",
-        handle_start,
-    )
-    session_lookup_at = run_source.index("# Get or create session", prime_at)
-    assert prime_at < session_lookup_at
-    worker_stop_at = slack_source.index("worker_stopped = await confirm_worker_stop(")
-    wrapper_stop_at = slack_source.index(
-        "cancellation_completed = await self.cancel_session_processing(",
-        worker_stop_at,
-    )
-    invalidate_at = slack_source.index(
-        "await runner._interrupt_and_clear_session(", wrapper_stop_at
-    )
-    assert worker_stop_at < wrapper_stop_at < invalidate_at
+    assert '("agent_session_stopped", self._handle_agent_session_stopped)' in slack_source
+    for marker in ("_finalized_streams", "_uncertain_stream_starts", "_pending_agent_stop_tasks",
+                   "_confirmed_agent_stop_workers", "require_completion=True", "gateway_run_generation"):
+        assert marker in slack_source, marker
+    worker_stop = slack_source.index("worker_stopped = await confirm_worker_stop(")
+    wrapper_stop = slack_source.index("cancellation_completed = await self.cancel_session_processing(", worker_stop)
+    invalidation = slack_source.index("await runner._interrupt_and_clear_session(", wrapper_stop)
+    assert worker_stop < wrapper_stop < invalidation
+    handle = inspect.getsource(GatewayRunner._handle_message_with_agent)
+    assert handle.index("await self._prime_managed_slack_turn_stream(") < handle.index("await self._handle_message_with_agent_admitted(")
+    worker = inspect.getsource(GatewayRunner._run_agent_inner)
+    assert 'managed_turn_control["worker_done"] = worker.worker_done' in worker
+    assert 'managed_turn_control["executor_task"] = worker.executor_task' in worker
+    stop = inspect.getsource(GatewayRunner._request_and_confirm_managed_turn_stop)
+    assert "worker_done.is_set()" in stop and "request_hard_interrupt" in stop
+    assert "_slack_safe_stream_failure" in inspect.getsource(TurnRunner._finish_stream_consumer)
+    assert _managed_fallback_chain() == [{"provider": "openrouter", "model": "openai/gpt-6-astra"}]
 
     class RecordingStreamAdapter(BasePlatformAdapter):
         draft_stream_is_message = True

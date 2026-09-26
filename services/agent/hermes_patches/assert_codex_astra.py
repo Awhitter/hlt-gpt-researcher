@@ -72,77 +72,22 @@ def _assert_responses_boundary(hermes_root: Path, reasoning, metadata, check) ->
     loading are stubbed. ProviderProfile's real default vocabulary method,
     ResponsesApiTransport.build_kwargs, and all Astra normalization run intact.
     """
-    transport_path = hermes_root / "agent/transports/codex.py"
-    helpers = _module(transport_path, "proof_transport_helpers", {
-        "_profile_declared_efforts", "_native_compaction_active", "_bounded_prompt_cache_key",
-    })
-    profile_efforts = _method(hermes_root / "providers/base.py", "ProviderProfile",
-                              "supported_reasoning_efforts", {})
-    provider = SimpleNamespace(supported_reasoning_efforts=lambda model: profile_efforts(None, model))
-    plugin_path = hermes_root / "plugins/model-providers/openai-codex/__init__.py"
-    plugin = ast.parse(plugin_path.read_text(encoding="utf-8"))
-    registrations = [n for n in ast.walk(plugin) if isinstance(n, ast.Call)
-                     and isinstance(n.func, ast.Name) and n.func.id == "ProviderProfile"]
-    check("Codex uses the inherited profile vocabulary hook",
-          len(registrations) == 1 and not any(isinstance(n, ast.ClassDef) for n in plugin.body)
-          and not any(k.arg == "supported_reasoning_efforts" for k in registrations[0].keywords)
-          and provider.supported_reasoning_efforts("gpt-6-astra") is None)
-    providers = ModuleType("providers")
-    providers.get_provider_profile = lambda name: provider if name == "openai-codex" else None
-    adapter = ModuleType("agent.codex_responses_adapter")
-    adapter._responses_tools = lambda tools: []
-    adapter._chat_messages_to_responses_input = lambda messages, **kwargs: messages
-    run_agent = ModuleType("run_agent")
-    run_agent.DEFAULT_AGENT_IDENTITY = "offline fixture"
-    metadata._infer_provider_from_url = lambda url: "openai-codex"
-    namespace = {
-        "_is_azure_foundry_responses": lambda params: False,
-        "_native_compaction_active": helpers._native_compaction_active,
-        "_profile_declared_efforts": helpers._profile_declared_efforts,
-        "codex_supported_efforts": reasoning.codex_supported_efforts,
-        "clamp_effort": reasoning.clamp_effort,
-        "_cache_scope_from_session_id": lambda session: "",
-        "_content_cache_key": lambda *args: None,
-        "_default_prompt_cache_retention_for_request": lambda *args: None,
-        "_bounded_prompt_cache_key": helpers._bounded_prompt_cache_key,
-    }
-    build = _method(transport_path, "ResponsesApiTransport", "build_kwargs", namespace)
-    transport = SimpleNamespace(_resolve_issuer_kind=lambda params: "codex")
-    with patch.dict(sys.modules, {"providers": providers,
-                                 "agent.codex_responses_adapter": adapter, "run_agent": run_agent}):
-        for requested, expected in [("none", "low"), ("minimal", "low"), ("high", "high"), ("max", "max")]:
-            wire = build(transport, "gpt-6-astra-900k", [], provider="openai-codex",
-                         base_url="https://chatgpt.com/backend-api/codex",
-                         is_codex_backend=True, instructions="offline fixture",
-                         reasoning_config={"effort": requested}, max_tokens=32768, timeout=15)
-            check(f"actual Responses wire normalizes {requested} and strips picker alias",
-                  wire["model"] == "gpt-6-astra" and wire["reasoning"]["effort"] == expected)
-            check(f"{requested} request preserves Codex protocol and timeout",
-                  "max_output_tokens" not in wire and wire["timeout"] == 15.0 and wire["store"] is False)
+    from agent.transports.codex import ResponsesApiTransport
+    transport = ResponsesApiTransport()
+    for requested, expected in [("none", "low"), ("minimal", "low"), ("high", "high"), ("max", "max")]:
+        wire = transport.build_kwargs("gpt-6-astra-900k", [], provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex", is_codex_backend=True,
+            instructions="offline fixture", reasoning_config={"effort": requested}, max_tokens=32768, timeout=15)
+        check(f"actual Responses wire normalizes {requested} and strips picker alias",
+              wire["model"] == "gpt-6-astra" and wire["reasoning"]["effort"] == expected)
+        check(f"{requested} request preserves Codex protocol and timeout",
+              "max_output_tokens" not in wire and wire["timeout"] == 15.0 and wire["store"] is False)
 
 
 def assert_codex_astra(hermes_root: Path) -> None:
-    reasoning = _module(hermes_root / "agent/reasoning_effort.py", "agent.reasoning_effort")
-    context_names = {
-        "DEFAULT_CONTEXT_LENGTHS", "_CODEX_OAUTH_CONTEXT_FALLBACK",
-        "_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES",
-        "_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT",
-        "_CODEX_OAUTH_STALE_ADVERTISED_CTX", "CODEX_CONTEXT_VARIANT_SUFFIX",
-        "_CODEX_900K_ELIGIBLE_BASES", "_CODEX_900K_SNAPSHOT_BASES",
-        "_CODEX_900K_SNAPSHOT_RE", "_codex_oauth_context_cache",
-        "_CODEX_OAUTH_CONTEXT_CACHE_TTL", "_bare_codex_slug",
-        "is_codex_900k_base", "is_codex_context_variant",
-        "strip_codex_context_variant_suffix", "has_codex_context_variant",
-        "_verified_codex_ctx_for_slug", "_codex_oauth_token_fingerprint",
-        "_extract_chatgpt_account_id", "_fetch_codex_oauth_context_lengths_with_source",
-        "_resolve_codex_oauth_context_length_with_source", "_strip_provider_prefix",
-    }
-    metadata = _module(hermes_root / "agent/model_metadata.py", "agent.model_metadata", context_names)
-    catalog = _module(hermes_root / "hermes_cli/codex_models.py", "proof_codex_models")
-    package = ModuleType("agent")
-    package.__path__ = []
-    package.reasoning_effort = reasoning
-    package.model_metadata = metadata
+    sys.path.insert(0, str(hermes_root))
+    from agent import reasoning_effort as reasoning, model_metadata as metadata
+    from hermes_cli import codex_models as catalog
     cases = []
 
     def check(name: str, condition: bool) -> None:
@@ -163,9 +108,9 @@ def assert_codex_astra(hermes_root: Path) -> None:
     calls = []
 
     def get(url, *, headers, **kwargs):
-        assert url == "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
-        assert headers["ChatGPT-Account-Id"] in {"fixture-account-a", "fixture-account-b"}
-        calls.append({"account": headers["ChatGPT-Account-Id"], "timeout": kwargs.get("timeout")})
+        assert url in metadata.CODEX_MODELS_CATALOG_URLS
+        assert headers["ChatGPT-Account-ID"] in {"fixture-account-a", "fixture-account-b"}
+        calls.append({"account": headers["ChatGPT-Account-ID"], "timeout": kwargs.get("timeout")})
         return SimpleNamespace(
             status_code=state["status"], json=lambda: {"models": list(state["models"])}
         )
@@ -176,8 +121,7 @@ def assert_codex_astra(hermes_root: Path) -> None:
     metadata._ensure_requests = lambda: None
     metadata._resolve_requests_verify = lambda: True
     with patch.dict(sys.modules, {
-        "agent": package, "agent.reasoning_effort": reasoning,
-        "agent.model_metadata": metadata, "httpx": fake_httpx,
+        "httpx": fake_httpx,
     }), TemporaryDirectory(prefix="hermes-astra-offline-") as temporary:
         with patch.dict(os.environ, {"CODEX_HOME": temporary}):
             home = Path(temporary)

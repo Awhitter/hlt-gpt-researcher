@@ -240,7 +240,7 @@ def _parse_number(match: re.Match[str], line: str) -> _Number | None:
     )
 
 
-def _masked_line(line: str) -> str:
+def _masked_line(line: str, citation_ids: frozenset[str] = frozenset()) -> str:
     """Remove common technical numeric forms that are not business claims."""
     def spaces(match: re.Match[str]) -> str:
         return " " * len(match.group(0))
@@ -252,13 +252,22 @@ def _masked_line(line: str) -> str:
     masked = _TIME_RE.sub(spaces, masked)
     masked = _VERSION_RE.sub(spaces, masked)
     masked = _HTTP_STATUS_RE.sub(spaces, masked)
+    # A numbered source marker is document structure, not a business count.
+    # Only exempt markers backed by an explicit URL in this same answer;
+    # arbitrary bracketed metrics and unresolved markers remain checked.
+    if citation_ids:
+        masked = re.sub(
+            r"\[(\d+)\]",
+            lambda match: spaces(match) if match.group(1) in citation_ids else match.group(0),
+            masked,
+        )
     # Markdown list ordinals describe structure, not a metric.
     masked = re.sub(r"^\s*\d+[.)](?=\s)", spaces, masked)
     return masked
 
 
-def _numbers_in_line(line: str) -> list[_Number]:
-    masked = _masked_line(line)
+def _numbers_in_line(line: str, citation_ids: frozenset[str] = frozenset()) -> list[_Number]:
+    masked = _masked_line(line, citation_ids)
     numbers: list[_Number] = []
     for match in _NUMBER_RE.finditer(masked):
         parsed = _parse_number(match, masked)
@@ -660,6 +669,9 @@ class NumericGroundingLedger:
 
     def validate(self, final_response: Any) -> GroundingVerdict:
         text = str(final_response or "")
+        citation_ids = frozenset(re.findall(
+            r"(?m)^\s*\[(\d+)\]:?\s+https?://\S+\s*$", text
+        ))
         with self._lock:
             grounded = {key: set(labels) for key, labels in self._facts.items()}
             tool_results = self._successful_tool_results
@@ -699,7 +711,7 @@ class NumericGroundingLedger:
             if is_table and _METRIC_RE.search(stripped):
                 metric_table = True
 
-            line_numbers = _numbers_in_line(raw_line)
+            line_numbers = _numbers_in_line(raw_line, citation_ids)
             if not line_numbers:
                 continue
 

@@ -19,6 +19,7 @@ from .runtime_context import (
     is_substantive_mission,
     mission_idempotency_key,
 )
+from .coordination import claim_coordination, coordination_context
 from .slack_agent_lead import (
     ROSTER_NONPARTICIPANT_REFS,
     is_human_authored_message,
@@ -772,6 +773,38 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, Any] | None:
             channel_id=channel_id,
             message_ts=message_ts,
         )
+        coordination = None
+        if decision.allows_dispatch:
+            participant_refs = decision.recognized_mentions or thread_participants or (local_agent_ref,)
+            coordination = claim_coordination(
+                os.getenv("KATAILYST2_MCP_URL", "").strip(),
+                os.getenv("KATAILYST2_MCP_TOKEN", "").strip(),
+                {
+                    "callerAgentRef": local_agent_ref,
+                    "continuesThreadRequest": bool(
+                        thread_participants and not decision.recognized_mentions
+                        and raw_message.get("thread_ts")
+                    ),
+                    "source": {
+                        "platform": "slack", "teamId": workspace_id,
+                        "channelId": channel_id, "threadTs": thread_ts,
+                        "messageTs": message_ts,
+                        "humanUserId": str(raw_message.get("user") or ""),
+                        "actorKind": "human",
+                    },
+                    "mission": str(raw_message.get("text") or getattr(event, "text", "") or ""),
+                    "participantSlackUserIds": [
+                        roster.by_agent_ref[ref].slack_user_id
+                        for ref in participant_refs if ref in roster.by_agent_ref
+                    ],
+                },
+            )
+            receipt["coordination"] = {
+                key: coordination.get(key) for key in (
+                    "coordinationId", "revision", "leadAgentRef", "callerRole", "mayRespond", "mayComplete"
+                )
+            }
+            receipt["selectedAgentRef"] = coordination.get("leadAgentRef")
     except Exception as exc:  # noqa: BLE001 - hook faults must fail closed
         failure = {
             "schema": RECEIPT_SCHEMA,
@@ -828,15 +861,17 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, Any] | None:
 
     logger.info("%s %s", RECEIPT_SCHEMA, json.dumps(receipt, sort_keys=True))
     if decision.allows_dispatch:
-        if decision.recognized_mentions:
-            recovered = _bare_transfer_rewrite(
-                event, selected_agent_ref=decision.selected_agent_ref
-            )
-            if recovered is not None:
-                return recovered
-        # None means normal dispatch without short-circuiting a later policy
-        # hook; Hermes stops evaluating hooks after an explicit allow result.
-        return None
+        if not coordination or not coordination["mayRespond"]:
+            return {"action": "skip", "reason": "coordination_observer"}
+        recovered = _bare_transfer_rewrite(
+            event, selected_agent_ref=coordination.get("leadAgentRef")
+        ) if decision.recognized_mentions else None
+        text = recovered["text"] if recovered else str(getattr(event, "text", "") or "")
+        context = recovered["channel_context"] if recovered else str(getattr(event, "channel_context", "") or "")
+        return {
+            "action": "rewrite", "text": text,
+            "channel_context": "\n\n".join(part for part in (context, coordination_context(coordination)) if part),
+        }
     return {"action": "skip", "reason": decision.reason}
 
 

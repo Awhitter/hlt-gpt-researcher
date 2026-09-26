@@ -559,7 +559,7 @@ RUNTIME_PROOF_CONTRACT_VERSION = "agent_host_runtime_inputs.v1"
 HEALTH_LIVENESS_CONTRACT_VERSION = "agent_host_http_liveness.v1"
 HEALTH_READINESS_CONTRACT_VERSION = "agent_host_runtime_readiness.v1"
 RESOURCE_HEADROOM_CONTRACT_VERSION = "agent_host_resource_headroom.v1"
-MIN_MANAGED_CODEX_PROFILES = 3
+MIN_MANAGED_CODEX_PROFILES = 1
 SLACK_IDENTITY_CONTRACT_VERSION = "slack_agent_identity.v1"
 SLACK_IDENTITY_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 _RUN_LEDGER_LOCK = threading.Lock()
@@ -1661,8 +1661,9 @@ def _codex_subscription_auth_readiness(
     the pool logged a refresh 401. Runtime recovery will try the unusable pool
     again, so that flag alone is not evidence of an available fallback.
 
-    Calling the upstream status helper first lets Hermes perform its normal
-    refresh/self-heal. We then reload the pool and require a selectable entry.
+    Native status is read-only. Execution owns OAuth refresh and quota recovery;
+    polling health must never rotate single-use refresh credentials. We inspect
+    the pool and require a selectable entry for subscription readiness.
     Only non-secret booleans and a normalized source kind leave this adapter.
     """
     if status_getter is None:
@@ -2083,12 +2084,10 @@ def authenticated_model_route_gate(
     )
     contract_ready = contract["ready"] is True
     return {
-        "ready": (
-            contract_ready
-            and primary_ready
-            and (not fallback_required or fallback_ready)
-            and (not redundancy_required or redundancy_ready)
-        ),
+        # Quota exhaustion is a provider condition, not a dead agent. Keep its
+        # primary/fallback details visible while admitting work on a valid
+        # configured route. Native Hermes resumes the primary after cooldown.
+        "ready": contract_ready and (primary_ready or fallback_ready),
         "servingReady": contract_ready and (primary_ready or fallback_ready),
         "contractReady": contract_ready,
         "primaryReady": primary_ready,
@@ -2113,6 +2112,18 @@ def _model_redundancy_checks(route_gate: Mapping[str, Any]) -> dict[str, bool]:
             or route_gate.get("fallbackReady") is True
         ),
     }
+
+
+def _serving_checks_ready(checks: Mapping[str, bool], route_gate: Mapping[str, Any]) -> bool:
+    """A provider cooldown must not park a body with a working reviewed fallback."""
+    provider_diagnostics = {
+        "primary_model_route_ready", "primary_model_profile_ready",
+        "primary_model_pool_redundancy_ready", "fallback_model_route_ready",
+        "fallback_model_profile_ready",
+    }
+    return route_gate.get("servingReady") is True and all(
+        passed for name, passed in checks.items() if name not in provider_diagnostics
+    )
 
 
 def _reviewed_model_route_can_serve(route_gate: Mapping[str, Any]) -> bool:
@@ -2723,7 +2734,7 @@ def activation_readiness() -> dict[str, Any]:
         ),
     }
     return {
-        "ready": all(checks.values()),
+        "ready": _serving_checks_ready(checks, route_gate),
         "contractVersion": ACTIVATION_CONTRACT_VERSION,
         "stage": "pre_activation",
         "agentRef": BOOT.get("agent_ref") or "",
@@ -2780,7 +2791,7 @@ def external_dispatch_readiness() -> dict[str, Any]:
         "hermes_run_api_reachable": api.get("reachable") is True,
     }
     return {
-        "ready": all(checks.values()),
+        "ready": _serving_checks_ready(checks, route_gate),
         "agentRef": BOOT.get("agent_ref") or "",
         "checks": checks,
         "optionalChecks": {
@@ -2830,7 +2841,7 @@ def runtime_readiness_snapshot(
         ),
     }
     return {
-        "ready": all(checks.values()),
+        "ready": _serving_checks_ready(checks, route_gate),
         "contractVersion": HEALTH_READINESS_CONTRACT_VERSION,
         "servingReady": route_gate.get("servingReady") is True and all(
             passed for name, passed in checks.items()
@@ -3195,7 +3206,7 @@ def health() -> dict[str, Any]:
     elif mode == "gateway_model_route_contract_degraded":
         payload["note"] = (
             "The HTTP process is live, but the configured model ladder does not "
-            "match the reviewed gpt-5.6-sol high -> grok-4.6 recovery contract. "
+            "match the reviewed subscription-first, OpenRouter fallback contract. "
             "Do not admit work until the runtime config is corrected."
         )
     elif mode == "gateway_no_model_credentials":
@@ -3238,8 +3249,8 @@ def health() -> dict[str, Any]:
         required = pool.get("minimum_required", MIN_MANAGED_CODEX_PROFILES)
         payload["note"] = (
             f"Slack can still answer through a reviewed route, but only {selectable} "
-            f"of {required} managed Codex profiles are selectable. Full readiness "
-            "and K2 activation remain red until redundancy recovers."
+            f"of {required} required Codex profiles are selectable. OpenRouter "
+            "keeps work available while native subscription recovery continues."
         )
     elif mode == "gateway_no_slack_adapter":
         payload["note"] = (

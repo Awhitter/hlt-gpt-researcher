@@ -198,13 +198,14 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
-Cleo's owner-selected inference route is `openrouter/openai/gpt-6-astra` at
-high reasoning, with no model fallback. Keep boot config and the managed
-Slack override aligned; resumed sessions must not restore an older model.
-Readiness is provider-aware: an API key does not need an OAuth profile pool.
-Preserve native subscription grants and retired schedules. A deployment is
-proved by a bounded native run with observed model and durable output, not
-credential presence or a catalog entry alone.
+Cleo's owner-selected route uses `openai-codex/gpt-6-astra` at high reasoning,
+then `openrouter/openai/gpt-6-astra` when the subscription cannot serve. Keep
+boot config and managed Slack routing aligned; resumed sessions must not
+restore stale overrides. Quota cooldowns remain intact and native recovery
+returns to the subscription route when available. Readiness distinguishes
+serving capacity from subscription inventory and fallback diagnostics. Preserve
+native grants and paused schedules. Deployment proof requires a bounded native
+run with observed provider/model, useful artifact, and durable completion.
 
 The K2 pack's optional `shellConfig.persona.style` is the complete authored
 writing guidance, distinct from the short voice label. `grounding.py` installs
@@ -214,7 +215,7 @@ pack. Preserve it in full; do not replace it with copied local prose.
 The Codex recovery overlay preserves native credential ownership: manual OAuth
 grants refresh from their exact persisted pool row, not the singleton login.
 Terminal refresh failures mark only that manual grant dead; real quota cooldowns
-and other accounts remain intact. Keep the dependency-free eleven-case assertion
+and other accounts remain intact. Keep the offline native credential-ownership assertion
 green when advancing the Hermes pin. Dead grants need fresh native login; never
 clear quota limits or copy another host's single-use refresh token as a repair.
 
