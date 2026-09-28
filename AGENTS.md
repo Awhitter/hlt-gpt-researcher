@@ -207,6 +207,13 @@ serving capacity from subscription inventory and fallback diagnostics. Preserve
 native grants and paused schedules. Deployment proof requires a bounded native
 run with observed provider/model, useful artifact, and durable completion.
 
+Slack coordination includes Cleo's implicit participation in her owned DMs,
+even when a human mentions another agent. A verified bare single-agent mention
+in a thread is an explicit K2 lead handoff: send the Slack lead identity and
+continuation assertion so the shared decision supersedes the previous lead.
+Do not represent a handoff only through rewritten prompt text, or interpret a
+multi-agent mention or substantive new request as a bare transfer.
+
 The K2 pack's optional `shellConfig.persona.style` is the complete authored
 writing guidance, distinct from the short voice label. `grounding.py` installs
 it in the managed SOUL file and refreshes it with the rest of the canonical

@@ -127,3 +127,110 @@ def test_failed_claim_does_not_tombstone_retry_and_bot_never_claims(monkeypatch,
     bot = _event(_raw('<@U0BM3ULM210> proceed', ts='999.1', bot_id='B_AGENT', subtype='bot_message'))
     assert plugin._pre_gateway_dispatch(event=bot)['action'] == 'skip'
     assert len(attempts) == before
+
+
+def _plugin_wire(monkeypatch, tmp_path, expected, *, name='agents.coordination.claim', role='lead'):
+    """Exercise the real plugin and MCP adapter; only the remote response is fixed.
+
+    These request shapes also run through Katailyst2's actual coordination
+    service tests, including old-lead readback after a bare-mention handoff.
+    """
+    plugin = _load_plugin(stub_coordination=False)
+    module = sys.modules[plugin.__name__ + '.coordination']
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HLT_AGENT_REF', 'agent:cleo')
+    monkeypatch.setenv('KATAILYST2_MCP_URL', 'https://k2.invalid/mcp')
+    monkeypatch.setenv('KATAILYST2_MCP_TOKEN', 'test-token')
+    result = decision(expected, role=role)
+    result['coordinationId'] = '11111111-1111-4111-a111-111111111111'
+    if role == 'lead':
+        result['leadAgentRef'] = 'agent:cleo'
+    payload = {'output': result} if name == 'tool_execute' else result
+    calls = wire(monkeypatch, module, [name], [{'structuredContent': payload}])
+    return plugin, calls
+
+
+@pytest.mark.parametrize('name', ['agents.coordination.claim', 'tool_execute'])
+def test_owned_dm_includes_implicit_owner_at_the_k2_wire_boundary(monkeypatch, tmp_path, name):
+    raw = _raw('<@U0AHLTX283E> has the operations context.',
+               channel_type='im', channel='D0BM1V250G6')
+    expected = {
+        'callerAgentRef': 'agent:cleo', 'continuesThreadRequest': False,
+        'source': {'platform': 'slack', 'teamId': 'T_HLT', 'channelId': raw['channel'],
+                   'threadTs': raw['ts'], 'messageTs': raw['ts'],
+                   'humanUserId': raw['user'], 'actorKind': 'human'},
+        'mission': raw['text'],
+        'participantSlackUserIds': ['U0AHLTX283E', 'U0BM3ULM210'],
+    }
+    plugin, calls = _plugin_wire(monkeypatch, tmp_path, expected, name=name, role='contributor')
+
+    result = plugin._pre_gateway_dispatch(event=_event(raw))
+
+    assert result['action'] == 'rewrite'
+    assert 'your role: contributor' in result['channel_context']
+    assert 'lead: agent:victoria' in result['channel_context']
+    arguments = {'verb': 'agents.coordination.claim', 'args': expected} if name == 'tool_execute' else expected
+    assert calls[-1]['params'] == {'name': name, 'arguments': arguments}
+
+
+def test_bare_thread_handoff_sends_explicit_shared_lead_before_rewriting(monkeypatch, tmp_path):
+    raw = _raw('<@U0BM3ULM210>', thread_ts='1787140000.000100')
+    expected = {
+        'callerAgentRef': 'agent:cleo', 'continuesThreadRequest': True,
+        'explicitLeadSlackUserId': 'U0BM3ULM210',
+        'source': {'platform': 'slack', 'teamId': 'T_HLT', 'channelId': raw['channel'],
+                   'threadTs': raw['thread_ts'], 'messageTs': raw['ts'],
+                   'humanUserId': raw['user'], 'actorKind': 'human'},
+        'mission': raw['text'], 'participantSlackUserIds': ['U0BM3ULM210'],
+    }
+    plugin, calls = _plugin_wire(monkeypatch, tmp_path, expected)
+    event = _event(raw)
+    event.text = ''  # Native Slack strips this app's mention.
+    event.channel_context = 'Alec: Finish the sourced Nursing Mastery brief.'
+
+    result = plugin._pre_gateway_dispatch(event=event)
+
+    assert calls[-1]['params']['arguments'] == expected
+    assert result['action'] == 'rewrite'
+    assert event.channel_context in result['text']
+    assert 'explicitly transferred this thread to cleo' in result['text']
+    assert 'lead: agent:cleo' in result['channel_context']
+    assert 'mayComplete: true' in result['channel_context']
+
+
+@pytest.mark.parametrize(('text', 'thread_ts'), [
+    ('<@U0BM3ULM210>', None),
+    ('<@U0BM3ULM210> start a separate research request.', '1787140000.000100'),
+    ('<@U0AHLTX283E> <@U0BM3ULM210>', '1787140000.000100'),
+])
+def test_only_a_bare_single_human_thread_mention_asserts_transfer(monkeypatch, tmp_path, text, thread_ts):
+    raw = _raw(text, **({'thread_ts': thread_ts} if thread_ts else {}))
+    expected = {
+        'callerAgentRef': 'agent:cleo', 'continuesThreadRequest': False,
+        'source': {'platform': 'slack', 'teamId': 'T_HLT', 'channelId': raw['channel'],
+                   'threadTs': thread_ts or raw['ts'], 'messageTs': raw['ts'],
+                   'humanUserId': raw['user'], 'actorKind': 'human'},
+        'mission': raw['text'],
+        'participantSlackUserIds': (['U0AHLTX283E', 'U0BM3ULM210']
+                                    if 'U0AHLTX283E' in text else ['U0BM3ULM210']),
+    }
+    plugin, calls = _plugin_wire(monkeypatch, tmp_path, expected)
+    event = _event(raw)
+    event.text = ''  # An empty adapter field alone is not transfer authority.
+    event.channel_context = 'Earlier discussion is available.'
+
+    result = plugin._pre_gateway_dispatch(event=event)
+
+    assert result['action'] == 'rewrite'
+    assert calls[-1]['params']['arguments'] == expected
+    assert '[Ownership transfer]' not in result['text']
+
+
+def test_quoted_mention_cannot_start_a_shared_handoff(monkeypatch, tmp_path):
+    plugin, calls = _plugin_wire(monkeypatch, tmp_path, arguments())
+    event = _event(_raw('> <@U0BM3ULM210>', thread_ts='1787140000.000100'))
+    event.text = ''
+    event.channel_context = 'Earlier discussion is available.'
+
+    assert plugin._pre_gateway_dispatch(event=event)['action'] == 'skip'
+    assert calls == []

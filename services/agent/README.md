@@ -107,8 +107,8 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| `OPENROUTER_API_KEY` | Inference credential for the owner-selected `openai/gpt-6-astra` route. A management/provisioning key is not usable. |
-| Existing ChatGPT / xAI OAuth store | Preserved native credentials; neither is an inference fallback for the current Astra route. |
+| `OPENROUTER_API_KEY` | Inference credential for the `openrouter/openai/gpt-6-astra` fallback. A management/provisioning key is not usable. |
+| Existing ChatGPT / xAI OAuth store | ChatGPT grants provide the primary `openai-codex/gpt-6-astra` route. Existing xAI grants remain preserved but are outside the reviewed ladder. |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
@@ -132,18 +132,18 @@ leave your file alone and say so in `/health`.
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
 
-`/health.config.configured_model_route` exposes one reviewed route:
-`openrouter/openai/gpt-6-astra` at high reasoning. The owner explicitly selected
-paid Astra inference. Slack and external API turns use this same model, and
-old persisted session/channel overrides cannot replace it. No fallback model
-is configured. If the credential is missing, rejected, or not yet verified,
-the request stays recoverable and readiness is false.
+`/health.config.configured_model_route` exposes the reviewed subscription-first
+ladder: `openai-codex/gpt-6-astra` at high reasoning, then
+`openrouter/openai/gpt-6-astra` when subscription capacity is unavailable.
+Slack and external API turns share this policy; old persisted session/channel
+overrides cannot replace it. Native Hermes owns account refresh, quota cooldowns,
+provider fallback, and return to the primary route.
 
-`model_route_readiness` checks the inference credential without exposing it.
-API-key readiness does not require an unrelated Codex profile pool. The
-readiness gate separately reports whether a pool or fallback is required;
-`fallbackReady: false` with `fallbackRequired: false` means there is no backup,
-not an outage. `gateway.observed_model_route` remains empty until a successful
+`model_route_readiness` reports each route's credential availability without
+exposing credentials. A selectable subscription or verified OpenRouter fallback
+can keep serving readiness true while the other route is degraded. Pool counts
+and fallback diagnostics remain visible independently; neither configuration nor
+readiness proves current successful inference. `gateway.observed_model_route` remains empty until a successful
 model call and then identifies the provider/model that actually answered.
 Configuration and key readiness alone are not proof of a successful Astra turn.
 Cleo keeps a 32,768-token output ceiling and 24 model iterations
