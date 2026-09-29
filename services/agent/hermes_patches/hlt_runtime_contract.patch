@@ -13,13 +13,13 @@ index 14ba9d17..363ccb42 100644
      agent._codex_streamed_text_parts: list = []
      # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
 diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
-index fb79d624..ab56b495 100644
 --- a/agent/conversation_loop.py
 +++ b/agent/conversation_loop.py
-@@ -833,6 +833,39 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
+@@ -832,6 +832,39 @@
+     # prompt — so TERMINAL_CWD sessions are not falsely rejected.
      stored_cwd = runtime_host_value(prompt, "Current working directory")
      if stored_cwd and stored_cwd != str(resolve_agent_cwd()):
-         return False
++        return False
 +    def active_k2_pack_source() -> str:
 +        """Return the managed K2 pack marker currently installed for this agent.
 +
@@ -52,11 +52,42 @@ index fb79d624..ab56b495 100644
 +
 +    k2_pack_source = active_k2_pack_source()
 +    if k2_pack_source and k2_pack_source not in prompt:
-+        return False
+         return False
      # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
      # stored bytes, it only makes their interface section out of date, and that is corrected by
-     # agent.surface_switch.stage_surface_switch_note without touching the cached prefix (#104414).
-@@ -1544,6 +1577,11 @@ def _run_conversation_turn(
+@@ -1514,19 +1547,27 @@
+     # thinking-only-truncation one-shot must not survive an interrupted turn; credential-
+     # pool refresh tallies cap same-entry refreshes on a persistent 401 (#26080); usage
+     # for on_turn_complete() stays None on turns that never reach a response.
+-    agent._delivered_interim_texts = set()
++    if not getattr(agent, "_hlt_restore_loop", None):
++        agent._delivered_interim_texts = set()
+     agent._incremental_persistence_failed = False
+     agent._last_persistence_error_cause = None
+     agent._compression_adoption_failed = False
+-    agent._ephemeral_reasoning_off = False
+-    agent._auth_pool_refresh_counts = {}
+-    agent._last_turn_usage = None
++    if not getattr(agent, "_hlt_restore_loop", None):
++        agent._ephemeral_reasoning_off = False
++        agent._auth_pool_refresh_counts = {}
++    if not getattr(agent, "_hlt_restore_loop", None):
++        agent._last_turn_usage = None
+ 
+     s = _LoopState(
+         system_message=system_message, moa_config=moa_config,
+         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
+         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
+     )
++    restored_loop = getattr(agent, "_hlt_restore_loop", None)
++    if restored_loop is not None:
++        for name, value in restored_loop.items():
++            setattr(s, name, value)
++        agent._hlt_restore_loop = None
+     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
+     # app-server subprocess (see agent/transports/codex_app_server_session.py).
+     if agent.api_mode == "codex_app_server":
+@@ -1544,6 +1585,11 @@
          s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
  
      while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
@@ -68,6 +99,26 @@ index fb79d624..ab56b495 100644
          if _run_phase(begin_iteration, agent, s).action == "break":
              break
          _run_phase(prepare_iteration, agent, s)
+@@ -1563,6 +1609,9 @@
+ 
+         early_result = _run_api_retry_loop(agent, s)
+         if early_result is not None:
++            from hlt_provider_checkpoint import snapshot_provider_wait
++            if suspended := snapshot_provider_wait(agent, s, early_result):
++                return suspended
+             return early_result
+ 
+         _rs = _run_phase(apply_retry_restarts, agent, s)
+@@ -1646,7 +1695,8 @@
+             turn_author=turn_author,
+         )
+     result = export_current_turn_boundary(agent, result, user_message)
+-    _close_durable_failed_turn(agent, result)
++    if not isinstance(result, dict) or not result.get("provider_wait"):
++        _close_durable_failed_turn(agent, result)
+     return result
+ 
+ 
 diff --git a/agent/credential_pool.py b/agent/credential_pool.py
 index 4b671068..af17c7e7 100644
 --- a/agent/credential_pool.py
@@ -238,10 +289,9 @@ index b00934cc..07bd3e47 100644
      # none serializes it into the provider payload. Re-read the live client:
      # rotation/fallback/cleanup rebuild agent.client between attempts; a native OpenAI
 diff --git a/agent/turn_context.py b/agent/turn_context.py
-index 113527c5..d0e737b7 100644
 --- a/agent/turn_context.py
 +++ b/agent/turn_context.py
-@@ -765,6 +765,7 @@ def _collect_pre_llm_call_context(
+@@ -765,6 +765,7 @@
              platform=getattr(agent, "platform", None) or "",
              parent_session_id=getattr(agent, "_parent_session_id", None) or "",
              sender_id=getattr(agent, "_user_id", None) or "",
@@ -249,6 +299,19 @@ index 113527c5..d0e737b7 100644
          )
          try:
              # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent
+@@ -1023,6 +1024,12 @@
+     _publish_runtime_main(agent)
+     _refresh_mcp_tools_between_turns(agent)
+ 
++    checkpoint = getattr(agent, "_hlt_resume_turn", None)
++    if checkpoint is not None:
++        from hlt_provider_checkpoint import restore_turn_context
++        agent._hlt_resume_turn = None
++        return restore_turn_context(agent, checkpoint, stream_callback, ra)
++
+     if isinstance(user_message, str):
+         user_message = sanitize_surrogates(user_message)
+     if isinstance(persist_user_message, str):
 diff --git a/cron/scheduler.py b/cron/scheduler.py
 index 9e16f57c..ea95876d 100644
 --- a/cron/scheduler.py
@@ -286,10 +349,9 @@ index 9e16f57c..ea95876d 100644
  
  class _FireAudit:
 diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
-index fc389b33..f70f78bf 100644
 --- a/gateway/platforms/api_server_runs.py
 +++ b/gateway/platforms/api_server_runs.py
-@@ -10,6 +10,7 @@ import time
+@@ -10,6 +10,7 @@
  import uuid
  from contextlib import suppress
  from dataclasses import dataclass
@@ -297,15 +359,87 @@ index fc389b33..f70f78bf 100644
  from typing import Any, Callable, Dict, List, Optional, Tuple
  
  try:
-@@ -453,6 +454,7 @@ class _RunLaunch:
+@@ -148,6 +149,10 @@
+     if result.get("pending_steer"):
+         # Undelivered steer text rides on every terminal event/status for client replay.
+         fields["pending_steer"] = result["pending_steer"]
++    if status == "failed":
++        from hlt_provider_recovery import recovery_from_result
++        if recovery := recovery_from_result(result):
++            fields["recovery"] = recovery
+     return status, fields
+ 
+ 
+@@ -214,6 +219,10 @@
+     previous_status = str(current.get("status") or "")
+     field_names = set(fields)
+     current.update({"object": "hermes.run", "run_id": run_id, "status": status, "updated_at": now})
++    if status != "waiting_for_provider":
++        current.pop("recovery", None)
++    if status in TERMINAL_STATUSES or status == "waiting_for_provider":
++        current.pop("activeExecutionStartedAt", None)
+     current.setdefault("created_at", fields.pop("created_at", now))
+     current.update(fields)
+     shutdown_requested_at = getattr(self, "_run_shutdown_requested_at", None)
+@@ -226,7 +235,7 @@
+         status != previous_status
+         or status in TERMINAL_STATUSES
+         or bool(field_names & {
+-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
++            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at", "nativeStop", "activeExecutionBudget"}))
+     if run_id in self._run_idempotency_ids and should_persist:
+         try:
+             self._run_idempotency_store.update_status(run_id, current)
+@@ -358,7 +367,7 @@
+     if record is None:
+         return None
+     status = dict(record["status"])
+-    if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
++    if status.get("status") not in (TERMINAL_STATUSES | {"waiting_for_provider"}) and not _owner_alive(
+         int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
+         status.update(
+             status="interrupted", error="The gateway restarted before this run settled.",
+@@ -410,13 +419,13 @@
+     return conversation_history, instructions, stored_session_id, None
+ 
+ 
+-def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> "web.Response":
++def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool, active_budget: bool = False, native_stop: bool = False) -> "web.Response":
+     """202 admission response; replays are flagged via ``Idempotency-Replayed``."""
+     headers = {"Idempotency-Replayed": "true"} if replayed else {}
+     if gateway_session_key:
+         headers["X-Hermes-Session-Key"] = gateway_session_key
+     return web.json_response(
+-        {"run_id": run_id, "status": status, "replayed": replayed}, status=202, headers=headers)
++        {"run_id": run_id, "status": status, "replayed": replayed, "nativeStop": native_stop, "activeExecutionBudget": active_budget}, status=202, headers=headers)
+ 
+ 
+ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
+@@ -427,7 +436,9 @@
+             code="idempotency_key_conflict", status=409)
+     original_id = str(record["run_id"])
+     status = self._durable_run_status(request, original_id) or record["status"]
+-    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
++    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True,
++                              native_stop=status.get("nativeStop") is True,
++                              active_budget=status.get("activeExecutionBudget") is True)
+ 
+ 
+ @dataclass(slots=True)
+@@ -453,6 +464,12 @@
      browser_control_principal: Any
      browser_control_transport_family: Any
      turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
 +    max_turns: Optional[int] = None
++    execution_budget_seconds: Optional[int] = None
++    active_seconds: float = 0.0
++    provider_wait_enabled: bool = False
++    provider_wait_generation: int = 0
++    provider_checkpoint: Optional[dict] = None
  
      @property
      def approval_session_key(self) -> str:
-@@ -611,6 +613,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+@@ -611,6 +628,16 @@
          _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
      if history_err is not None:
          return history_err
@@ -314,27 +448,73 @@ index fc389b33..f70f78bf 100644
 +        max_turns = validate_hosted_turn_limit(body.get("max_iterations"), field="max_iterations")
 +    except ValueError as exc:
 +        return _json_error(_openai_error, str(exc), status=400)
++    execution_budget_seconds = body.get("execution_budget_seconds")
++    if execution_budget_seconds is not None and (
++        isinstance(execution_budget_seconds, bool) or not isinstance(execution_budget_seconds, int)
++        or not 1 <= execution_budget_seconds <= 3600):
++        return _json_error(_openai_error, "execution_budget_seconds must be an integer from 1 to 3600", status=400)
      previous_response_id = body.get("previous_response_id")
      session_id = body.get("session_id") or stored_session_id
      route = self._resolve_route(body.get("model"))
-@@ -685,7 +692,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+@@ -685,12 +712,23 @@
          request_profile=_api_server._api_request_profile.get(),
          browser_control_principal=_api_server._api_request_browser_control_principal.get(),
          browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
 -        turn_author=turn_author)
-+        turn_author=turn_author, max_turns=max_turns)
++        turn_author=turn_author, max_turns=max_turns, execution_budget_seconds=execution_budget_seconds,
++        provider_wait_enabled=(
++            os.getenv("HLT_MANAGED_MODEL_ROUTE") == "1"
++            and body.get("provider_recovery") is True and bool(idempotency_key)
++            and execution_budget_seconds is not None
++            and self._run_idempotency_store.durable and bool(self._expected_api_key())
++            and _api_server._api_request_profile.get() is None
++            and room_dispatch is None and route is None
++            and not any(agent_overrides.values())
++            and not _api_server._api_request_browser_control_principal.get()))
      self._activate_admitted_request()
      # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
      # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-@@ -774,24 +781,34 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
+     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
++    self._set_run_status(run_id, "queued", nativeStop=admitted is None,
++                         activeExecutionBudget=admitted is None and execution_budget_seconds is not None)
+     if admitted is not None:
+         task = self._active_run_tasks[run_id] = asyncio.create_task(
+             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
+@@ -700,7 +738,8 @@
+         self._background_tasks.add(task)  # tracked for shutdown drain
+     if hasattr(task, "add_done_callback"):
+         task.add_done_callback(self._background_tasks.discard)
+-    return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
++    return _accepted_response(run_id, "started", gateway_session_key, replayed=False,
++                              active_budget=admitted is None and execution_budget_seconds is not None, native_stop=admitted is None)
+ 
+ 
+ def _run_usage(agent) -> Dict[str, int]:
+@@ -746,6 +785,8 @@
+         try:
+             # Contextvars, not process env: concurrent runs must not share identity.
+             resets.append((set_current_session_key(run.approval_session_key), reset_current_session_key))
++            from hlt_artifact_run_context import bind_native_run, reset_native_run
++            resets.append((bind_native_run(run), reset_native_run))
+             # chat_id carries the raw session id like _run_agent() does; without it
+             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
+             session_tokens = self._bind_api_server_session(
+@@ -774,24 +815,40 @@
              _api_server._publish_turn_process_ownership(agent, effective_task_id)
              # Passed only when set: a human turn keeps today's call shape.
              author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
 +            from fleet_run_budget import attach_hosted_turn_limit
 +            attach_hosted_turn_limit(agent, run.max_turns)
++            agent._hlt_provider_wait_enabled = run.provider_wait_enabled
++            agent._hlt_active_seconds = run.active_seconds
++            if run.provider_checkpoint is not None:
++                agent._hlt_resume_turn = run.provider_checkpoint["turn"]
              r = agent.run_conversation(
                  user_message=run.user_message, conversation_history=run.conversation_history,
                  task_id=effective_task_id, **author_kwargs)
++            if isinstance(r, dict) and r.get("provider_wait"):
++                agent._end_session_on_close = False
 +            return r, _run_usage(agent), _served_runtime(agent)
          finally:
 -            # Clear ownership now so a later stop can't reap work this run left running.
@@ -373,11 +553,11 @@ index fc389b33..f70f78bf 100644
  
  
  def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
-@@ -873,6 +890,14 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
+@@ -873,6 +930,14 @@
      """Drive one admitted run, publish its terminal event/status, release live state."""
      _redact_api_error_text = _api_server._redact_api_error_text
      run_id, loop = run.run_id, asyncio.get_running_loop()
-+    numeric_grounding = NumericGroundingLedger(run.user_message)
++    numeric_grounding = None
 +    stream_event_cb = self._make_run_event_callback(run_id, loop)
 +
 +    def event_cb(event_type, tool_name=None, preview=None, args=None, **kwargs):
@@ -388,7 +568,40 @@ index fc389b33..f70f78bf 100644
  
      def _text_cb(delta: Optional[str]) -> None:
          if delta is None or run_id not in self._run_streams:
-@@ -913,7 +938,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
+@@ -893,6 +958,10 @@
+     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
+         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
+         extra = extra or {}
++        if run.execution_budget_seconds is not None:
++            fields.setdefault("executionBudgetSeconds", run.execution_budget_seconds)
++            fields.setdefault("activeExecutionSeconds", run.active_seconds + (
++                max(0.0, time.monotonic() - execution_started) if execution_started is not None else 0.0))
+         if run_id in self._shutdown_interrupted_run_ids:
+             status = "interrupted"
+             fields = {"error": "Gateway shutdown interrupted the run."}
+@@ -901,26 +970,81 @@
+         with suppress(Exception):
+             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+ 
+-    try:
++    execution_started = None
++    timeout_handle = None
++    try:
++        numeric_grounding = (NumericGroundingLedger.from_checkpoint(run.provider_checkpoint["grounding"])
++            if run.provider_checkpoint is not None else NumericGroundingLedger(run.user_message))
+         # Shutdown landed between admission and the task's first tick: nothing to
+         # interrupt yet, and starting a turn now would outlive the gateway.
+         if run_id in self._shutdown_interrupted_run_ids:
+             _finish("interrupted")
+             return
+-        self._set_run_status(run_id, "running")
+-        if run_id in self._stopping_run_ids:
++        self._set_run_status(run_id, "running", activeExecutionSeconds=run.active_seconds,
++                            executionBudgetSeconds=run.execution_budget_seconds, activeExecutionStartedAt=time.time(),
++                            continuationGeneration=run.provider_wait_generation)
++        if (run_id in self._stopping_run_ids or self._run_idempotency_store.provider_wait_stopped(
++                self._run_owners.get(run_id, ""), run_id)):
+             _finish("cancelled")
              return
          with self._profile_scope(run.request_profile):
              agent = self._create_agent(
@@ -396,8 +609,63 @@ index fc389b33..f70f78bf 100644
 +                stream_delta_callback=_text_cb, tool_progress_callback=event_cb,
                  interim_assistant_callback=_interim_cb, **run.agent_kwargs)
          self._active_run_agents[run_id] = agent
++        execution_started = time.monotonic()
++        if run.execution_budget_seconds is not None:
++            remaining = run.execution_budget_seconds - run.active_seconds
++            if remaining <= 0:
++                agent.close()
++                _finish("failed", completed=False, error="Active execution budget exhausted.")
++                return
++            def expire_execution():
++                self._stopping_run_ids.add(run_id)
++                _api_server.request_hard_interrupt(agent, "Active execution budget exhausted")
++            timeout_handle = loop.call_later(remaining, expire_execution)
          approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-@@ -935,7 +960,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
+         result, usage, served_runtime = await _submit_api_worker(
+             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
++        if execution_started is not None:
++            run.active_seconds += max(0.0, time.monotonic() - execution_started)
++            execution_started = None
++        if timeout_handle is not None:
++            timeout_handle.cancel()
+         if not isinstance(result, dict):
+             result = {}
++        if result.get("provider_wait"):
++            if run.execution_budget_seconds is not None and run.active_seconds >= run.execution_budget_seconds:
++                _finish("failed", completed=False, error="Active execution budget exhausted.")
++                return
++            if (run_id in self._stopping_run_ids or self._run_idempotency_store.provider_wait_stopped(
++                    self._run_owners.get(run_id, ""), run_id)):
++                _finish("cancelled", interrupted=True, completed=False)
++                return
++            snapshot = {
++                "turn": result["checkpoint"], "grounding": numeric_grounding.checkpoint(),
++                "launch": {
++                    "session_id": run.session_id, "gateway_session_key": run.gateway_session_key,
++                    "declared_selected": run.declared_selected, "user_message": run.user_message,
++                    "session_history_delivery": run.session_history_delivery,
++                    "agent_kwargs": run.agent_kwargs, "turn_author": run.turn_author,
++                    "max_turns": run.max_turns, "execution_budget_seconds": run.execution_budget_seconds,
++                    "active_seconds": run.active_seconds,
++                },
++            }
++            status = dict(self._run_statuses[run_id], status="waiting_for_provider",
++                          recovery=result["recovery"], completed=False, updated_at=time.time(),
++                          continuationGeneration=run.provider_wait_generation + 1,
++                          executionBudgetSeconds=run.execution_budget_seconds, activeExecutionSeconds=run.active_seconds)
++            status.pop("activeExecutionStartedAt", None)
++            if not self._run_idempotency_store.park_provider_wait(
++                self._run_owners[run_id], run_id, run.provider_wait_generation, snapshot, status,
++                owner_pid=self._run_owner_pid, owner_started=self._run_owner_started):
++                _finish("failed", completed=False, error="Provider continuation could not be saved safely.")
++                return
++            self._run_statuses[run_id] = status
++            run.put_event(_run_event(run_id, "run.waiting_for_provider", recovery=result["recovery"]))
++            return
+         status, fields = terminal_run_status(result)
+         if status == "cancelled":
+             _finish("cancelled", fields)
+@@ -935,7 +1059,13 @@
                  runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                  route_source=("model_routes" if run.agent_kwargs.get("route")
                                else "raw_request" if any(requested.values()) else "global"))
@@ -412,11 +680,86 @@ index fc389b33..f70f78bf 100644
      except asyncio.CancelledError:
          _finish("cancelled")
          raise
+@@ -947,6 +1077,8 @@
+         logger.exception("[api_server] run %s failed", run_id)
+         _finish("failed", error=_redact_api_error_text(exc))
+     finally:
++        if timeout_handle is not None:
++            timeout_handle.cancel()
+         # On cancellation (/stop) the executor thread may still block on an approval
+         # Event; unregistering releases it. Idempotent on normal completion.
+         _unregister_approval_notify(run.approval_session_key)
+@@ -1163,6 +1295,11 @@
+         return err
+     if status.get("status") in TERMINAL_STATUSES:
+         return web.json_response(status)
++    stopped_wait = self._run_idempotency_store.stop_provider_wait(
++        self._run_idempotency_scope(request), run_id)
++    if stopped_wait is not None:
++        self._run_statuses[run_id] = stopped_wait
++        return web.json_response(stopped_wait)
+     if agent is None and task is None:
+         return _json_error(
+             _openai_error, f"Run is not active in this gateway process: {run_id}",
+@@ -1181,8 +1318,54 @@
+ async def _sweep_orphaned_runs(self) -> None:
+     """Periodically expire transport buffers and terminal status records."""
+     while True:
++        await _resume_due_provider_waits(self)
+         await asyncio.sleep(60)
+         self._sweep_orphaned_runs_once(time.time())
++
++
++async def _resume_due_provider_waits(self) -> None:
++    """Resume an existing managed native run; never call the admission endpoint."""
++    if os.getenv("HLT_MANAGED_MODEL_ROUTE") != "1" or not self._expected_api_key():
++        return
++    if self._run_shutdown_requested_at is not None or self._gateway_is_draining():
++        return
++    from gateway.platforms import api_server as _api_server
++    scope = hashlib.sha256(("default\0" + self._expected_api_key()).encode()).hexdigest()
++    for saved in self._run_idempotency_store.provider_waits(scope):
++        run_id = saved["run_id"]
++        if run_id in self._active_run_tasks or self._concurrency_limited_response() is not None:
++            continue
++        if not self._run_idempotency_store.claim_provider_wait(
++            scope, run_id, saved["generation"], owner_pid=self._run_owner_pid,
++            owner_started=self._run_owner_started, now=time.time()):
++            continue
++        try:
++            checkpoint = saved["checkpoint"]
++            launch = checkpoint["launch"]
++            q = self._run_streams[run_id] = asyncio.Queue()
++            self._run_streams_created[run_id] = time.time()
++            self._run_owners[run_id] = scope
++            self._run_idempotency_ids.add(run_id)
++            self._run_approval_sessions[run_id] = run_id
++            self._run_statuses[run_id] = dict(saved["status"])
++            self._run_statuses[run_id].pop("shutdown_requested_at", None)
++            run = _RunLaunch(
++                owner=self, run_id=run_id, queue=q, conversation_history=[],
++                request_profile=None, browser_control_principal=None,
++                browser_control_transport_family=None, provider_wait_enabled=True,
++                provider_wait_generation=saved["generation"], provider_checkpoint=checkpoint,
++                **launch)
++            task = self._active_run_tasks[run_id] = asyncio.create_task(
++                _execute_run(self, run, _api_server=_api_server))
++            self._background_tasks.add(task)
++            task.add_done_callback(self._background_tasks.discard)
++        except Exception:
++            logger.exception("Provider continuation could not be restored for run %s", run_id)
++            status = dict(saved["status"], status="failed", completed=False,
++                          error="Provider continuation requires reconciliation.", updated_at=time.time())
++            status.pop("recovery", None)
++            self._run_idempotency_store.update_status(run_id, status)
++            self._run_statuses[run_id] = status
+ 
+ 
+ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
 diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
-index d938cdc7..5d93d675 100644
 --- a/gateway/platforms/base.py
 +++ b/gateway/platforms/base.py
-@@ -3887,32 +3887,67 @@ class BasePlatformAdapter(ABC):
+@@ -3887,32 +3887,67 @@
              task.add_done_callback(self._expected_cancelled_tasks.discard)
          return True
  
@@ -499,10 +842,11 @@ index d938cdc7..5d93d675 100644
  
      async def _drain_pending_after_session_command(
          self, session_key: str, command_guard: asyncio.Event) -> None:
-@@ -3964,6 +3999,36 @@ class BasePlatformAdapter(ABC):
+@@ -3963,6 +3998,36 @@
+                     self.name,
                  )
              return
- 
++
 +        if self._drop_unresolved(event):
 +            return
 +
@@ -532,10 +876,46 @@ index d938cdc7..5d93d675 100644
 +                if result.get("action") == "allow":
 +                    break
 +            setattr(event, "_hermes_pre_gateway_dispatch_done", True)
-+
+ 
          if event.allow_gateway_control:
              coerce_plaintext_gateway_command(event)
-         # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
+@@ -4001,6 +4066,10 @@
+         # runner. Without this, they are queued as pending messages and either: See #4926.
+         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
+         cmd = event.get_command()
++        from hlt_slack_provider_wait import enabled as _provider_wait_enabled, owner as _provider_wait_owner
++        if self.gateway_runner is not None and _provider_wait_enabled(event.source):
++            if _provider_wait_owner(self.gateway_runner).queue_followup(event, session_key):
++                return
+         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
+         if should_bypass_active_session(cmd):
+             try:
+@@ -4452,7 +4521,11 @@
+         try:
+             await self._run_processing_hook("on_processing_start", event)
+             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
+-            response = await self._message_handler(event)
++            if getattr(event, "_hlt_provider_resume", None) is not None:
++                from hlt_slack_provider_wait import resume_dispatch
++                response = await resume_dispatch(self.gateway_runner, event)
++            else:
++                response = await self._message_handler(event)
+             # A muted diagnostic wake ran for the session; its reply is not presented. The
+             # policy read binds the routed profile; delivery itself stays in the launch scope.
+             with self._media_delivery_scope(event.source):
+@@ -4513,6 +4586,12 @@
+                     record_delivery=_record_delivery)
+             await self._release_turn_marker(event)
+             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
++            from hlt_slack_provider_wait import enabled as _provider_wait_enabled, owner as _provider_wait_owner
++            if self.gateway_runner is not None and _provider_wait_enabled(event.source):
++                _owner = _provider_wait_owner(self.gateway_runner)
++                # Reconciliation/Stop may have already settled the private owner.
++                _owner.finish_delivery(session_key, self, processing_ok)
++                await _owner.drain_followups(session_key, self)
+             # Clean up the per-turn streaming-TTS flag.
+             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
+                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
 diff --git a/gateway/run.py b/gateway/run.py
 index 20071c31..c43c5790 100644
 --- a/gateway/run.py
@@ -737,13 +1117,13 @@ index 48d793d7..42a91a56 100644
                  if _adapter:
                      await _adapter.send(
 diff --git a/gateway/run_turn.py b/gateway/run_turn.py
-index 1484ea20..a2ef74e6 100644
 --- a/gateway/run_turn.py
 +++ b/gateway/run_turn.py
-@@ -184,6 +184,19 @@ class GatewayTurnMixin:
+@@ -183,6 +183,19 @@
+         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
          # notice must never attach to another session's next turn (#74349).
          self._pre_agent_fallback_notice = None
- 
++
 +        from gateway.run_managed_slack import _managed_model_route_enabled
 +        if _managed_model_route_enabled():
 +            runtime = _resolve_runtime_agent_kwargs()
@@ -756,11 +1136,10 @@ index 1484ea20..a2ef74e6 100644
 +                    state.conversation.last_resolved_model = model
 +            self._session_state("*").conversation.last_resolved_model = model
 +            return model, runtime
-+
+ 
          model = _resolve_gateway_model(user_config)
          if skey:
-             self._rehydrate_session_model_override(skey)
-@@ -567,7 +580,10 @@ class GatewayTurnMixin:
+@@ -567,7 +580,10 @@
                      session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                      if session_info:
                          notice = f"{notice}\n\n{session_info}"
@@ -772,7 +1151,7 @@ index 1484ea20..a2ef74e6 100644
          except Exception as e:
              logger.debug("Auto-reset notification failed (non-fatal): %s", e)
  
-@@ -901,6 +917,11 @@ class GatewayTurnMixin:
+@@ -901,6 +917,11 @@
  
      async def _hmwa_hygiene_notify(self, source, meta, message, what):
          """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
@@ -784,7 +1163,7 @@ index 1484ea20..a2ef74e6 100644
          try:
              _adapter = self._delivery_adapter_for(source)
              if _adapter and source.chat_id:
-@@ -1945,13 +1966,13 @@ class GatewayTurnMixin:
+@@ -1945,13 +1966,13 @@
  
          # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
          # skip when the agent failed: the error text is new content streaming didn't show.
@@ -800,7 +1179,7 @@ index 1484ea20..a2ef74e6 100644
                  try:
                      await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                  except Exception as _e:
-@@ -2143,7 +2164,77 @@ class GatewayTurnMixin:
+@@ -2143,7 +2164,89 @@
              persist_user_display_kind, session_entry.session_id, owner,
          ), _session_env_tokens
  
@@ -817,6 +1196,10 @@ index 1484ea20..a2ef74e6 100644
 +            event_message_id=self._reply_anchor_for_event(event),
 +            control=control,
 +        )
++        if control is not None and control.get("provider_reconciliation"):
++            from hlt_slack_provider_wait import owner
++            owner(self).finish(_quick_key, "failed")
++            return None
 +        try:
 +            result = await self._handle_message_with_agent_admitted(
 +                event,
@@ -833,6 +1216,13 @@ index 1484ea20..a2ef74e6 100644
 +                "Admitted agent turn failed before normal completion for %s",
 +                _quick_key,
 +            )
++            if ((control is not None and control.get("provider_owner", {}).get("resumed"))
++                    or getattr(event, "_hlt_provider_resume", None) is not None):
++                from hlt_slack_provider_wait import owner
++                owner(self).finish(_quick_key, "failed")
++                if consumer is not None:
++                    consumer._hlt_provider_parked = True
++                return None
 +            if await self._finish_managed_slack_admission_failure(
 +                source=source,
 +                session_key=_quick_key,
@@ -860,6 +1250,7 @@ index 1484ea20..a2ef74e6 100644
 +            and control is not None
 +            and control.get("executor_task") is None
 +            and not control.get("stop_requested")
++            and getattr(event, "_hlt_provider_resume", None) is None
 +        ):
 +            # Routing/preprocessing can intentionally abandon a turn before
 +            # the model worker starts. Admission already opened the native
@@ -879,7 +1270,52 @@ index 1484ea20..a2ef74e6 100644
          """Inner handler that runs under the _running_agents sentinel guard."""
          _msg_start_time = time.time()
          _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-@@ -2200,6 +2291,8 @@ class GatewayTurnMixin:
+@@ -2155,13 +2258,24 @@
+             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
+         )
+ 
+-        resolved = await self._hmwa_resolve_session(event, source)
+-        if resolved is None:
+-            return
+-        source, session_entry, session_key = resolved
+-        prepared, _session_env_tokens = await self._hmwa_prepare_turn(
+-            event, source, session_entry, session_key, _quick_key, run_generation,
+-        )
++        resume = getattr(event, "_hlt_provider_resume", None)
++        if resume is not None:
++            session_key = resume["session_key"]
++            session_entry = self.session_store._entries[session_key]
++            if session_entry.session_id != resume["session_id"]:
++                raise ValueError("Slack continuation session changed")
++            _session_env_tokens = self._set_session_env(build_session_context(source, self.config, session_entry))
++            await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
++            prepared = self._PreparedTurn(**resume["prepared"])
++            self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
++        else:
++            resolved = await self._hmwa_resolve_session(event, source)
++            if resolved is None:
++                return
++            source, session_entry, session_key = resolved
++            prepared, _session_env_tokens = await self._hmwa_prepare_turn(
++                event, source, session_entry, session_key, _quick_key, run_generation,
++            )
+         if not isinstance(prepared, self._PreparedTurn):
+             return prepared
+         history, message_text = prepared.history, prepared.message_text
+@@ -2176,7 +2290,11 @@
+                 "session_id": session_entry.session_id,
+                 "message": message_text[:500],
+             }
+-            await self.hooks.emit("agent:start", hook_ctx)
++            if resume is None:
++                await self.hooks.emit("agent:start", hook_ctx)
++            from hlt_slack_provider_wait import enabled as _wait_enabled, owner as _wait_owner
++            if _wait_enabled(source):
++                _wait_owner(self).begin(event, prepared, session_key, run_generation, managed_turn_control)
+ 
+             # Capture the launch session id so post-run compression publication is identity-guarded
+             # (a /new may move session_entry.session_id while the old run is still unwinding).
+@@ -2200,9 +2318,13 @@
                  persist_user_display_metadata={
                      "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
                  message_type=event.message_type,
@@ -888,7 +1324,12 @@ index 1484ea20..a2ef74e6 100644
                  scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
              )
              _turn_seconds = time.monotonic() - _turn_started_monotonic
-@@ -2433,7 +2526,8 @@ class GatewayTurnMixin:
++            if isinstance(agent_result, dict) and agent_result.get("provider_reconciliation"):
++                return None  # custody is unresolved; no terminal Slack send
+ 
+             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
+             # send (bracketed by the adapter against this event) must be ledgered under that
+@@ -2433,7 +2555,8 @@
              platform_key = _platform_config_key(source.platform)
              enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
              pr = self._provider_routing
@@ -898,7 +1339,7 @@ index 1484ea20..a2ef74e6 100644
              reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
              self._reasoning_config = reasoning_config
              self._service_tier = self._resolve_session_service_tier(source=source)
-@@ -4002,7 +4096,7 @@ class GatewayTurnMixin:
+@@ -4002,7 +4125,7 @@
          payload: a mismatch (False, incl. payload-less split delivery) never suppresses; None (no
          record) keeps legacy trust."""
          _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
@@ -907,7 +1348,7 @@ index 1484ea20..a2ef74e6 100644
              return
          _final = response.get("final_response") or ""
          _is_empty_sentinel = not _final or _final == "(empty)"
-@@ -4203,6 +4297,9 @@ class GatewayTurnMixin:
+@@ -4203,6 +4326,9 @@
                          session_key, agent_holder[0], _executor_task_holder[0]
                      ):
                          break
@@ -917,7 +1358,7 @@ index 1484ea20..a2ef74e6 100644
                      _notify_res = await _notify_adapter.send(
                          source.chat_id, _heartbeat_text,
                          metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
-@@ -4223,11 +4320,17 @@ class GatewayTurnMixin:
+@@ -4223,11 +4349,17 @@
          persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
          persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
          persist_user_display_metadata: Optional[dict] = None,
@@ -935,7 +1376,7 @@ index 1484ea20..a2ef74e6 100644
          if self._get_proxy_url():
              return await self._run_agent_via_proxy(
                  message=message, context_prompt=context_prompt, history=history, source=source,
-@@ -4262,6 +4365,10 @@ class GatewayTurnMixin:
+@@ -4262,6 +4394,11 @@
              persist_user_display_metadata=persist_user_display_metadata,
              scheduled_heartbeat=scheduled_heartbeat,
          )
@@ -943,10 +1384,11 @@ index 1484ea20..a2ef74e6 100644
 +            turn_ctx.stream_consumer_holder[0] = preopened_stream_consumer
 +        if managed_turn_control is not None:
 +            managed_turn_control["agent_holder"] = turn_ctx.agent_holder
++            turn_ctx._hlt_managed_control = managed_turn_control
          _status_thread_metadata = self._run_agent_bind_turn_wiring(
              turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
          )
-@@ -4277,6 +4384,8 @@ class GatewayTurnMixin:
+@@ -4277,6 +4414,8 @@
          log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
          # The stream consumer is created inside run_sync; this task polls for it.
          stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
@@ -955,21 +1397,56 @@ index 1484ea20..a2ef74e6 100644
          tracking_task = spawn(self._run_agent_track_agent(turn_ctx))
          _interrupt_detected = asyncio.Event()  # shared with backup check
          interrupt_monitor = spawn(self._run_agent_monitor_for_interrupt(turn_ctx, _interrupt_detected))
-@@ -4290,6 +4399,9 @@ class GatewayTurnMixin:
+@@ -4288,10 +4427,41 @@
+         )
+ 
          try:
-             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
-             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
-+            if managed_turn_control is not None:
-+                managed_turn_control["worker_done"] = worker.worker_done
-+                managed_turn_control["executor_task"] = worker.executor_task
-             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
-             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+-            # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
+-            worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
+-            _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
+-            response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
++            # Waiting releases the executor while preserving this admitted task,
++            # session guard, stream and the native turn/tool checkpoint.
++            from hlt_slack_provider_wait import owner as _wait_owner
++            _wait_control = managed_turn_control if managed_turn_control and managed_turn_control.get("provider_owner") else None
++            if _wait_control and _wait_control.get("provider_waiting"):
++                try:
++                    _claimed = await _wait_owner(self).wait_and_claim(turn_ctx, _wait_control)
++                except Exception:
++                    _wait_owner(self).finish(session_key, "failed")
++                    _claimed = False
++                if not _claimed:
++                    return {"provider_reconciliation": True, "completed": False, "messages": [], "final_response": ""}
++            while True:
++                _active_started = time.monotonic()
++                worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
++                if managed_turn_control is not None:
++                    managed_turn_control["worker_done"] = worker.worker_done
++                    managed_turn_control["executor_task"] = worker.executor_task
++                _executor_task_holder[0] = worker.executor_task
++                response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
++                if _wait_control:
++                    _wait_control["provider_owner"]["active_seconds"] += time.monotonic() - _active_started
++                if isinstance(response, dict) and response.get("provider_reconciliation"):
++                    _wait_owner(self).finish(session_key, "failed")
++                    return {"provider_reconciliation": True, "completed": False, "messages": response.get("messages", []), "final_response": ""}
++                if not isinstance(response, dict) or not response.get("provider_wait"):
++                    if _wait_control and isinstance(response, dict):
++                        _wait_control["provider_owner"]["native_status"] = (
++                            "failed" if response.get("failed") else
++                            "interrupted" if response.get("interrupted") or response.get("completed") is False else "completed")
++                    break
++                if not _wait_control or not await _wait_owner(self).park_and_wait(turn_ctx, response, _wait_control):
++                    # Unknown delivery is never converted into a new visible failure
++                    # reply; private evidence remains available for reconciliation.
++                    return {"provider_reconciliation": True, "completed": False, "messages": response.get("messages", []), "final_response": ""}
              if isinstance(response, dict):
+                 response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
+             self._run_agent_evict_on_fallback(turn_ctx)
 diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
-index 1b2e2c0b..546e5a10 100644
 --- a/gateway/run_turn_runner.py
 +++ b/gateway/run_turn_runner.py
-@@ -184,6 +184,11 @@ class TurnRunner:
+@@ -184,6 +184,11 @@
          try:
              from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
              if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
@@ -981,7 +1458,7 @@ index 1b2e2c0b..546e5a10 100644
                  line = format_subagent_failure_line(
                      kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
                      duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
-@@ -887,6 +892,12 @@ class TurnRunner:
+@@ -887,6 +892,12 @@
          ctx = self._ctx
          if ctx.mute_notification_reply or not self._status_live():
              return
@@ -994,7 +1471,7 @@ index 1b2e2c0b..546e5a10 100644
          prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
          if prepared is None:
              logger.debug(
-@@ -911,7 +922,7 @@ class TurnRunner:
+@@ -911,7 +922,7 @@
          ctx = self._ctx
          if ctx.mute_notification_reply:
              return None, None, None, False
@@ -1003,7 +1480,7 @@ index 1b2e2c0b..546e5a10 100644
          # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
          # run_sync only reads it via the holder for delta-callback wiring.
          stts = ctx.streaming_tts_consumer_holder[0]
-@@ -925,7 +936,7 @@ class TurnRunner:
+@@ -925,7 +936,7 @@
              scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
          )
          want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
@@ -1012,7 +1489,7 @@ index 1b2e2c0b..546e5a10 100644
              try:
                  from gateway.stream_consumer import GatewayStreamConsumer
                  adapter = self._runner._delivery_adapter_for(ctx.source)
-@@ -944,7 +955,9 @@ class TurnRunner:
+@@ -944,7 +955,9 @@
                      )
                      stream_consumer = GatewayStreamConsumer(
                          adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
@@ -1023,20 +1500,20 @@ index 1b2e2c0b..546e5a10 100644
                          on_new_message=(
                              (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
                          ),
-@@ -1177,6 +1190,12 @@ class TurnRunner:
+@@ -1176,6 +1189,12 @@
+         from gateway.run import render_notice_line
          from gateway.warning_notifications import is_diagnostic_notice, render_notification
          if self._ctx.mute_notification_reply or not self._status_live():
-             return
++            return
 +        from gateway.run_managed_slack import _managed_model_route_enabled, _managed_slack_notice_progress_message
 +        if _managed_model_route_enabled() and self._ctx.source.platform == Platform.SLACK:
 +            progress = _managed_slack_notice_progress_message(render_notice_line(notice))
 +            if progress:
 +                self._runner._publish_managed_slack_stream_progress(self._ctx.stream_consumer_holder[0], progress)
-+            return
+             return
          diagnostic = is_diagnostic_notice(notice)
          def present():
-             try:
-@@ -1741,6 +1760,10 @@ class TurnRunner:
+@@ -1741,6 +1760,10 @@
              result["final_response"] = repair_explicit_computer_use_media_paths(
                  result["final_response"], result.get("messages", []), history_offset=len(agent_history),
              )
@@ -1047,7 +1524,7 @@ index 1b2e2c0b..546e5a10 100644
          ctx.result_holder[0] = result
          if stream_consumer is None:
              return
-@@ -1751,8 +1774,8 @@ class TurnRunner:
+@@ -1751,8 +1774,8 @@
          # diagnostic AND suppress the gateway's own error delivery.
          _final_for_stream = None
          if (
@@ -1058,7 +1535,7 @@ index 1b2e2c0b..546e5a10 100644
          ):
              fr = result.get("final_response")
              if isinstance(fr, str) and fr.strip() and fr != "(empty)":
-@@ -1890,7 +1913,7 @@ class TurnRunner:
+@@ -1890,7 +1913,7 @@
          every rebind. session_key propagates via contextvars (_set_session_env / set_current_session_key)
          — never os.environ["HERMES_SESSION_KEY"], which would misroute approvals across sessions.
          """
@@ -1067,7 +1544,7 @@ index 1b2e2c0b..546e5a10 100644
          ctx = self._ctx
          runner = self._runner
          # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
-@@ -1906,7 +1929,7 @@ class TurnRunner:
+@@ -1906,7 +1929,7 @@
          # removing this in-process gateway write does not affect any of them.
          platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
          combined_ephemeral = self._combined_ephemeral_prompt()
@@ -1076,7 +1553,7 @@ index 1b2e2c0b..546e5a10 100644
          try:
              model, runtime_kwargs = runner._resolve_session_agent_runtime(
                  source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
-@@ -1923,6 +1946,10 @@ class TurnRunner:
+@@ -1923,6 +1946,10 @@
              # Model/credential resolution failed before the turn began; the raw text (URLs, status
              # codes) belongs in the log, and the chat gets the commands that fix it.
              logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
@@ -1087,7 +1564,46 @@ index 1b2e2c0b..546e5a10 100644
              from hermes_cli.auth import is_rate_limited_auth_error
              if is_rate_limited_auth_error(exc.__cause__):
                  # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
-@@ -1975,6 +2002,7 @@ class TurnRunner:
+@@ -1949,9 +1976,35 @@
+             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+             agent._pending_fallback_notice = pending_fallback_notice
+         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+-        agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
+-        persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
++        from hlt_slack_provider_wait import prepare_agent
++        prepare_agent(ctx, agent, getattr(ctx, "_hlt_managed_control", None))
++        if getattr(ctx, "_hlt_resume_turn", None) is not None:
++            agent_history = ctx._hlt_resume_turn["loop"]["conversation_history"]
++            observed_group_context, history_media_paths = None, set()
++            persist_msg, persist_ts = ctx.persist_user_message, ctx.persist_user_timestamp
++        else:
++            agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
++            persist_msg, persist_ts = self._prepare_turn_message(agent_history)
++        try:
++            result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
++        except Exception:
++            if getattr(ctx, "_hlt_resume_turn", None) is None:
++                raise
++            if stream_consumer is not None:
++                stream_consumer._hlt_provider_parked = True
++            return {"provider_reconciliation": True, "completed": False, "messages": []}
++        if result.get("provider_wait"):
++            ctx.result_holder[0] = result
++            return result
++        _control = getattr(ctx, "_hlt_managed_control", None)
++        if _control and _control.get("provider_owner", {}).get("resumed"):
++            from hlt_slack_provider_wait import verify_coordination
++            try:
++                verify_coordination(_control["provider_owner"])
++            except Exception:
++                if stream_consumer is not None:
++                    stream_consumer._hlt_provider_parked = True
++                return {"provider_reconciliation": True, "completed": False, "messages": result.get("messages", [])}
+         self._finish_stream_consumer(result, agent_history, stream_consumer)
+         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
+         # returns, so early run_sync returns are also finalised.
+@@ -1975,6 +2028,7 @@
          # about to shrink.
          common = {
              "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
@@ -1110,10 +1626,9 @@ index 8628c8cb..a93317e9 100644
          from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
  
 diff --git a/gateway/stream_consumer.py b/gateway/stream_consumer.py
-index b82a27c2..76dcdf74 100644
 --- a/gateway/stream_consumer.py
 +++ b/gateway/stream_consumer.py
-@@ -128,6 +128,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
+@@ -128,6 +128,8 @@
          self._on_new_message = on_new_message
          self._on_before_finalize = on_before_finalize
          self._initial_reply_to_id = initial_reply_to_id
@@ -1122,7 +1637,7 @@ index b82a27c2..76dcdf74 100644
          self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
          # Returns False after /new or /stop; run() then abandons the stream.
          self._run_still_current = run_still_current or (lambda: True)
-@@ -258,6 +260,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
+@@ -258,6 +260,7 @@
          as final when a broken thread root may fall back flat); ``expect_edits`` keeps
          editable previews on Telegram's legacy send path."""
          meta = dict(self.metadata) if self.metadata else {}
@@ -1130,7 +1645,7 @@ index b82a27c2..76dcdf74 100644
          if self._initial_reply_to_id:
              meta["reply_to_message_id"] = self._initial_reply_to_id
          if expect_edits:
-@@ -449,6 +452,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
+@@ -449,6 +452,10 @@
                  flush_event.set()
  
      def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
@@ -1141,7 +1656,7 @@ index b82a27c2..76dcdf74 100644
          if preserve_no_edit and self._message_id == "__no_edit__":
              return
          # Retain the segment's visible text so has_delivered_text still matches.
-@@ -544,7 +551,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
+@@ -544,7 +551,7 @@
      async def run(self) -> None:
          """Async task that drains the queue and edits the platform message."""
          self._len_fn, self._safe_limit = self._resolve_length_budget()
@@ -1150,10 +1665,11 @@ index b82a27c2..76dcdf74 100644
          try:
              while True:
                  # Session reset (/new, /stop): abandon rather than deliver stale deltas.
-@@ -625,6 +632,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
+@@ -624,6 +631,18 @@
+         len_fn = (self.adapter.message_len_fn_for_chat(self.chat_id)
                    if isinstance(self.adapter, _BasePlatformAdapter) else len)
          return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
- 
++
 +    async def prime(self) -> None:
 +        """Open the response transport once, before provider resolution can block."""
 +        async with self._transport_prime_lock:
@@ -1165,11 +1681,10 @@ index b82a27c2..76dcdf74 100644
 +            if self._use_draft_streaming and self._stream_is_message() and isinstance(ack, str) and ack.strip():
 +                self._append_accumulated(ack.strip() + "\n\n")
 +                await self._send_draft_frame(self._accumulated)
-+
+ 
      async def _start_transports(self) -> None:
          """Resolve native/draft transport; native wins (adapters declaring it can't edit).
-         The empty seed frame shows "typing" before the first token; on failure → edit path."""
-@@ -696,6 +715,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
+@@ -696,6 +715,19 @@
          strictly prefix-extends the ledger."""
          if not (self._accumulated or self._message_id or self._last_sent_text):
              return
@@ -1189,6 +1704,15 @@ index b82a27c2..76dcdf74 100644
          if not self._turn_split_delivery:
              final_payload = self._clean_for_display(final_raw)
              if final_payload and final_payload != self._clean_for_display(self._accumulated):
+@@ -939,6 +971,8 @@
+         platforms apply formatting; is_turn_final=False because this handler owns the flags.
+         Only a successful edit confirms delivery — a partial send may be just "Let me
+         search…", not the answer."""
++        if getattr(self, "_hlt_provider_parked", False):
++            return  # durable native owner retains the exact unsealed response
+         best_effort_ok = False
+         if self._accumulated and self._message_id:
+             with contextlib.suppress(Exception):
 diff --git a/gateway/stream_consumer_fallback.py b/gateway/stream_consumer_fallback.py
 index 9adf2e6e..ea1766fd 100644
 --- a/gateway/stream_consumer_fallback.py
@@ -1257,10 +1781,9 @@ index cca45c0e..465a0adb 100644
          frame_text = pre_fence_text if stream_is_msg else text
          # Strip the cursor: native streams render their own indicator, and
 diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
-index 01a32c4d..9ff80a1d 100644
 --- a/plugins/platforms/slack/adapter.py
 +++ b/plugins/platforms/slack/adapter.py
-@@ -11,7 +11,7 @@ import re
+@@ -11,7 +11,7 @@
  import time
  import unicodedata
  from dataclasses import dataclass, field
@@ -1269,7 +1792,7 @@ index 01a32c4d..9ff80a1d 100644
  
  import aiohttp
  
-@@ -1002,6 +1002,8 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -1002,6 +1002,8 @@
      MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
      supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
      # Typing indicator is a text status line (assistant.threads.setStatus): fed live phrases.
@@ -1278,7 +1801,7 @@ index 01a32c4d..9ff80a1d 100644
      supports_status_text = True
      splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
      # Slack rejects slash commands inside threads; "!" is rewritten to "/" for known commands.
-@@ -1110,9 +1112,35 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -1110,9 +1112,35 @@
          # Slash-command contexts so send() can route the first reply ephemerally. Keyed
          # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
          self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
@@ -1317,7 +1840,7 @@ index 01a32c4d..9ff80a1d 100644
          # Set once startStream reports the app lacks streaming (Agents & AI Apps
          # off / missing scope); later responses skip straight to edit-based streaming.
          self._native_stream_unsupported = False
-@@ -1622,6 +1650,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -1622,6 +1650,7 @@
              ("message", self._handle_slack_message), ("app_mention", self._handle_slack_message),
              ("app_home_opened", self._handle_app_home_opened),
              ("app_context_changed", self._handle_app_context_changed),
@@ -1325,7 +1848,17 @@ index 01a32c4d..9ff80a1d 100644
              ("file_shared", self._handle_slack_file_shared), ("file_created", _noop),
              ("file_change", _noop), ("reaction_added", _reaction(False)),
              ("reaction_removed", _reaction(True)),
-@@ -2226,7 +2255,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -1896,7 +1925,8 @@
+         self._running = False
+         # Seal dangling native streams so no live-typing indicator survives a restart.
+         for chat_id, stream in list(self._active_streams.items()):
+-            await self._seal_stream(chat_id, stream)
++            if not stream.get("_hlt_provider_parked"):
++                await self._seal_stream(chat_id, stream)
+         self._active_streams.clear()
+         # A watchdog that lost the cancel race must not block cleanup/lock release.
+         await self._cancel_socket_watchdog("[Slack] Watchdog task raised during disconnect")
+@@ -2226,7 +2256,7 @@
                  return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
              # An active native stream that this content finalizes IS the final
              # message: seal it instead of posting a duplicate.
@@ -1334,7 +1867,7 @@ index 01a32c4d..9ff80a1d 100644
              if stream_result is not None:
                  return stream_result
              formatted = self.format_message(content)
-@@ -2466,134 +2495,777 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -2466,133 +2496,788 @@
          return stripped[: -len(glyph)].rstrip() if glyph else text
  
      async def send_draft(
@@ -1624,6 +2157,11 @@ index 01a32c4d..9ff80a1d 100644
 -            logger.debug(
 -                "[Slack] chat.stopStream failed for %s/%s: %s", chat_id, stream.get("ts"), e)
 -            return False
+-
+-    async def _try_finalize_stream(self, chat_id: str, content: str) -> Optional[SendResult]:
+-        """Seal the active native stream if ``content`` is its final text: SendResult when the
+-        stream IS the final message; None when unrelated (interim commentary), leaving it open."""
+-        stream = self._active_streams.get(chat_id)
 +                stream["pending_final_text"] = final_text
 +            target_text = stream.get("pending_final_text")
 +            try:
@@ -1658,11 +2196,7 @@ index 01a32c4d..9ff80a1d 100644
 +                )
 +                return False
 +
- 
--    async def _try_finalize_stream(self, chat_id: str, content: str) -> Optional[SendResult]:
--        """Seal the active native stream if ``content`` is its final text: SendResult when the
--        stream IS the final message; None when unrelated (interim commentary), leaving it open."""
--        stream = self._active_streams.get(chat_id)
++
 +    async def _try_finalize_stream(
 +        self,
 +        chat_id: str,
@@ -1753,7 +2287,7 @@ index 01a32c4d..9ff80a1d 100644
 +                )
 +        await self.stop_typing(chat_id, metadata=metadata)
          return SendResult(success=True, message_id=ts)
- 
++
 +
 +    def _native_stream_key(
 +        self,
@@ -1929,6 +2463,18 @@ index 01a32c4d..9ff80a1d 100644
 +                candidates.extend(uncertain_candidates)
 +        runner = getattr(self, "gateway_runner", None)
 +        if runner is None:
++            return
++        _wait_owner = getattr(runner, "_hlt_slack_provider_owner", None)
++        if _wait_owner is not None and _wait_owner.confirm_retained_stop(candidates) is True:
++            # Slack's event confirms these exact failed streams stopped. Their
++            # native workers already exited; never interrupt a newer generation.
++            for key, stream in candidates:
++                stream["sealed"] = stream["stopped"] = True
++                self._active_streams.pop(key, None)
++                self._uncertain_stream_starts.pop(key, None)
++                self._remember_finalized_stream(key, stream.get("ts", ""))
++            if event_ts:
++                self._handled_agent_stop_events.add(dedupe_key)
 +            return
 +
 +        session_keys = {
@@ -2199,11 +2745,20 @@ index 01a32c4d..9ff80a1d 100644
 +
 +        await self._drain_pending_after_session_command(session_key, stop_guard)
 +
-+
+ 
      async def send_typing(self, chat_id: str, metadata=None) -> None:
          """Show a thread status via assistant.threads.setStatus.
-         Needs assistant:write or chat:write scope; auto-clears on reply."""
-@@ -2757,20 +3429,27 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -2641,6 +3326,9 @@
+         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
+         """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+         try:
++            _provider_owner = getattr(getattr(self, "gateway_runner", None), "_hlt_slack_provider_owner", None)
++            if _provider_owner is not None:
++                status = _provider_owner.waiting_notice(chat_id, team_id, thread_ts) or status
+             _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+         except Exception as e:
+@@ -2757,19 +3445,26 @@
  
      def _event_declares_bot_sender(self, event: dict) -> bool:
          """Return True when the Slack event itself identifies a bot sender."""
@@ -2234,12 +2789,11 @@ index 01a32c4d..9ff80a1d 100644
 +        if event.get("app_id"):
 +            return True
          return False
- 
 +
+ 
      def _resolve_thread_ts(
          self, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
-     ) -> Optional[str]:
-@@ -3264,36 +3943,70 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -3264,36 +3959,70 @@
              f"mention of you, even if their name is similar.")
  
      async def _resolve_user_is_bot(
@@ -2324,7 +2878,7 @@ index 01a32c4d..9ff80a1d 100644
  
      async def _users_info_payload(self, user_id: str, chat_id: str, team_id: str) -> dict:
          """``users.info`` payload for ``user_id`` via the channel's (or default) client."""
-@@ -4031,7 +4744,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -4031,7 +4760,7 @@
      def _runner_auth_fn(self) -> Any:
          """The gateway runner's ``_is_user_authorized`` (via the bound message handler), or None
          (multiplexed closures have no ``__self__``; object.__new__ doubles have no handler)."""
@@ -2333,7 +2887,7 @@ index 01a32c4d..9ff80a1d 100644
          return getattr(runner, "_is_user_authorized", None)
  
      def _early_reject_unauthorized(self, user_id: str, channel_id: str, is_dm: bool) -> bool:
-@@ -4205,7 +4918,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -4205,7 +4934,7 @@
  
      async def _hydrate_thread_context(
          self, *, channel_id: str, event_thread_ts, ts: str, user_id: str, team_id: str,
@@ -2342,7 +2896,7 @@ index 01a32c4d..9ff80a1d 100644
      ) -> Tuple[Optional[str], List[str], List[str]]:
          """``(channel_context, root_media_urls, root_media_types)`` for a thread reply. No session:
          full thread + root images once, set watermark. Session + @mention: delta past watermark
-@@ -4248,7 +4961,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -4248,7 +4977,7 @@
              ) = await self._collect_thread_root_images(
                  channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
          elif is_mentioned:
@@ -2351,7 +2905,7 @@ index 01a32c4d..9ff80a1d 100644
          else:
              # Restart rehydration (#63530 restart gap / #33215): persistent sessions survive gateway
              # restarts, but thread replies posted while the gateway was down never reached the session. On
-@@ -4322,11 +5035,43 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -4322,11 +5051,43 @@
          @mentioning us, ``all`` accepts — own posts always drop (echo loops). Unlabeled events
          without ``client_msg_id`` are probed via users.info (humans carry it, stray bots don't)."""
          msg_user = event.get("user", "")
@@ -2398,7 +2952,7 @@ index 01a32c4d..9ff80a1d 100644
          if not sender_is_bot:
              return False
          allow_bots = self._slack_allow_bots()
-@@ -4526,6 +5271,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -4526,6 +5287,7 @@
          _claim_ts = str(event.get("ts") or "")
          if _claim_ts:
              self._remember_processed_message_ts(_claim_ts)
@@ -2406,7 +2960,7 @@ index 01a32c4d..9ff80a1d 100644
          if is_mentioned:
              text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                  text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
-@@ -4536,7 +5282,7 @@ class SlackAdapter(BasePlatformAdapter):
+@@ -4536,7 +5298,7 @@
          ) = await self._hydrate_thread_context(
              channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
              team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
@@ -4483,10 +5037,9 @@ index 6466dc49..9c0a28ca 100644
          result["hint"] = "Names in not_found are not currently available. Re-run tool_search to refresh."
 diff --git a/gateway/run_managed_slack.py b/gateway/run_managed_slack.py
 new file mode 100644
-index 00000000..6e693d0e
 --- /dev/null
 +++ b/gateway/run_managed_slack.py
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,425 @@
 +"""Exact-worker controls and one-response lifecycle for managed Slack turns."""
 +from __future__ import annotations
 +import asyncio
@@ -4597,7 +5150,7 @@ index 00000000..6e693d0e
 +        controls[key] = control
 +        if len(controls) > 256:
 +            for control_key, candidate in list(controls.items()):
-+                if candidate["worker_done"].is_set():
++                if candidate["worker_done"].is_set() and not candidate.get("provider_waiting"):
 +                    controls.pop(control_key, None)
 +                if len(controls) <= 128:
 +                    break
@@ -4737,9 +5290,14 @@ index 00000000..6e693d0e
 +                        source.chat_id, "processing", metadata=metadata
 +                    )
 +                )
-+            # Prime before waiting on the status API: the acknowledgement is
-+            # the user's immediate feedback and owns the eventual final.
-+            await consumer.prime()
++            # A native checkpoint retains the one acknowledged Slack stream.
++            # Restore before prime can create any new response.
++            if control.get("provider_restore_delivery") is not None:
++                from hlt_slack_provider_wait import owner
++                owner(self).restore_delivery(adapter, control["provider_restore_delivery"], consumer)
++                control.pop("provider_restore_delivery")
++            else:
++                await consumer.prime()
 +            status_ok = False
 +            if status_task is not None:
 +                try:
@@ -4754,6 +5312,10 @@ index 00000000..6e693d0e
 +                "Could not prime Slack stream immediately after admission",
 +                exc_info=True,
 +            )
++            if control.get("provider_owner") and control.get("provider_waiting"):
++                control["provider_reconciliation"] = True
++                if control.get("stream_consumer") is not None:
++                    control["stream_consumer"]._hlt_provider_parked = True
 +            return None
 +
 +
@@ -4837,6 +5399,8 @@ index 00000000..6e693d0e
 +        those state changes only after this returns ``True``.
 +        """
 +        from gateway.run import request_hard_interrupt
++        from hlt_slack_provider_wait import owner
++        owner(self).stop(session_key)
 +        controls = self._managed_turn_controls()
 +        control = None
 +        if run_generation is not None:
@@ -4845,7 +5409,7 @@ index 00000000..6e693d0e
 +            matches = [
 +                item
 +                for (key, _generation), item in controls.items()
-+                if key == session_key and not item["worker_done"].is_set()
++                if key == session_key and (not item["worker_done"].is_set() or item.get("provider_waiting"))
 +            ]
 +            if len(matches) == 1:
 +                control = matches[0]
@@ -4901,3 +5465,256 @@ index 00000000..6e693d0e
 +        matches = [key for key in controls if key[0] == session_key]
 +        if len(matches) == 1:
 +            controls.pop(matches[0], None)
+diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms/api_server_run_idempotency.py
+--- a/gateway/platforms/api_server_run_idempotency.py
++++ b/gateway/platforms/api_server_run_idempotency.py
+@@ -32,7 +32,11 @@
+     "owner_pid": "INTEGER NOT NULL DEFAULT 0",
+     "owner_started": "INTEGER NOT NULL DEFAULT 0",
+     "retention_until": "REAL NOT NULL DEFAULT 0",
+-    "acknowledged_at": "REAL"}
++    "acknowledged_at": "REAL",
++    "provider_wait_json": "TEXT",
++    "provider_wait_generation": "INTEGER NOT NULL DEFAULT 0",
++    "provider_wait_state": "TEXT",
++    "provider_wait_stop": "INTEGER NOT NULL DEFAULT 0"}
+ 
+ 
+ def _encode_status(status: Dict[str, Any]) -> str:
+@@ -52,8 +56,8 @@
+ 
+ class RunIdempotencyStore:
+     """Durable, tenant-scoped reservations for ``POST /v1/runs``: a unique ``(scope, key)`` row
+-    inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Only
+-    fingerprints and public run status are stored — never request bodies or credentials."""
++    inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Managed provider continuations additionally retain private turn checkpoints in this
++    permission-restricted database; credentials are never included."""
+ 
+     RETENTION_SECONDS = 24 * 60 * 60
+     ACKNOWLEDGED_RETENTION_SECONDS = 24 * 60 * 60
+@@ -220,9 +224,122 @@
+     def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
+         with self._lock:
+             self._conn.execute(
+-                "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
+-                (_encode_status(status), time.time(), run_id))
+-            self._conn.commit()
++                """UPDATE run_idempotency SET status_json=?, updated_at=?,
++                   provider_wait_state=CASE WHEN ? THEN 'terminal' ELSE provider_wait_state END,
++                   provider_wait_json=CASE WHEN ? THEN NULL ELSE provider_wait_json END
++                   WHERE run_id=?""",
++                (_encode_status(status), time.time(), status.get("status") in TERMINAL_STATUSES,
++                 status.get("status") in {"completed", "cancelled"}, run_id))
++            self._conn.commit()
++
++    def park_provider_wait(self, scope: str, run_id: str, generation: int,
++                           checkpoint: dict, status: dict, *, owner_pid: int, owner_started: int) -> bool:
++        """The current native owner yields only a settled checkpoint, never an admission."""
++        if not self.durable:
++            return False
++        encoded = _encode_status(checkpoint)
++        with self._immediate_txn():
++            changed = self._conn.execute(
++                """UPDATE run_idempotency SET provider_wait_json=?, provider_wait_state='waiting',
++                       provider_wait_generation=provider_wait_generation+1, status_json=?, updated_at=?
++                   WHERE scope=? AND run_id=? AND provider_wait_generation=? AND provider_wait_stop=0
++                     AND owner_pid=? AND owner_started=?
++                     AND (provider_wait_state IS NULL OR provider_wait_state='claimed')""",
++                (encoded, _encode_status(status), time.time(), scope, run_id, generation,
++                 owner_pid, owner_started)).rowcount
++            self._conn.commit()
++        return changed == 1
++
++    def provider_waits(self, scope: str) -> list[dict]:
++        with self._lock:
++            rows = self._conn.execute(
++                """SELECT run_id, provider_wait_generation, provider_wait_json, status_json
++                   FROM run_idempotency WHERE scope=? AND provider_wait_state='waiting'
++                     AND provider_wait_stop=0 ORDER BY updated_at,run_id""", (scope,)).fetchall()
++        saved = []
++        for row in rows:
++            try:
++                status = json.loads(row[3])
++                # A rolled-back runtime can close a waiting run without knowing
++                # these additive columns. Its terminal decision wins on re-upgrade.
++                if status.get("status") != "waiting_for_provider":
++                    continue
++                saved.append(dict(run_id=row[0], generation=row[1], checkpoint=json.loads(row[2]), status=status))
++            except (ValueError, TypeError):
++                logger.error("Invalid provider continuation for run %s; reconciliation required", row[0])
++        return saved
++
++    def adopt_provider_wait(self, scope: str, run_id: str, generation: int,
++                            *, owner_pid: int, owner_started: int) -> bool:
++        """Rebind a parked platform continuation only after its prior owner died."""
++        from gateway.delivery_ledger import _owner_alive
++        with self._immediate_txn():
++            row = self._conn.execute(
++                "SELECT owner_pid,owner_started,status_json FROM run_idempotency WHERE scope=? AND run_id=? AND provider_wait_state='waiting' AND provider_wait_generation=? AND provider_wait_stop=0",
++                (scope, run_id, generation)).fetchone()
++            if row is None or json.loads(row[2]).get("status") != "waiting_for_provider" or _owner_alive(row[0], row[1]):
++                self._conn.commit()
++                return False
++            changed = self._conn.execute(
++                "UPDATE run_idempotency SET owner_pid=?,owner_started=? WHERE scope=? AND run_id=? AND provider_wait_generation=? AND owner_pid=? AND owner_started=?",
++                (owner_pid, owner_started, scope, run_id, generation, row[0], row[1])).rowcount
++            self._conn.commit()
++        return changed == 1
++
++    def claim_provider_wait(self, scope: str, run_id: str, generation: int,
++                            *, owner_pid: int, owner_started: int, now: float) -> bool:
++        """CAS one due checkpoint into one execution lease; stale claims cannot replay it."""
++        with self._immediate_txn():
++            row = self._conn.execute(
++                """SELECT status_json FROM run_idempotency WHERE scope=? AND run_id=?
++                   AND provider_wait_state='waiting' AND provider_wait_generation=? AND provider_wait_stop=0""",
++                (scope, run_id, generation)).fetchone()
++            if row is None:
++                self._conn.commit()
++                return False
++            status = json.loads(row[0])
++            from hlt_provider_recovery import sanitize_provider_recovery
++            recovery = sanitize_provider_recovery(status.get("recovery"), automatic=True) if isinstance(status, dict) else None
++            if recovery is None or status.get("status") != "waiting_for_provider" or recovery.get("retryAt", float("inf")) > now * 1000:
++                self._conn.commit()
++                return False
++            status.update(status="running", updated_at=now)
++            status.pop("recovery", None)
++            changed = self._conn.execute(
++                """UPDATE run_idempotency SET provider_wait_state='claimed', status_json=?,
++                       owner_pid=?, owner_started=?, updated_at=?
++                   WHERE scope=? AND run_id=? AND provider_wait_state='waiting'
++                     AND provider_wait_generation=? AND provider_wait_stop=0""",
++                (_encode_status(status), owner_pid, owner_started, now, scope, run_id, generation)).rowcount
++            self._conn.commit()
++        return changed == 1
++
++    def stop_provider_wait(self, scope: str, run_id: str) -> dict | None:
++        """A durable Stop tombstone precedes cancellation, including after a restart."""
++        with self._immediate_txn():
++            row = self._conn.execute(
++                "SELECT provider_wait_state,status_json FROM run_idempotency WHERE scope=? AND run_id=?",
++                (scope, run_id)).fetchone()
++            if row is None or row[0] not in {"waiting", "claimed"}:
++                self._conn.commit()
++                return None
++            status = json.loads(row[1])
++            parked = row[0] == "waiting"
++            if parked:
++                status.update(status="cancelled", completed=False, interrupted=True, updated_at=time.time())
++                status.pop("recovery", None)
++            self._conn.execute(
++                """UPDATE run_idempotency SET provider_wait_stop=1,status_json=?,updated_at=?,
++                       provider_wait_state=CASE WHEN ? THEN 'terminal' ELSE provider_wait_state END,
++                       provider_wait_json=CASE WHEN ? THEN NULL ELSE provider_wait_json END
++                   WHERE scope=? AND run_id=?""", (_encode_status(status), time.time(), parked, parked, scope, run_id))
++            self._conn.commit()
++        return status if parked else None
++
++    def provider_wait_stopped(self, scope: str, run_id: str) -> bool:
++        with self._lock:
++            row = self._conn.execute("SELECT provider_wait_stop FROM run_idempotency WHERE scope=? AND run_id=?", (scope, run_id)).fetchone()
++        return bool(row and row[0])
+ 
+     def close(self) -> None:
+         with self._lock:
+diff --git a/gateway/run_agent_cache.py b/gateway/run_agent_cache.py
+--- a/gateway/run_agent_cache.py
++++ b/gateway/run_agent_cache.py
+@@ -486,6 +486,9 @@
+         """Interrupt the current run and clear queued session state consistently."""
+         if not session_key:
+             return
++        from hlt_slack_provider_wait import enabled, owner
++        if enabled(source):
++            owner(self).stop(session_key)
+         state = self._peek_session_state(session_key)
+         running_agent = state.turn.agent if state else None
+         _generation_at_interrupt = self._interrupt_running_turn(
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -578,15 +578,21 @@
+         ``resume_pending`` for the reconnect watcher, which re-calls this scoped to that ``platform``;
+         sessions with a running agent are skipped so none is resumed twice."""
+         from gateway.run import _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window
++        from hlt_slack_provider_wait import owner
++        _provider_resumed = owner(self).schedule(platform)
+         window = _auto_continue_freshness_window()
+         candidates = self._resume_pending_candidates(platform)
+         if candidates is None:
+-            return 0
++            return _provider_resumed
+         now = datetime.now()
+-        scheduled = 0
++        scheduled = _provider_resumed
+         for entry in candidates:
+             marker = entry.last_resume_marked_at or entry.updated_at
+             if marker is not None and (now - marker).total_seconds() > window:
++                continue
++            # Native provider checkpoints own their original request, including
++            # failed/claimed reconciliation; generic recovery cannot re-admit it.
++            if owner(self).owns_checkpoint(entry.session_key):
+                 continue
+             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
+             if self._is_session_running(entry.session_key):
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -864,6 +864,9 @@
+         # manager during the drain, the durable marker is already written so the next gateway boot can
+         # recover in-flight sessions (#27856).
+         for _sk, _agent in list(self._running_agents.items()):
++            _provider_owner = getattr(self, "_hlt_slack_provider_owner", None)
++            if _provider_owner is not None and _provider_owner.owns_checkpoint(_sk):
++                continue
+             if _agent is _AGENT_PENDING_SENTINEL:
+                 continue
+             with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
+diff --git a/gateway/run_busy.py b/gateway/run_busy.py
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -201,24 +201,29 @@
+         except Exception:
+             return None
+ 
+-    def _active_session_limit_message(self, session_key: str) -> Optional[str]:
++    def _active_session_limit_message(self, session_key: str, *, continuation: bool = False) -> Optional[str]:
+         """Return a user-facing rejection when starting a new session exceeds the cap."""
+         max_sessions = self._get_max_concurrent_sessions()
+-        if max_sessions is None or self._is_session_running(session_key):
++        if max_sessions is None or (self._is_session_running(session_key) and not continuation):
+             return None
+         active_count = self._running_agent_count()
++        # Parked Slack requests retain their session guard but release execution
++        # capacity. They must compete for a fresh native lease before resuming.
++        wait_owner = getattr(self, "_hlt_slack_provider_owner", None)
++        if wait_owner is not None:
++            active_count = max(0, active_count - wait_owner.waiting_count())
+         if active_count < max_sessions:
+             return None
+         from hermes_cli.active_sessions import active_session_limit_message
+         return active_session_limit_message(active_count, max_sessions)
+ 
+     def _claim_active_session_slot(
+-        self, session_key: str, source: SessionSource
++        self, session_key: str, source: SessionSource, *, continuation: bool = False
+     ) -> tuple[Any, Optional[str]]:
+         """Claim a cross-process active-session slot for a new gateway turn."""
+-        if self._is_session_running(session_key):
++        if self._is_session_running(session_key) and not continuation:
+             return None, None
+-        limit_message = self._active_session_limit_message(session_key)
++        limit_message = self._active_session_limit_message(session_key, continuation=continuation)
+         if limit_message is not None:
+             return None, limit_message
+         try:
+@@ -243,6 +248,8 @@
+             )
+         except Exception as exc:
+             logger.warning("Failed to claim active session slot: %s", exc)
++            if continuation:
++                return None, "Native continuation capacity could not be confirmed."
+             return None, None
+ 
+     @staticmethod

@@ -475,6 +475,39 @@ class NumericGroundingLedger:
         self._successful_tool_results = 0
         self._add_evidence(user_input)
 
+    def checkpoint(self) -> dict[str, Any]:
+        """Retain the current run's evidence across a native provider wait."""
+        with self._lock:
+            return {
+                "facts": [[kind, str(value), sorted(labels)] for (kind, value), labels in self._facts.items()],
+                "evidence_chars": self._evidence_chars,
+                "truncated": self._truncated,
+                "successful_tool_results": self._successful_tool_results,
+            }
+
+    @classmethod
+    def from_checkpoint(cls, snapshot: dict[str, Any]) -> "NumericGroundingLedger":
+        ledger = cls("")
+        facts = snapshot["facts"]
+        if not isinstance(facts, list) or len(facts) > MAX_EVIDENCE_FACTS:
+            raise ValueError("invalid numeric evidence checkpoint")
+        for kind, value, labels in facts:
+            number = Decimal(value)
+            if not number.is_finite() or not isinstance(kind, str) or not isinstance(labels, list):
+                raise ValueError("invalid numeric evidence fact")
+            if not all(isinstance(label, str) for label in labels):
+                raise ValueError("invalid numeric evidence label")
+            ledger._facts[(kind, number)] = set(labels)
+        for key in ("evidence_chars", "successful_tool_results"):
+            value = snapshot[key]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("invalid numeric evidence accounting")
+            setattr(ledger, "_" + key, value)
+        if ledger._evidence_chars > MAX_EVIDENCE_CHARS:
+            raise ValueError("numeric evidence checkpoint exceeds its budget")
+        ledger._truncated = bool(snapshot["truncated"])
+        return ledger
+
     def _record_fact(self, number: _Number, labels: set[str]) -> None:
         key = _fact_key(number)
         if key not in self._facts and len(self._facts) >= MAX_EVIDENCE_FACTS:

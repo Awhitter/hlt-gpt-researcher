@@ -438,17 +438,21 @@ def _pre_tool_call(
     effect_decision = effect_policy_decision(tool_name, args)
     if effect_decision is not None:
         return effect_decision
+    from hlt_artifact_run_context import artifact_directive
+    artifact_decision = artifact_directive(tool_name, args)
+    if artifact_decision is not None and artifact_decision.get("action") == "block":
+        return artifact_decision
     key = _tool_budget_key(turn_id=turn_id, session_id=session_id)
     round_id = str(api_request_id or tool_call_id or "").strip()
     if not key or not round_id:
-        return None
+        return artifact_decision
     with _TOOL_BUDGET_LOCK:
         state = _TOOL_BUDGETS.get(key)
         if state is None:
-            return None
+            return artifact_decision
         rounds = state["rounds"]
         if round_id in rounds:
-            return None
+            return artifact_decision
         if len(rounds) >= SLACK_TOOL_ROUND_LIMIT:
             blocked_rounds = state["blocked_rounds"]
             if round_id not in blocked_rounds:
@@ -461,7 +465,7 @@ def _pre_tool_call(
                 )
             return {"action": "block", "message": _TOOL_BUDGET_BLOCK_MESSAGE}
         rounds.add(round_id)
-    return None
+    return artifact_decision
 
 
 def _spillover_body(value: Any) -> tuple[str, str] | None:

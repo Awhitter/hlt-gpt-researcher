@@ -10,7 +10,9 @@ from .runtime_context import MCP_PROTOCOL_VERSION, _post, _tool_data
 COORDINATION_TIMEOUT_SECONDS = 11.0
 
 
-def claim_coordination(url: str, token: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def claim_coordination(url: str, token: str, arguments: dict[str, Any], *, operation: str = 'claim') -> dict[str, Any]:
+    if operation not in {'claim', 'get'}:
+        raise ValueError('unsupported coordination operation')
     if not url or not token:
         raise RuntimeError("Katailyst2 coordination is not configured")
     deadline = time.monotonic() + COORDINATION_TIMEOUT_SECONDS
@@ -41,12 +43,13 @@ def claim_coordination(url: str, token: str, arguments: dict[str, Any]) -> dict[
         row.get("name") for row in (listed.get("result") or {}).get("tools", [])
         if isinstance(row, Mapping)
     }
-    direct = next((n for n in ("agents.coordination.claim", "agents_coordination_claim") if n in names), None)
+    verb = 'agents.coordination.' + operation
+    direct = next((n for n in (verb, verb.replace('.', '_')) if n in names), None)
     bridge = next((n for n in ("tool.execute", "tool_execute") if n in names), None)
     if direct:
         params = {"name": direct, "arguments": arguments}
     elif bridge:
-        params = {"name": bridge, "arguments": {"verb": "agents.coordination.claim", "args": arguments}}
+        params = {"name": bridge, "arguments": {"verb": verb, "args": arguments}}
     else:
         raise RuntimeError("Katailyst2 coordination is outside this token's tool surface")
     for attempt in range(3):
@@ -66,14 +69,14 @@ def claim_coordination(url: str, token: str, arguments: dict[str, Any]) -> dict[
     if isinstance(claim.get("output"), Mapping):
         claim = dict(claim["output"])
     source = claim.get("source") or {}
-    expected = arguments["source"]
+    expected = arguments.get("source")
     if (
         claim.get("schemaVersion") != "agent_coordination.v1"
         or not claim.get("coordinationId")
         or claim.get("callerRole") not in {"lead", "contributor", "observer"}
         or not isinstance(claim.get("mayRespond"), bool)
         or not isinstance(claim.get("mayComplete"), bool)
-        or any(source.get(k) != expected.get(k) for k in ("platform", "teamId", "channelId", "threadTs", "messageTs"))
+        or (expected is not None and any(source.get(k) != expected.get(k) for k in ("platform", "teamId", "channelId", "threadTs", "messageTs")))
     ):
         raise RuntimeError("Katailyst2 coordination returned an invalid decision")
     return dict(claim)

@@ -93,6 +93,10 @@ ENV HLT_MANAGED_MODEL_ROUTE=1
 # tools as `mcp__<server>__<tool>`. Upgrade this SHA deliberately, with the
 # contract assertion below and the service gates green.
 COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py
+COPY hlt_artifact_run_context.py /app/hlt_artifact_run_context.py
+COPY hlt_provider_recovery.py /app/hlt_provider_recovery.py
+COPY hlt_provider_checkpoint.py /app/hlt_provider_checkpoint.py
+COPY hlt_slack_provider_wait.py /app/hlt_slack_provider_wait.py
 COPY fleet_run_budget.py /app/fleet_run_budget.py
 COPY hermes_plugins/hlt_k2_context/tool_result_views.py /app/hlt_tool_result_views.py
 COPY hermes_patches /tmp/hermes-patches
@@ -182,6 +186,10 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 RUN python /app/assert_sqlite_runtime.py
+# These proofs import the wrapper ledger and the real K2 plugin. Run after the
+# complete application copy, with assertions still separate from /app as above.
+RUN python /tmp/hermes-patches/assert_provider_wait.py /opt/hermes \
+    && python /tmp/hermes-patches/assert_slack_provider_wait.py /opt/hermes
 # /app/grounding holds AGENTS.md — the selected agent's durable briefing, loaded by Hermes'
 # project-context discovery from terminal.cwd. It stays root-owned and
 # world-readable so the agent can read it but never rewrite its own facts.

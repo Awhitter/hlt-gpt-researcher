@@ -3644,7 +3644,7 @@ def test_hosted_k2_instructions_reserve_the_final_and_use_explicit_refs_directly
     normalized = health_gateway._validate_hook_payload(payload)
     instructions = health_gateway._hosted_k2_run_instructions(normalized)
 
-    assert "hard end-to-end execution budget is 120 seconds" in instructions
+    assert "cumulative active execution budget is 120 seconds" in instructions
     assert "no more than 30 seconds (25% of the budget)" in instructions
     assert "begin composing the final answer no later than 90 seconds" in instructions
     assert "skill:nm-funnel-brief" in instructions
@@ -3678,7 +3678,7 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
 
     def fake_hermes(path, **kwargs):
         calls.append((path, kwargs))
-        return 202, {"run_id": "run_" + "a" * 32, "status": "started"}
+        return 202, {"run_id": "run_" + "a" * 32, "activeExecutionBudget": True, "status": "started"}
 
     monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
     monkeypatch.setattr(
@@ -3709,9 +3709,10 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
     assert calls[0][1]["payload"]["max_iterations"] == 4
     assert "25% of the budget" in calls[0][1]["payload"]["instructions"]
     assert "never trade the requested final for more discovery" in calls[0][1]["payload"]["instructions"]
-    assert scheduled == [
-        ("run_" + "a" * 32, "a-secure-shared-hook-token", 300)
-    ]
+    assert scheduled == []  # Native owner retains the active-time budget across waits.
+    assert calls[0][1]["idempotency_key"] == f"hlt-k2:{WRAPPER_RUN_ID}"
+    assert calls[0][1]["payload"]["provider_recovery"] is True
+    assert calls[0][1]["payload"]["execution_budget_seconds"] == 300
 
     # An exact replay returns the same wrapper receipt and never POSTs Hermes.
     replay = health_gateway.agent_hook(
@@ -6605,3 +6606,68 @@ def test_astra_activation_and_readiness_accept_exact_api_route(monkeypatch):
     unavailable = hg.activationz(authorization="Bearer a-secure-shared-hook-token")
     assert unavailable.status_code == 503
     assert json.loads(unavailable.body)["checks"]["primary_model_route_ready"] is False
+
+
+def test_provider_wait_polling_and_cancel_use_original_native_binding(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv('OPENCLAW_HQ_HOOK_TOKEN', 'a-secure-shared-hook-token')
+    monkeypatch.setenv('HLT_AGENT_RUN_LEDGER_PATH', str(tmp_path / 'wait.sqlite3'))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    native_id = 'run_' + 'f' * 32
+    calls = []
+    recovery = dict(state='waiting_for_provider', reason='rate_limit', retryAt=1900000000000,
+                    automaticResume=True, continuationRequired=False)
+    state = {'status': 'waiting_for_provider', 'recovery': recovery}
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path == '/v1/runs':
+            return 202, dict(run_id=native_id, status='started', nativeStop=True, activeExecutionBudget=True)
+        if path.endswith('/stop'):
+            state.clear(); state.update(status='stopping')
+        return 200, dict(run_id=native_id, **state)
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', api)
+    receipt = health_gateway.dispatch_agent_hook(_hook_payload())
+    assert receipt['stopProtocol'] == 'hermes_hook_v1'
+    _, waiting = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert waiting['status'] == 'waiting_for_provider' and waiting['recovery'] == recovery
+    status, stopping = health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID)
+    assert status == 202 and stopping['status'] == 'running'
+    assert stopping['cancellationRequested'] is True and stopping['terminal'] is False
+    assert [path for path, _ in calls if path.endswith('/stop')] == [f'/v1/runs/{native_id}/stop']
+    assert len([path for path, _ in calls if path == '/v1/runs']) == 1
+    state.clear(); state.update(status='completed', output='Saved artifact')
+    _, complete = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert complete['status'] == 'completed'
+    before = len(calls)
+    status, late_stop = health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID)
+    assert status == 200 and late_stop['status'] == 'completed'
+    assert len(calls) == before
+
+
+def test_cancel_does_not_infer_capability_for_legacy_admission(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv('HLT_AGENT_RUN_LEDGER_PATH', str(tmp_path / 'legacy.sqlite3'))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    monkeypatch.setattr(health_gateway, '_schedule_run_timeout', lambda *a: None)
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k: (202, {'run_id': 'run_' + 'e' * 32}))
+    receipt = health_gateway.dispatch_agent_hook(_hook_payload())
+    assert 'stopProtocol' not in receipt
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k: pytest.fail('unconfirmed Stop must not call native'))
+    status, _ = health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID)
+    assert status == 409
+
+
+@pytest.mark.parametrize("read_status", [404, 503])
+def test_stop_propagates_failed_reconciliation(monkeypatch, tmp_path, read_status):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv('HLT_AGENT_RUN_LEDGER_PATH', str(tmp_path / 'failed-stop-read.sqlite3'))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    native_id = 'run_' + 'd' * 32
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k:
+        (202, dict(run_id=native_id, nativeStop=True, activeExecutionBudget=True)))
+    health_gateway.dispatch_agent_hook(_hook_payload())
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k:
+        (200, dict(run_id=native_id, status='stopping')))
+    error = dict(ok=False, runId=WRAPPER_RUN_ID, error='Status unavailable')
+    monkeypatch.setattr(health_gateway, 'read_agent_hook_run', lambda _id: (read_status, error))
+    assert health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID) == (read_status, error)

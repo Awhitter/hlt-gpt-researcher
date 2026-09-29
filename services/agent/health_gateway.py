@@ -1288,10 +1288,9 @@ def _hosted_k2_context_refs(metadata: Mapping[str, Any]) -> list[str]:
 def _hosted_k2_run_instructions(normalized: Mapping[str, Any]) -> str:
     """Give bounded K2 missions an explicit finish-first operating contract.
 
-    Hermes v0.21 does not accept a native per-run deadline field. The wrapper
-    stops the run at ``timeoutSeconds``, so the agent must see that budget before
-    its first model call and must not spend it rediscovering context K2 already
-    supplied in the handoff.
+    The native owner enforces cumulative active execution time, including after
+    provider recovery. The agent sees that same budget before its first model
+    call and must not spend it rediscovering context already in the handoff.
     """
     timeout_seconds = int(normalized["timeout_seconds"])
     retrieval_seconds = timeout_seconds // 4
@@ -1327,7 +1326,7 @@ def _hosted_k2_run_instructions(normalized: Mapping[str, Any]) -> str:
     return " ".join(
         (
             "This is a governed internal Katailyst2 mission for Cleo.",
-            f"The hard end-to-end execution budget is {timeout_seconds} seconds; its clock starts before the first model call.",
+            f"The cumulative active execution budget is {timeout_seconds} seconds; provider waiting pauses its clock, while model and tool execution consume it.",
             turn_contract,
             f"Spend no more than {retrieval_seconds} seconds (25% of the budget) on all retrieval and tool calls combined, and begin composing the final answer no later than {final_by_seconds} seconds after start, reserving {reserve_seconds} seconds to finish.",
             source_contract,
@@ -1344,6 +1343,7 @@ def _hermes_api_json(
     token: str = "",
     payload: Mapping[str, Any] | None = None,
     session_key: str = "",
+    idempotency_key: str = "",
     timeout: float = 6.0,
 ) -> tuple[int, dict[str, Any]]:
     import urllib.error
@@ -1355,6 +1355,8 @@ def _hermes_api_json(
         headers["Authorization"] = f"Bearer {token}"
     if session_key:
         headers["X-Hermes-Session-Key"] = session_key
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     if payload is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(dict(payload)).encode("utf-8")
@@ -1432,6 +1434,9 @@ def _admission_receipt(record: Mapping[str, Any]) -> dict[str, Any]:
         public_status = "unknown"
     else:
         public_status = provider_status
+    cancellation_requested = public_status == "stopping"
+    if cancellation_requested:
+        public_status = "running"
     terminal = admission_status == "terminal"
     body: dict[str, Any] = {
         "ok": public_status == "completed" if terminal else True,
@@ -1441,6 +1446,10 @@ def _admission_receipt(record: Mapping[str, Any]) -> dict[str, Any]:
         "admissionStatus": admission_status,
         "statusUrl": f"/hooks/agent/runs/{record.get('wrapper_run_id')}",
     }
+    if cancellation_requested:
+        body["cancellationRequested"] = True
+    if record.get("stop_protocol") == "hermes_hook_v1":
+        body["stopProtocol"] = "hermes_hook_v1"
     recovery_code = str(record.get("recovery_code") or "")
     if admission_status == "dispatching" and not recovery_code:
         recovery_code = "provider_admission_ambiguous"
@@ -1449,6 +1458,8 @@ def _admission_receipt(record: Mapping[str, Any]) -> dict[str, Any]:
             "code": recovery_code,
             "required": True,
         }
+    if (terminal or provider_status == "waiting_for_provider") and record.get("recovery"):
+        body["recovery"] = record["recovery"]
     if terminal and record.get("output_text"):
         body["output"] = str(record["output_text"])
     if record.get("error_text") and (terminal or recovery_code):
@@ -1502,7 +1513,10 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
             method="POST",
             token=token,
             session_key=normalized["session_key"],
+            idempotency_key=f"hlt-k2:{wrapper_id}",
             payload={
+                "provider_recovery": True,
+                "execution_budget_seconds": normalized["timeout_seconds"],
                 "input": normalized["message"],
                 "session_id": normalized["session_key"],
                 "instructions": _hosted_k2_run_instructions(normalized),
@@ -1524,15 +1538,10 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
     if status == 202 and re.fullmatch(r"run_[a-f0-9]{32}", provider_run_id):
         # This binding is the second durable fact. A crash before it leaves the
         # admission in dispatching/unknown forever rather than dispatching twice.
-        ledger.bind_provider(wrapper_id, provider_run_id)
-        try:
+        ledger.bind_provider(wrapper_id, provider_run_id, stop_protocol=(
+            "hermes_hook_v1" if response.get("nativeStop") is True else None))
+        if response.get("activeExecutionBudget") is not True:
             _schedule_run_timeout(provider_run_id, token, normalized["timeout_seconds"])
-        except Exception as exc:
-            logger.warning(
-                "could not schedule timeout for provider run %s: %s",
-                provider_run_id,
-                exc,
-            )
         return _admission_receipt(ledger.get(wrapper_id) or record)
 
     error = response.get("error")
@@ -1598,9 +1607,10 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
             output=response.get("output"),
             error=response.get("error"),
             usage=response.get("usage"),
+            recovery=response.get("recovery"),
         )
-    elif provider_status in {"queued", "running", "waiting_for_approval"}:
-        ledger.note_provider_status(run_id, provider_status)
+    elif provider_status in {"queued", "running", "stopping", "waiting_for_approval", "waiting_for_provider"}:
+        ledger.note_provider_status(run_id, provider_status, recovery=response.get("recovery"))
     else:
         ledger.note_provider_unknown(
             run_id,
@@ -1609,6 +1619,29 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
         )
     return 200, _admission_receipt(ledger.get(run_id) or record)
 
+
+
+def stop_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
+    if not re.fullmatch(r"run_[a-f0-9]{32}", run_id):
+        return 400, {"ok": False, "error": "invalid runId"}
+    record = get_agent_run_ledger().get(run_id)
+    if record is None:
+        return 404, {"ok": False, "runId": run_id, "error": "run not admitted"}
+    if record.get("admission_status") == "terminal":
+        return 200, _admission_receipt(record)
+    provider_id = str(record.get("provider_run_id") or "")
+    if record.get("admission_status") != "provider_bound" or not re.fullmatch(r"run_[a-f0-9]{32}", provider_id):
+        return 409, {"ok": False, "runId": run_id, "error": "native admission must be reconciled before Stop"}
+    if record.get("stop_protocol") != "hermes_hook_v1":
+        return 409, {"ok": False, "runId": run_id, "error": "native Stop capability was not confirmed at admission"}
+    status, response = _hermes_api_json(f"/v1/runs/{provider_id}/stop", method="POST", token=_hook_token(), payload={})
+    if status != 200 or response.get("run_id") != provider_id:
+        return 502, {"ok": False, "runId": run_id, "error": "native Stop was not acknowledged"}
+    # Read the actual native lifecycle; requesting Stop alone is not cancellation.
+    read_status, receipt = read_agent_hook_run(run_id)
+    if read_status != 200:
+        return read_status, receipt
+    return (200 if receipt.get("terminal") else 202), receipt
 
 def openrouter_key_kind(key: str, timeout: float = 6.0) -> str:
     """Classify the model credential: can it actually run inference?
@@ -2972,6 +3005,20 @@ def agent_hook_run(
             {"ok": False, "runId": run_id, "error": "run status unavailable"},
             status_code=503,
         )
+    return JSONResponse(response, status_code=status)
+
+
+@app.post("/hooks/agent/runs/{run_id}/cancel")
+def agent_hook_run_stop(
+    run_id: str,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
+    if not _hook_authorized(authorization):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        status, response = stop_agent_hook_run(run_id)
+    except Exception:
+        return JSONResponse({"ok": False, "runId": run_id, "error": "native Stop unavailable"}, status_code=503)
     return JSONResponse(response, status_code=status)
 
 

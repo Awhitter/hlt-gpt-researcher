@@ -24,3 +24,81 @@ Offline checks and image build success establish candidate compatibility, not
 live account entitlement or operational completion. Rollout still needs the
 observed deployed SHA, provider/model, useful saved artifact, durable terminal
 receipt, and controlled Slack acknowledgement/Stop behavior.
+
+### Managed provider continuation
+
+The pinned native `/v1/runs` owner accepts `provider_recovery: true` only for
+an authenticated, durable, default-profile managed route with an explicit
+active execution budget. Admission supplies its normal idempotency key once.
+An exhausted model request may checkpoint the current turn at a settled tool
+boundary. The same native run, task, turn, message markers, guardrails, numeric
+evidence and cumulative budgets survive a wait and restart. SQLite generation
+claims serialize resumption; claimed-but-interrupted work is never replayed.
+Unknown effects, detached child/process work, changed transcripts and unsupported
+checkpoint state require reconciliation. No new request is admitted on retry.
+
+`POST /hooks/agent/runs/{wrapper_run_id}/cancel` forwards Stop to the originally
+bound native ID. The admission advertises `hermes_hook_v1` only after native Stop
+capability confirmation. Pending Stop is `running` plus
+`cancellationRequested: true`; cancellation is reported only from settled native
+status. Provider waiting pauses the execution clock without resetting its
+consumed budget or iteration ceiling. The private checkpoint remains in the
+native permission-restricted SQLite store and is cleared on completion or confirmed
+Stop; failed continuations retain it for reconciliation under the existing retention
+policy. Exact source, active governance-pack and credential-free primary/fallback/tool-policy fingerprints
+block incompatible resumption. Credential refreshes do not change those fingerprints.
+An older runtime may report an interrupted run after rollback; re-upgrading never
+resumes such a row, even if its unfamiliar checkpoint columns still say waiting.
+If rollback leaves a parked row untouched, only the exact compatible runtime and
+policy may claim it again. Transcript edits also block automatic resumption.
+
+`assert_provider_wait.py` exercises native admission, exhaustion, adapter restart,
+CAS resumption, transcript/tool/result custody, budget retention, Stop tombstones
+and ambiguous claimed leases using synthetic providers and no model calls.
+
+Ordinary managed Slack requests use the same native turn checkpoint through a
+separate private SQLite owner in `hlt_slack_provider_wait.py`. The original
+adapter task and session reservation survive waiting; its model worker and
+execution-capacity lease do not occupy capacity while parked. Restart restores
+the admitted event, native turn, tool-round budget and acknowledged stream ID
+without passing through inbound admission or electing a lead again. The current
+K2 coordination decision is read before resumption and finalization; a changed
+lead or authorization requires reconciliation. Human follow-ups wait in a
+durable FIFO. Its rows retain custody until native admission acknowledges the
+original human message. Startup dispatches definitely unadmitted queued work
+only after its parent completes or is cancelled; dead claims and failed parents
+require reconciliation. Bot messages remain excluded by existing admission and the queue.
+
+Native Slack Stop and typed Stop/reset persist a tombstone before releasing
+the original generation. Unknown stream acknowledgements, incompatible state
+and crashed claimed leases retain private evidence without automatic replay.
+The generic restart-message path excludes owned checkpoints. Disconnect does
+not seal a parked stream, and restored consumers use the same Slack message;
+only acknowledged final delivery or confirmed Stop clears a recovered checkpoint.
+A failed SQLite park also writes a private reconciliation journal; this journal
+is never an execution source. Reconciliation retains the original stream locator
+and honest thread status, and an exact Slack Stop can close it without touching
+a newer request. A failed startup dispatch releases only its own generation and
+guard, leaving the private checkpoint blocked for reconciliation.
+
+`assert_slack_provider_wait.py` covers native SQLite ownership, Stop, queue
+deduplication/admission acknowledgement, terminal-parent restart recovery,
+capacity reacquisition, failed dispatch cleanup, stream restoration, failed
+serialization/SQLite parking, uncertain delivery and lead handoff. The real
+native-loop fixture also invokes `TurnRunner.run_sync` on Slack, proving a
+completed tool followed by dual-provider exhaustion skips stream finalization
+and resumes the same native turn. These are authored qualification checks;
+hosted Slack behavior still requires a deployed runtime receipt.
+
+Artifact saves from K2-managed API runs receive `agentRunId` at the native
+pre-tool hook. The binding comes from the exact authenticated wrapper admission
+and native idempotency reservation, held in a worker-local ContextVar and reset
+in the native worker's `finally`. Direct `artifact.save` and `tool.execute`
+forms preserve the original payload; conflicting model IDs are blocked. Slack
+and ordinary API sessions receive no inferred run association. The actual-loop
+proof exercises this through the native API worker and a separate native tool
+worker, including a mismatched native admission that must persist an explicit
+block without invoking artifact transport; focused helper cases cover foreign
+bindings and conflicts. Tool checkpoints also reject native unknown/nonterminal
+effect dispositions before interpreting result text, including timed-out file
+writes whose receipts are plain text.

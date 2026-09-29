@@ -23,8 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from hlt_sqlite import configure_journal
+from hlt_provider_recovery import sanitize_terminal_recovery, sanitize_provider_recovery
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ADMISSION_STATES = frozenset({"queued", "dispatching", "provider_bound", "terminal"})
 TERMINAL_PROVIDER_STATES = frozenset({"completed", "failed", "cancelled"})
 MAX_OUTPUT_CHARS = 50_000
@@ -140,6 +141,11 @@ def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         value["usage"] = json.loads(raw_usage) if raw_usage else None
     except json.JSONDecodeError:
         value["usage"] = None
+    raw_recovery = value.pop("recovery_json", None)
+    try:
+        value["recovery"] = sanitize_provider_recovery(json.loads(raw_recovery), automatic=value.get("provider_status") == "waiting_for_provider") if raw_recovery else None
+    except json.JSONDecodeError:
+        value["recovery"] = None
     return value
 
 
@@ -179,6 +185,8 @@ class AgentRunLedger:
                     provider_run_id TEXT UNIQUE,
                     provider_status TEXT,
                     recovery_code TEXT,
+                    recovery_json TEXT,
+                    stop_protocol TEXT,
                     output_text TEXT,
                     error_text TEXT,
                     usage_json TEXT,
@@ -191,6 +199,11 @@ class AgentRunLedger:
                     ON agent_run_admissions(admission_status);
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_run_admissions)")}
+            if "recovery_json" not in columns:
+                conn.execute("ALTER TABLE agent_run_admissions ADD COLUMN recovery_json TEXT")
+            if "stop_protocol" not in columns:
+                conn.execute("ALTER TABLE agent_run_admissions ADD COLUMN stop_protocol TEXT")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def probe(self) -> dict[str, Any]:
@@ -304,35 +317,38 @@ class AgentRunLedger:
                 "cannot mark a non-dispatching admission ambiguous"
             )
 
-    def bind_provider(self, run_id: str, provider_run_id: str) -> None:
+    def bind_provider(self, run_id: str, provider_run_id: str, *, stop_protocol: str | None = None) -> None:
         with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
                    SET admission_status = 'provider_bound',
-                       provider_run_id = ?,
+                       provider_run_id = ?, stop_protocol = ?,
                        provider_status = 'queued',
                        recovery_code = NULL,
                        error_text = NULL,
                        updated_at = ?
                  WHERE wrapper_run_id = ? AND admission_status = 'dispatching'
                 """,
-                (provider_run_id, utc_now_iso(), run_id),
+                (provider_run_id, "hermes_hook_v1" if stop_protocol == "hermes_hook_v1" else None, utc_now_iso(), run_id),
             )
         if cursor.rowcount != 1:
             raise AdmissionStateError("cannot bind provider outside dispatching")
 
-    def note_provider_status(self, run_id: str, provider_status: str) -> None:
+    def note_provider_status(self, run_id: str, provider_status: str, recovery: Any = None) -> None:
         if provider_status in TERMINAL_PROVIDER_STATES:
             raise AdmissionStateError("terminal provider state requires mark_terminal")
+        clean = sanitize_provider_recovery(recovery, automatic=True) if provider_status == "waiting_for_provider" else None
+        if provider_status == "waiting_for_provider" and clean is None:
+            raise AdmissionStateError("provider wait requires native continuation custody")
         with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
-                   SET provider_status = ?, recovery_code = NULL, updated_at = ?
+                   SET provider_status = ?, recovery_code = NULL, recovery_json = ?, updated_at = ?
                  WHERE wrapper_run_id = ? AND admission_status = 'provider_bound'
                 """,
-                (provider_status, utc_now_iso(), run_id),
+                (provider_status, json.dumps(clean) if clean else None, utc_now_iso(), run_id),
             )
         if cursor.rowcount != 1:
             raise AdmissionStateError("cannot update provider status before binding")
@@ -364,18 +380,20 @@ class AgentRunLedger:
         output: Any = "",
         error: Any = "",
         usage: Any = None,
+        recovery: Any = None,
     ) -> None:
         if provider_status not in TERMINAL_PROVIDER_STATES:
             raise ValueError("provider_status is not terminal")
         now = utc_now_iso()
         sanitized_usage = sanitize_usage(usage)
+        sanitized_recovery = sanitize_terminal_recovery(recovery) if provider_status == "failed" else None
         with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
                 UPDATE agent_run_admissions
                    SET admission_status = 'terminal', provider_status = ?,
                        recovery_code = NULL, output_text = ?, error_text = ?,
-                       usage_json = ?, updated_at = ?, terminal_at = ?
+                       usage_json = ?, recovery_json = ?, updated_at = ?, terminal_at = ?
                  WHERE wrapper_run_id = ?
                    AND admission_status IN ('dispatching', 'provider_bound')
                 """,
@@ -384,6 +402,7 @@ class AgentRunLedger:
                     redact_bounded_text(output, MAX_OUTPUT_CHARS),
                     redact_bounded_text(error, MAX_ERROR_CHARS),
                     json.dumps(sanitized_usage, ensure_ascii=False),
+                    json.dumps(sanitized_recovery, ensure_ascii=False),
                     now,
                     now,
                     run_id,
