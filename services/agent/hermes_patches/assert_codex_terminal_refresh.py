@@ -1,228 +1,82 @@
-"""Exercise the pinned Codex refresh failure path without providers or secrets."""
-
+"""Exercise managed Codex grant ownership with synthetic credentials and no I/O."""
 from __future__ import annotations
-
-import ast
-import logging
+import base64
+import json
+import os
 import sys
 import time
-from contextlib import nullcontext
-from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from unittest.mock import patch
 
 
-@dataclass
-class Credential:
-    id: str
-    source: str = "manual:device_code"
-    access_token: str = "test-access"
-    refresh_token: str = "test-refresh"
-    auth_type: str = "oauth"
-    last_status: str = "ok"
-    last_status_at: float | None = None
-    last_error_code: int | None = None
-    last_error_reason: str | None = None
-    last_error_message: str | None = None
-    last_error_reset_at: float | None = None
-    last_refresh: str | None = None
-    extra: dict = field(default_factory=dict)
+def assert_codex_terminal_refresh(root: Path) -> None:
+    sys.path.insert(0, str(root))
+    from agent import credential_pool as cp
 
-    @classmethod
-    def from_dict(cls, provider, payload):
-        return cls(**payload)
+    def token(account):
+        payload = {"exp": int(time.time()) + 7200, "sub": account,
+                   "https://api.openai.com/auth": {"chatgpt_account_id": account}}
+        return 'fixture.' + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=') + '.signature'
 
-
-def assert_codex_terminal_refresh(hermes_root: Path) -> None:
-    path = hermes_root / "agent" / "credential_pool.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    pool_class = next(n for n in tree.body if isinstance(n, ast.ClassDef)
-                      and n.name == "CredentialPool")
-    methods = {
-        "_refresh_entry_impl", "_mark_exhausted", "_is_terminal_auth_failure",
-        "_available_entries",
-        "_sync_codex_entry_from_auth_store", "_refresh_entry",
-    }
-    nodes = [n for n in pool_class.body if isinstance(n, ast.FunctionDef)
-             and n.name in methods]
-    assert len(nodes) == len(methods)
-    terminal_reasons = next(n for n in tree.body if isinstance(n, ast.Assign)
-                            and any(isinstance(t, ast.Name)
-                                    and t.id == "_TERMINAL_AUTH_REASONS"
-                                    for t in n.targets))
-    namespace = {
-        "replace": replace, "time": time, "datetime": datetime,
-        "timezone": timezone, "logger": logging.getLogger(__name__),
-        "STATUS_OK": "ok", "STATUS_DEAD": "dead",
-        "STATUS_EXHAUSTED": "exhausted", "AUTH_TYPE_OAUTH": "oauth",
-        "AUTH_TYPE_API_KEY": "api_key", "DEAD_MANUAL_PRUNE_TTL_SECONDS": 86400,
-        "CREDENTIAL_PERSIST_FAILED_REASON": "credential_persist_failed",
-        "_normalize_error_context": lambda value: dict(value or {}),
-        "_is_manual_source": lambda source: source.startswith("manual:"),
-        "_exhausted_until": lambda entry, **kwargs: entry.last_error_reset_at,
-        "_auth_store_lock": lambda **kwargs: nullcontext(),
-        "PooledCredential": Credential,
-    }
-    # Execute the real patched methods, stubbing only persistence/provider IO
-    # and unrelated helpers. No Hermes imports, credentials, models, or network.
-    exec(compile(ast.Module(body=[terminal_reasons, *nodes], type_ignores=[]),
-                 str(path), "exec"), namespace)
-
-    class Pool:
-        provider = "openai-codex"
-
-        def __init__(self, entries, *, code="refresh_token_reused", terminal=True,
-                     rotated=False, succeeds=False):
-            self._entries = entries
-            self._current_id = entries[0].id
-            self._lock = nullcontext()
-            self.persisted = []
-            self.store_reads = 0
-            self.syncs = 0
-            self.rotated = rotated
-            self.calls = 0
-            self.singleton = {"tokens": {"access_token": "other-access",
-                                          "refresh_token": "other-refresh"}}
-
-            def refresh(*args):
-                self.calls += 1
-                if succeeds:
-                    return {"access_token": "new-access",
-                            "refresh_token": "new-refresh", "last_refresh": "now"}
-                error = RuntimeError("synthetic provider failure")
-                error.code = code
-                raise error
-
-            def load_store():
-                self.store_reads += 1
-                return {}
-
-            namespace.update({
-                "auth_mod": SimpleNamespace(
-                    refresh_codex_oauth_pure=refresh,
-                    _is_terminal_codex_oauth_refresh_error=lambda exc: terminal),
-                "_load_auth_store": load_store,
-                "_load_provider_state": lambda *args: self.singleton,
-                "_save_provider_state": lambda *args: None,
-                "_save_auth_store": lambda *args: None,
-            })
-
-        def _sync_codex_entry_from_auth_store(self, entry):
-            self.syncs += 1
-            if self.rotated and self.syncs > 1:
-                return replace(entry, access_token="winner-access",
-                               refresh_token="winner-refresh")
-            return entry
-
-        def _replace_entry(self, old, new):
-            self._entries = [new if e.id == old.id else e for e in self._entries]
-
-        def _persist(self, **kwargs):
-            self.persisted.append(kwargs)
-
-        def _sync_device_code_entry_to_auth_store(self, entry):
-            pass
-
-        def _codex_quota_restored_upstream(self, entry):
-            return False
-
-        def _single_use_refresh_lock_timeout(self):
-            return 5
-
-        def _entry_needs_refresh(self, entry):
-            return entry.access_token == "test-access"
-
-    for name in methods:
-        if name != "_sync_codex_entry_from_auth_store":
-            setattr(Pool, name, namespace[name])
-
-    quota = Credential("quota", last_status="exhausted", last_error_code=429,
-                       last_error_reset_at=time.time() + 86400)
-    healthy = Credential("healthy", source="device_code")
+    manual = cp.PooledCredential(id='manual', label='synthetic', priority=0, provider='openai-codex', source='manual:device_code',
+                                auth_type='oauth', access_token=token('one'), refresh_token='manual-original')
+    healthy = replace(manual, id='singleton', source='device_code', refresh_token='singleton-independent')
+    quota = replace(manual, id='quota', access_token=token('two'), last_status=cp.STATUS_EXHAUSTED,
+                    last_error_code=429, last_error_reset_at=time.time() + 86400)
+    saved = []
     cases = 0
-    for code in ("refresh_token_reused", "invalid_grant", "other_terminal_code"):
-        broken = Credential("broken")
-        pool = Pool([broken, quota, healthy], code=code)
-        assert pool._refresh_entry_impl(broken, force=False) is None
-        failed = pool._entries[0]
-        assert failed.last_status == "dead", "terminal manual grant must stop retrying"
-        assert failed.last_error_code == 401
-        assert failed.last_error_reason in namespace["_TERMINAL_AUTH_REASONS"]
-        assert pool._entries[1:] == [quota, healthy], "leave other accounts untouched"
-        assert pool.store_reads == 0, "manual grant must not clear singleton auth"
-        assert len(pool.persisted) == 1
-        available, pending = pool._available_entries()
-        assert [e.id for e in available] == ["healthy"] and not pending
-        assert pool.calls == 1, "enumeration must not retry the dead grant"
+    with patch.dict(os.environ, {'HLT_MANAGED_MODEL_ROUTE': '1'}), \
+         patch.object(cp.CredentialPool, '_persist', lambda *a, **kw: saved.append(kw)), \
+         patch.object(cp.CredentialPool, '_sync_device_code_entry_to_auth_store', lambda *a: None), \
+         patch.object(cp.CredentialPool, '_codex_quota_restored_upstream', lambda *a: False), \
+         patch.object(cp, '_load_auth_store', side_effect=AssertionError('manual grant must not read singleton')), \
+         patch.object(cp, '_save_auth_store', side_effect=AssertionError('manual grant must not overwrite singleton')):
+        for code in ('invalid_grant', 'invalid_refresh_token', 'refresh_token_reused'):
+            pool = cp.CredentialPool('openai-codex', [manual, healthy, quota])
+            error = RuntimeError('synthetic terminal rejection')
+            error.code = code
+            with patch.object(cp, 'read_credential_pool', return_value=[manual.to_dict()]), \
+                 patch.object(cp.auth_mod, 'refresh_codex_oauth_pure', side_effect=error) as refresh, \
+                 patch.object(cp.auth_mod, '_is_terminal_codex_oauth_refresh_error', return_value=True):
+                assert pool._refresh_entry_impl(manual, force=False) is None
+                assert pool._entries[0].last_status == cp.STATUS_DEAD
+                assert pool._entries[1:] == [healthy, quota]
+                assert pool._entries[0].last_error_reason == code
+                assert refresh.call_count == 1
+                assert pool.readiness_counts() == {'profile_count': 3, 'selectable_count': 1}
+            cases += 1
+        # Transient failure remains retryable; quota state and other grant stay intact.
+        pool = cp.CredentialPool('openai-codex', [manual, healthy, quota])
+        with patch.object(cp, 'read_credential_pool', return_value=[manual.to_dict()]), \
+             patch.object(cp.auth_mod, 'refresh_codex_oauth_pure', side_effect=TimeoutError('synthetic timeout')), \
+             patch.object(cp.auth_mod, '_is_terminal_codex_oauth_refresh_error', return_value=False):
+            assert pool._refresh_entry_impl(manual, force=False) is None
+            assert pool._entries[0].last_status == cp.STATUS_EXHAUSTED
+            assert pool._entries[1:] == [healthy, quota]
         cases += 1
-
-    broken = Credential("transient")
-    pool = Pool([broken, quota], code="timeout", terminal=False)
-    assert pool._refresh_entry_impl(broken, force=False) is None
-    assert pool._entries[0].last_status == "exhausted", "transient errors can recover"
-    assert pool._entries[1] == quota
-    cases += 1
-
-    broken = Credential("race")
-    pool = Pool([broken, quota], rotated=True)
-    result = pool._refresh_entry_impl(broken, force=False)
-    assert result.last_status == "ok" and result.refresh_token == "winner-refresh"
-    assert pool._entries[1] == quota and pool.calls == 1
-    cases += 1
-
-    singleton = Credential("singleton", source="device_code")
-    pool = Pool([singleton, quota])
-    assert pool._refresh_entry_impl(singleton, force=False) is None
-    assert pool._entries == [quota], "retain existing singleton recovery behavior"
-    assert pool.persisted == [{"removed_ids": ["singleton"]}]
-    assert pool.singleton["tokens"]["refresh_token"] == "other-refresh"
-    cases += 1
-
-    broken = Credential("refreshable")
-    pool = Pool([broken, quota], succeeds=True)
-    result = pool._refresh_entry_impl(broken, force=False)
-    assert result.last_status == "ok" and result.refresh_token == "new-refresh"
-    assert pool._entries[1] == quota
-    cases += 1
-
-    # Now exercise the real synchronization path too. A manual grant's token
-    # authority is its exact persisted pool row, never the login singleton.
-    Pool._sync_codex_entry_from_auth_store = namespace[
-        "_sync_codex_entry_from_auth_store"
-    ]
-    manual = Credential("manual")
-    pool = Pool([manual, quota])
-    namespace["read_credential_pool"] = lambda provider: [asdict(manual), asdict(quota)]
-    assert pool._sync_codex_entry_from_auth_store(manual) == manual
-    assert pool._entries == [manual, quota] and pool.store_reads == 0
-    cases += 1
-
-    # A second process has persisted the winner's rotated pair while this
-    # instance waited for the existing cross-process refresh lock.
-    winner = replace(manual, access_token="winner-access", refresh_token="winner-refresh")
-    namespace["read_credential_pool"] = lambda provider: [asdict(winner), asdict(quota)]
-    result = pool._refresh_entry(manual, force=False)
-    assert result == winner and pool._entries == [winner, quota]
-    assert pool.calls == 0 and pool.store_reads == 0 and not pool.persisted
-    cases += 1
-
-    pool = Pool([manual, quota])
-    namespace["read_credential_pool"] = lambda provider: [asdict(quota)]
-    assert pool._sync_codex_entry_from_auth_store(manual) == manual
-    assert pool.store_reads == 0, "missing own row must not borrow another identity"
-    cases += 1
-
-    singleton = Credential("singleton", source="device_code")
-    pool = Pool([singleton, quota])
-    result = pool._sync_codex_entry_from_auth_store(singleton)
-    assert result.access_token == "other-access" and pool.store_reads == 1
-    assert pool._entries[1] == quota
-    cases += 1
-    print(f"Codex terminal refresh: {cases} focused cases passed")
+        # A peer's rotated pair is recovered only from this exact pool row.
+        winner = replace(manual, access_token=token('one'), refresh_token='peer-winner')
+        pool = cp.CredentialPool('openai-codex', [manual, healthy, quota])
+        with patch.object(cp, 'read_credential_pool', return_value=[winner.to_dict(), quota.to_dict()]):
+            assert pool._sync_entry_from_auth_store(manual) == winner
+            assert pool._entries == [winner, healthy, quota]
+        cases += 1
+        with patch.object(cp, 'read_credential_pool', return_value=[quota.to_dict()]):
+            assert pool._sync_entry_from_auth_store(manual) == manual
+        cases += 1
+        # A real successful refresh preserves account/grant ownership and clears status.
+        pool = cp.CredentialPool('openai-codex', [manual, healthy, quota])
+        with patch.object(cp, 'read_credential_pool', return_value=[manual.to_dict()]), \
+             patch.object(cp.auth_mod, 'refresh_codex_oauth_pure', return_value={
+                 'access_token': token('one'), 'refresh_token': 'new-manual', 'last_refresh': 'now'}) as refresh:
+            result = pool._refresh_entry_impl(manual, force=False)
+            assert result.refresh_token == 'new-manual' and result.last_status == cp.STATUS_OK
+            refresh.assert_called_once_with(manual.access_token, 'manual-original')
+            assert pool._entries[1:] == [healthy, quota]
+        cases += 1
+    print(f'Codex grant ownership, terminal/transient classification, quota and readiness: {cases} cases passed')
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: assert_codex_terminal_refresh.py HERMES_ROOT")
+if __name__ == '__main__':
     assert_codex_terminal_refresh(Path(sys.argv[1]))

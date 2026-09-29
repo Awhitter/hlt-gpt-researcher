@@ -44,18 +44,17 @@ stays the thin compose point.
 
 ## Where it sits in the HLT ecosystem
 
-This repo is one of **14 active sibling repos under `~/hlt/`** that share the
-**Katailyst registry** as their capability brain (1,663 entities, 11,151
-graph links, 30+ MCP tools). The full ecosystem map lives at:
+Katailyst2 owns shared capabilities, context and agent coordination. Agents
+start at `https://katailyst2.vercel.app/llms.txt`; coders read
+`~/hlt/katailyst2/AGENTS.md`. Its authenticated MCP endpoint is
+`https://katailyst2.vercel.app/mcp`. Katailyst1 is a separate legacy system;
+do not use `~/hlt/katailyst` or `www.katailyst.com/mcp` for active work.
 
-- **Master:** `~/hlt/katailyst/docs/ecosystem-map/05-llms-ecosystem-master.md`
-- **Atlas:** `~/hlt/katailyst/docs/ecosystem-map/01-ecosystem-atlas-master.md`
-- **Repo runtime ledger:** `~/hlt/katailyst/docs/ecosystem-map/03-repo-runtime-ledger.md`
-
-Sibling repos: `katailyst, sidecar, mastery-publishing, multimedia-mastery,
-engage, jobs, forum-template, agent-canvas, brand-design-lab,
-evidence-based-business, gpt-researcher, mastra, paperclip,
-research-team`.
+Current product repositories include `~/hlt/katailyst2`,
+`~/hlt/nursing-mastery`, `~/hlt/the-vault`, `~/hlt/MMM2`,
+`~/hlt/mastery-publishing`, `~/hlt/openclaw-hq` and its `~/hlt/codex`
+sibling. The Vault owns CRM operations; Multimedia Mastery owns media
+production. Check current registry evidence before quoting inventory counts.
 
 ## Tools available in this repo (auto-discovered via `.mcp.json`)
 
@@ -198,13 +197,43 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
-Cleo's owner-selected inference route is `openrouter/openai/gpt-6-astra` at
-high reasoning, with no model fallback. Keep boot config and the managed
-Slack override aligned; resumed sessions must not restore an older model.
-Readiness is provider-aware: an API key does not need an OAuth profile pool.
-Preserve native subscription grants and retired schedules. A deployment is
-proved by a bounded native run with observed model and durable output, not
-credential presence or a catalog entry alone.
+Cleo's owner-selected route uses `openai-codex/gpt-6-astra` at high reasoning,
+then `openrouter/openai/gpt-6-astra` when the subscription cannot serve. Keep
+boot config and managed Slack routing aligned; resumed sessions must not
+restore stale overrides. Quota cooldowns remain intact and native recovery
+returns to the subscription route when available. Readiness distinguishes
+serving capacity from subscription inventory and fallback diagnostics. Preserve
+native grants and paused schedules. Deployment proof requires a bounded native
+run with observed provider/model, useful artifact, and durable completion.
+
+Authenticated managed `/v1/runs` and ordinary Slack turns can enter
+`waiting_for_provider` at a settled native tool boundary. Native owners retain
+the original request, transcript, completed effects, delivery custody and
+cumulative budgets; provider waiting pauses only active execution time.
+SQLite claims serialize restart/resume. Unknown or timed-out effects, changed
+source/policy/transcript and uncertain delivery require reconciliation; they
+must never be retried as a newly admitted request. Private failed checkpoints
+and Slack reconciliation journals remain recoverable without authorizing replay.
+
+K2 Stop uses `POST /hooks/agent/runs/{wrapper_run_id}/cancel` against the original
+native run. Advertise `hermes_hook_v1` only after native capability confirmation.
+HTTP 202 means cancellation requested; only actual settlement confirms it, and
+late completion wins. Slack Stop also revokes the durable retry claim. Human
+follow-ups retain durable custody until native admission acknowledges them.
+
+K2-managed artifact saves receive `agentRunId` from the authenticated wrapper
+ledger and exact native idempotency reservation through the native pre-tool
+hook. Invalid ownership or conflicting model IDs block transport explicitly.
+Reset that context in the native worker's finally block; ordinary Slack/API
+turns must not inherit or infer a K2 run identity. A saved artifact and a terminal
+receipt are separate acceptance facts.
+
+Slack coordination includes Cleo's implicit participation in her owned DMs,
+even when a human mentions another agent. A verified bare single-agent mention
+in a thread is an explicit K2 lead handoff: send the Slack lead identity and
+continuation assertion so the shared decision supersedes the previous lead.
+Do not represent a handoff only through rewritten prompt text, or interpret a
+multi-agent mention or substantive new request as a bare transfer.
 
 The K2 pack's optional `shellConfig.persona.style` is the complete authored
 writing guidance, distinct from the short voice label. `grounding.py` installs
@@ -214,7 +243,7 @@ pack. Preserve it in full; do not replace it with copied local prose.
 The Codex recovery overlay preserves native credential ownership: manual OAuth
 grants refresh from their exact persisted pool row, not the singleton login.
 Terminal refresh failures mark only that manual grant dead; real quota cooldowns
-and other accounts remain intact. Keep the dependency-free eleven-case assertion
+and other accounts remain intact. Keep the offline native credential-ownership assertion
 green when advancing the Hermes pin. Dead grants need fresh native login; never
 clear quota limits or copy another host's single-use refresh token as a repair.
 
@@ -270,7 +299,9 @@ Cleo's bounded fleet jobs are installed through the native Hermes scheduler by
 `services/agent/fleet_durability.py`: five-minute non-model health, daily
 metadata-only Hermes release detection, and one budgeted K2 identity canary in
 `#agent-logs`. `fleet_run_budget.py` and its pinned scheduler overlay enforce
-the opt-in canary limits; ordinary Slack/API work is unaffected. Legacy briefs
+the opt-in canary limits. The canary uses the configured OpenRouter recovery
+route and labels its proof accordingly; it does not establish Codex primary
+health. Ordinary Slack/API work is unaffected. Legacy briefs
 stay paused. Runtime observations retain cadence even when service redundancy
 is degraded, and no release check starts a build or GitHub Actions run.
 
@@ -293,7 +324,8 @@ Five rules that exist because each was once a silent no-op:
    from the current request, successful current-run tool results, or arithmetic
    with grounded operands. The HLT upstream overlay blocks unsupported claims
    as `run.failed` before `run.completed`, and closes the per-run agent so its
-   SQLite session has a durable `ended_at` and `end_reason`. This is an API
+   SQLite session has a durable `ended_at` and `end_reason` on terminal settlement.
+   Provider waiting keeps the original turn open. This is an API
    boundary guarantee for K2-hosted runs; direct Slack gateway delivery does
    not pass through it. Source-authored question labels and table row labels
    survive reconciliation; bare backward references require an earlier
@@ -346,28 +378,28 @@ stays off unless `LANGFUSE_RECORD_IO=true`.
 
 1. `llms.txt` — repo orientation auto-generated nightly, link cross-repo.
    Root `llm*.txt` dumps are gitignored in this fork; if absent, regenerate
-   them from the nightly hygiene workflow or use the ecosystem maps above.
+   them from the nightly hygiene workflow or use the Katailyst2 entrypoints above.
 2. `README.md` — human-facing overview if present
 3. `package.json` (or `pyproject.toml` / `Cargo.toml`) — stack + scripts
 4. The "Inspect first in this repo" list in `llms.txt`
 
 ## Inspecting the live system
 
-- **Cron status:** `~/hlt/katailyst/.github/workflows/repo-hygiene-nightly.yml`
-- **Registry health:** call `registry_health` MCP tool, or hit
-  `https://www.katailyst.com/mcp` (needs Bearer auth)
-  Katailyst2 is also available at `https://katailyst2.vercel.app/api/mcp`; repo-local agents can
-  choose either because `.mcp.json` exposes both endpoints explicitly.
+- **Cron status:** inspect the native Hermes scheduler and this repo's
+  `services/agent/fleet_durability.py`; keep existing paused schedules paused.
+- **Registry health:** use the current advertised tools at authenticated
+  `https://katailyst2.vercel.app/mcp`. Do not select a legacy Katailyst1 alias
+  merely because an old local client configuration still exposes it.
+- **Cross-repo authority:** read the current `~/hlt/katailyst2/AGENTS.md` and
+  the owning product repository listed above. This file does not prove that
+  guidance has synchronized to every cloud agent or fresh session.
 - **Drift report:** `bash ~/.openclaw/workspace/system/check-llms-drift.sh`
 
-## Honest scope of this stub
+## Maintaining this entrypoint
 
-This file is a **stub auto-generated 2026-04-17** by the observability +
-discoverability perfection arc (see
-`~/hlt/katailyst/docs/planning/active/2026-04-17-observability-discoverability-perfection.md`).
-It is the same shape across all 15 hlt repos so an agent landing cold has
-a consistent first read. Per-repo specifics belong in `llms.txt` (which IS
-maintained nightly from the canonical Obsidian system maps).
+This file began as an auto-generated stub on 2026-04-17 and now includes
+reviewed runtime contracts. Per-repo orientation also belongs in `llms.txt`;
+verify its currentness against source and deployed receipts.
 
 If you make a meaningful behavior change in this repo, edit this file by
 hand to capture the new agent-relevant constraints. Don't let the

@@ -38,9 +38,9 @@ have data on ASVAB candidates; you don't.
 |---|---|
 | **nursing-mastery** | The nurse-facing surface: job board, apply flow, articles, tools |
 | **HLT Account API** | Signed-in identity and the account-owned preference/consent fields moved there; verify each current field contract |
-| **ScraperVault** | Recruiting operations: jobs, employers, applications, captures, receipts, matching, and operational/unlinked person projections |
+| **The Vault (`the-vault`)** | Recruiting operations: jobs, employers, applications, captures, receipts, matching, and operational/unlinked person projections |
 | **katailyst2 (K2)** | The AI hub — registry of skills/prompts/entities, agent fleet, media jobs. Your own persona is defined here |
-| **MMM2** | Multimedia: images, video, TTS. Cloudinary-primary |
+| **Multimedia Mastery (`MMM2`)** | Multimedia: images, video, TTS. Cloudinary-primary |
 | **MasteryPublishing** | SEO content across the exam products |
 | **EBB** (evidence-based-business) | Metrics and analytics |
 | **Mastery Research** | The research engine you run on: web + estate research, this repo |
@@ -51,7 +51,7 @@ its sync freshness instead of saying all People live in one system.
 
 ## Where truth lives
 
-Rules and owner decisions live in **ScraperVault `docs/DECISIONS.md`**, indexed
+Rules and owner decisions live in **The Vault (`the-vault`) `docs/DECISIONS.md`**, indexed
 by D-number. When a question is really "what did we decide about X", that file is
 canon — cite the D-number. Do not reconstruct a ruling from memory or from a
 strategy doc; those go stale, DECISIONS.md doesn't.
@@ -103,3 +103,21 @@ re-derive it. Point at what you said and add only what's new.
 Multiple people share this workspace. Something one person tells you is not
 automatically true for everyone — be careful about writing it down as a durable
 fact.
+
+
+## File durable work
+
+Notion is writable. Reuse one evolving plan per initiative in the existing
+[Notes & docs → Plans & wrap-ups](https://app.notion.com/p/4d590535ee5a4b269ce95b456503493c?v=3a436137492081efaec0000c8a851ad0)
+(data source `4f1cc572-44cb-4ac5-af54-e1dfc2396054`). Preserve supplied inputs and
+link a dated wrap-up with changes, evidence, unfinished work and next action.
+Use the owning Notion/Katailyst2 workflow: plan = Sprint Plan / Working plan;
+wrap-up = Note / Run report; input = Reference / Supplied document. Give each a
+recognizable Capture title and one-line summary; deliberately filed work is
+Promoted, with Request action unset. Document state is not approval.
+Read back the saved page and return its link; reuse its ID on retry. If unavailable,
+preserve the complete local artifact, report filing pending and keep working.
+Keep release evidence in Engineering run log `481bf2e1-fbd2-4177-9f14-c2a976f6635e`;
+record actual Merged at, Deployed at and Verified at separately. Do not claim
+fleet-wide filing sync without a fresh-session receipt. Routine short replies
+need no filing. [Filing guidance](https://app.notion.com/p/3e73613749208164917ec1b269d28b69).

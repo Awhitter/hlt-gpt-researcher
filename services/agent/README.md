@@ -107,8 +107,8 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| `OPENROUTER_API_KEY` | Inference credential for the owner-selected `openai/gpt-6-astra` route. A management/provisioning key is not usable. |
-| Existing ChatGPT / xAI OAuth store | Preserved native credentials; neither is an inference fallback for the current Astra route. |
+| `OPENROUTER_API_KEY` | Inference credential for the `openrouter/openai/gpt-6-astra` fallback. A management/provisioning key is not usable. |
+| Existing ChatGPT / xAI OAuth store | ChatGPT grants provide the primary `openai-codex/gpt-6-astra` route. Existing xAI grants remain preserved but are outside the reviewed ladder. |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
@@ -132,18 +132,18 @@ leave your file alone and say so in `/health`.
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
 
-`/health.config.configured_model_route` exposes one reviewed route:
-`openrouter/openai/gpt-6-astra` at high reasoning. The owner explicitly selected
-paid Astra inference. Slack and external API turns use this same model, and
-old persisted session/channel overrides cannot replace it. No fallback model
-is configured. If the credential is missing, rejected, or not yet verified,
-the request stays recoverable and readiness is false.
+`/health.config.configured_model_route` exposes the reviewed subscription-first
+ladder: `openai-codex/gpt-6-astra` at high reasoning, then
+`openrouter/openai/gpt-6-astra` when subscription capacity is unavailable.
+Slack and external API turns share this policy; old persisted session/channel
+overrides cannot replace it. Native Hermes owns account refresh, quota cooldowns,
+provider fallback, and return to the primary route.
 
-`model_route_readiness` checks the inference credential without exposing it.
-API-key readiness does not require an unrelated Codex profile pool. The
-readiness gate separately reports whether a pool or fallback is required;
-`fallbackReady: false` with `fallbackRequired: false` means there is no backup,
-not an outage. `gateway.observed_model_route` remains empty until a successful
+`model_route_readiness` reports each route's credential availability without
+exposing credentials. A selectable subscription or verified OpenRouter fallback
+can keep serving readiness true while the other route is degraded. Pool counts
+and fallback diagnostics remain visible independently; neither configuration nor
+readiness proves current successful inference. `gateway.observed_model_route` remains empty until a successful
 model call and then identifies the provider/model that actually answered.
 Configuration and key readiness alone are not proof of a successful Astra turn.
 Cleo keeps a 32,768-token output ceiling and 24 model iterations
@@ -320,27 +320,28 @@ connection, and close their owned connections after each operation. Older local
 runtimes retain rollback journals for fresh databases; an existing WAL database
 requires an officially fixed SQLite version before application work can proceed.
 The guard never downgrades a live WAL database or guesses a locked journal mode.
-Hermes remains at the compatible August 31
-`29112bef099274229cadff79cdff7bf7b99c4b77` release: the September 7 release
-includes the two final-stream reconciliation fixes, but 15 of our 16 preexisting overlays
-no longer apply after upstream moved the gateway and tool execution code.
-In particular, the K2 prompt read lock, numeric grounding, per-surface run
-budgets, independent Codex-profile refresh, and managed Slack session/model
-controls still require a port. Retain these contracts when changing the pin.
+Hermes is pinned to stable **0.21.5**, `v2026.9.24`, at
+`f97608f178d1ffeca59860195ab7da295f7c8e5f`. The reviewed
+`hlt_runtime_contract.patch` ports the retained HLT contracts to upstream's
+current gateway, API-run, tool executor, and provider owners. The image runs
+behavior checks for each contract; see `hermes_patches/README.md` for the
+migration map. Web/TUI builds use the same pinned source and security lockfile.
 
-Cleo now uses the owner-selected paid Astra route through OpenRouter. This is
-an explicit routing change, not an inference that a managed Codex account has
-Astra entitlement. The existing subscription compatibility overlay remains:
-it reads the account's live Codex catalog, scopes cache entries by token
-fingerprint, and excludes Astra from stale local fallback metadata.
+The owner-selected route is subscription-first: `openai-codex/gpt-6-astra`
+with high reasoning, followed by `openrouter/openai/gpt-6-astra`. A depleted
+subscription is a capacity state; its authenticated grant and actual reset time
+remain intact while OpenRouter serves work. Native Hermes owns failover and
+recovery, preserving the current session and tool history. One selectable
+Codex profile suffices for primary service; inventory counts remain visible
+separately. No account purchase, desktop-token import, or quota clearing is part
+of deployment.
 
-The Linux image still runs `assert_codex_astra.py` against the actual patched
-methods with synthetic accounts and network responses. It covers denied/hidden
-catalog entries, account-specific context provenance, reasoning normalization,
-and picker aliases. Those compatibility assertions do not prove the current
-OpenRouter route; rollout must include a bounded native Cleo run whose observed
-provider/model and durable output agree. Existing OAuth grants are neither
-copied nor refreshed as part of this switch.
+The Linux image exercises account-specific catalogs, context provenance,
+reasoning normalization, independent grant refresh, terminal rejection and
+quota behavior using synthetic credentials and responses. These offline checks
+do not establish live entitlement or usable capacity. Rollout must verify the
+served provider/model, a saved artifact, and durable native completion.
+
 The outer K2 session gate covers both HTTP and WebSocket traffic; a deploy simply
 expires the local session and the profile button opens another one.
 
@@ -595,7 +596,7 @@ a deliberate decision to make somewhere other than this channel.
 **The daily canary verifies K2 plus Cleo's authenticated backup, not her primary.**
 Codex's subscription wire rejects output caps, so only this explicitly budgeted
 retired job uses Grok. It stays paused on deployment and is not proof of the
-current Astra primary. Ordinary Slack/API work uses Astra/high. Any future
+current primary. Ordinary Slack/API work uses the subscription-first route. Any future
 reactivation must review this historical canary route first. The installer receipt at `/health.config.fleet_checks.canaryRoute`
 records this distinction; scheduled success is not evidence of primary health.
 
@@ -610,14 +611,14 @@ execution, model usage, and delivery history. Installation status is visible at
 Treat `liveness.ok: true` as HTTP/process availability and `readiness.ready: true`
 as full readiness. `readiness.servingReady` requires Slack, K2, and a reviewed
 working route. `redundancyReady` means the configured policy is satisfied;
-`redundancyRequired: false` makes the current no-backup policy explicit.
+`redundancyRequired` declares the configured primary/fallback policy.
 The readiness receipt names each non-model check under
 `readiness.checks` and carries the runtime-only activation digest under
 `readiness.runtimeProof`. The compatibility check `primary_model_profile_ready`
 means the configured primary credential can serve. Pool and fallback checks
-are satisfied when the current policy does not require them. If a reviewed
-Codex route is configured in the future, its three selectable profiles remain
-a separate redundancy requirement; a stale login flag cannot satisfy it. `k2_activation_ready` also remains
+are satisfied when the current policy does not require them. The Codex route requires at least one selectable native profile for primary
+service; a stale login flag cannot satisfy it. OpenRouter may serve while the
+subscription is cooling down. `k2_activation_ready` also remains
 false while the reviewed preactivation brain is serving Slack, so liveness and
 useful degraded service never masquerade as completed K2 activation.
 
@@ -629,7 +630,7 @@ cache-inclusive usage replaces that request's reservation. This is not an exact
 Grok tokenizer and not a 64KB aggregate byte limit: a 42KB request reporting 12K
 input tokens leaves 52K tokens available for the next conservative reservation.
 An attempt without input usage retains its reservation, even if a later attempt
-has a usage receipt. The small `scheduled_run_budget.patch` passes opt-in job
+has a usage receipt. The runtime overlay passes opt-in job
 limits into Hermes and clamps each provider request, including retry boosts.
 Unknown usage retains its reservation instead of authorizing another attempt.
 Budgeted jobs disable the transport's internal stream retry and model fallback;

@@ -16,18 +16,8 @@ def assert_always_loaded_tools(root: Path) -> None:
     path = root / "tools" / "tool_search.py"
     source = path.read_text()
     compile(source, str(path), "exec")
-    selected = {
-        "ToolSearchConfig", "AssemblyResult", "_safe_int", "_safe_float",
-        "_core_tool_names", "is_deferrable_tool_name", "classify_tools",
-        "estimate_tokens_from_schemas", "should_activate", "listing_token_budget",
-        "assemble_tool_defs", "scoped_deferrable_names", "_describe_classification",
-        "dispatch_tool_describe",
-    }
-    tree = ast.parse(source)
-    nodes = [n for n in tree.body if
-             (isinstance(n, ast.ImportFrom) and n.module == "__future__") or
-             (isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in selected)]
-    module = types.ModuleType("hlt_native_hot_tools_check")
+    sys.path.insert(0, str(root))
+    import tools.tool_search as module
     bridge_names = frozenset({"tool_search", "tool_describe", "tool_call"})
     hot = "mcp__katailyst2__tool_execute"
     cold = "mcp__posthog__exec"
@@ -43,6 +33,7 @@ def assert_always_loaded_tools(root: Path) -> None:
     ns = module.__dict__
     ns.update({
         "dataclass": dataclasses.dataclass, "json": json, "math": math,
+        "_DEFAULT_DEFERRED_TOOLS": frozenset(),
         "logger": logging.getLogger(__name__), "CHARS_PER_TOKEN": 4.0,
         "BRIDGE_TOOL_NAMES": bridge_names, "_DIRECT_SURFACE_TOOLSETS": {"desktop_ui", "project"},
         "_MAX_DESCRIBE_NAMES_PER_CALL": 10, "_MAX_DESCRIBE_NAMES_PER_RESPONSE": 3,
@@ -54,7 +45,6 @@ def assert_always_loaded_tools(root: Path) -> None:
         "bridge_tool_schemas": lambda count, **kw: [definition(n) for n in sorted(bridge_names)],
     })
     with patch.dict(sys.modules, {module.__name__: module, "tools.registry": registry, "toolsets": core}):
-        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), ns)
         config_type = ns["ToolSearchConfig"]
         for raw in (None, True, False, {"always_loaded": hot}, {"always_loaded": None}):
             assert config_type.from_raw(raw).always_loaded == ()

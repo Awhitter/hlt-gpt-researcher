@@ -9,8 +9,8 @@ def test_docker_build_applies_and_asserts_the_numeric_grounding_overlay():
     dockerfile = (SERVICE_DIR / "Dockerfile").read_text(encoding="utf-8")
 
     assert "COPY hlt_numeric_grounding.py /app/hlt_numeric_grounding.py" in dockerfile
-    check = "apply --check /tmp/hermes-patches/api_runs_numeric_grounding.patch"
-    apply = "apply /tmp/hermes-patches/api_runs_numeric_grounding.patch"
+    check = "apply --check /tmp/hermes-patches/hlt_runtime_contract.patch"
+    apply = "apply /tmp/hermes-patches/hlt_runtime_contract.patch"
     assertion = "PYTHONPATH=/app python /tmp/hermes-patches/assert_api_runs_numeric_grounding.py /opt/hermes"
     assert dockerfile.index(check) < dockerfile.index(apply) < dockerfile.index(assertion)
 
@@ -29,7 +29,7 @@ def test_gateway_child_inherits_the_numeric_grounding_module_path():
 
 def test_overlay_gates_completion_and_closes_the_owned_agent_session():
     patch = (
-        SERVICE_DIR / "hermes_patches" / "api_runs_numeric_grounding.patch"
+        SERVICE_DIR / "hermes_patches" / "hlt_runtime_contract.patch"
     ).read_text(encoding="utf-8")
     added_lines = "\n".join(
         line[1:]
@@ -39,12 +39,10 @@ def test_overlay_gates_completion_and_closes_the_owned_agent_session():
 
     assert "+from hlt_numeric_grounding import NumericGroundingLedger" in patch
     assert "numeric_grounding.observe_tool_event(" in added_lines
-    assert added_lines.index("grounding_verdict =") < added_lines.index(
-        '"event": "run.completed"'
-    )
-    assert '"event": "run.failed"' in added_lines
+    assert added_lines.index("verdict = numeric_grounding.validate") < added_lines.index("if not verdict.ok:")
+    assert '_finish("failed", error=verdict.failure_message()' in added_lines
+    assert "grounding=verdict.as_dict()" in added_lines
     assert "agent.close()" in added_lines
-    assert "return r, u" in added_lines
 
 
 def test_cleo_source_carries_the_same_reconciliation_contract():
