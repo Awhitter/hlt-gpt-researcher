@@ -565,6 +565,13 @@ def test_slack_uses_one_native_evolving_stream_for_progress_and_final(tmp_path):
     assert "registry.get, start with card or concise" in config["agent"][
         "environment_hint"
     ]
+    # Oct 4 2026 fleet check: "load one full body" sent Cleo to registry.get's
+    # artifactId (an attachment id) for skill:do-research, which has none, and
+    # K2 refused every call with "Invalid UUID at artifactId". The block's own
+    # text is body_md on a formatless read.
+    assert "load one full body" not in hint
+    assert "only its ref (no format) and read body_md" in hint
+    assert "artifactId loads one attachment listed in that block's artifacts" in hint
 
 
 def test_single_reply_cap_does_not_reserve_the_whole_context_window(tmp_path):

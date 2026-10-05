@@ -473,8 +473,10 @@ def build_config(
             "durable start/get door; judge the live candidates freely and do not "
             "start a duplicate draw. "
             "Your canonical runtime pack is already installed; do not fetch it "
-            "again inside a turn. For registry.get, start with card or concise "
-            "and load one full body only when the task actually needs it."
+            "again inside a turn. For registry.get, start with card or concise; "
+            "when the task needs a block's own text, call registry.get with "
+            "only its ref (no format) and read body_md. artifactId loads one "
+            "attachment listed in that block's artifacts array; never invent one."
         )
 
     model_provider = DEFAULT_PROVIDER
