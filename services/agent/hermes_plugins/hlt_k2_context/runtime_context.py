@@ -245,7 +245,8 @@ def _format_context(data: Mapping[str, Any], *, agent_ref: str) -> tuple[str, in
     if gap_lines:
         parts.append("Known gaps:\n" + "\n".join(f"- {gap}" for gap in gap_lines[:4]))
     parts.append(
-        "Judge the candidates yourself. Open a ref for its full body when useful; "
+        "Judge the candidates yourself. When one fits, read its text with registry.get "
+        "on its ref alone (no format) and use body_md; "
         "use, adapt, or ignore it, and do not call the well again this turn."
     )
     context = "\n\n".join(parts)
