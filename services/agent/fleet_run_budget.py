@@ -179,7 +179,7 @@ def admit_request(agent: Any, api_kwargs: dict[str, Any]) -> bool:
     for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
         if key in api_kwargs:
             api_kwargs[key] = min(int(api_kwargs[key]), remaining)
-    # The scheduled Grok transport consumes an explicit output cap. Codex's
+    # The scheduled OpenRouter transport consumes an explicit output cap. Codex's
     # subscription wire deliberately omits unsupported caps, so it cannot serve
     # this budgeted job. Ordinary Codex/Slack work is unaffected.
     caps = [api_kwargs[key] for key in ("max_tokens", "max_completion_tokens", "max_output_tokens") if key in api_kwargs]

@@ -32,36 +32,22 @@ def main(root: str) -> None:
     ):
         parsed[path] = ast.parse(source, filename=str(path))
 
-    # The original inbound request is captured outside the provider transcript
-    # and passed unchanged to every pre-request hook. Provider activation only
-    # restarts the request loop; it never replaces this durable value.
-    _require(
-        loop,
-        "original_user_message = _ctx.original_user_message",
-        label="durable original request capture",
-    )
-    _require(
-        loop,
-        "user_message=original_user_message",
-        label="original request on every provider request hook",
-    )
-    _require(
-        loop,
-        "if _retry.restart_with_rebuilt_messages:",
-        label="provider failover restart",
-    )
-    _require(
-        loop,
-        "_retry.restart_with_rebuilt_messages = False",
-        label="bounded provider failover restart",
-    )
+    # Native split owners retain the authored request separately from retry messages.
+    context = (hermes / "agent/turn_context.py").read_text()
+    request = (hermes / "agent/turn_api_request.py").read_text()
+    prep = (hermes / "agent/turn_iteration_prep.py").read_text()
+    _require(context, "original_user_message = persist_user_message if persist_user_message is not None else user_message", label="original request")
+    _require(loop, "original_user_message=s.original_user_message", label="loop request identity")
+    _require(request, "user_message=original_user_message", label="request hook original input")
+    _require(prep, "if _retry.restart_with_rebuilt_messages:", label="provider retry restart")
+    _require(prep, "_retry.restart_with_rebuilt_messages = False", label="bounded restart")
 
     # A bare ownership transfer must recover the bounded full thread before the
     # gateway plugin promotes it into the durable user-message slot.
     _require(slack, "bare_agent_transfer", label="bare transfer detection")
     _require(
         slack,
-        'if bare_agent_transfer:\n                watermark_ts = ""',
+        'after_ts="" if bare_agent_transfer else self._get_thread_watermark',
         label="full thread recovery for bare transfer",
     )
 
@@ -117,6 +103,8 @@ def main(root: str) -> None:
         "Optional": Optional,
         "re": re,
         "COMPACTION_DONE_STATUS": "context compaction complete",
+        "COMPACTION_STATUS": "compacting context",
+        "COMPACTION_HEARTBEAT_STATUS": "compacting context in progress",
         "_GATEWAY_AUTH_ERROR_RE": re.compile("authentication", re.I),
         "_GATEWAY_PROVIDER_POLICY_RE": re.compile("policy", re.I),
         "_GATEWAY_RATE_LIMIT_RE": re.compile("rate", re.I),

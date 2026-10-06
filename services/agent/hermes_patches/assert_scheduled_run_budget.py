@@ -26,7 +26,7 @@ def assert_scheduled_run_budget(root: Path) -> None:
     assert isinstance(fallback, ast.IfExp)
     assert 'job.get(\'hlt_run_budget\') is not None' == ast.unparse(fallback.test)
     assert isinstance(fallback.body, ast.Constant) and fallback.body.value is None
-    assert isinstance(fallback.orelse, ast.Name) and fallback.orelse.id == "fallback_model"
+    assert ast.unparse(fallback.orelse) == "setup.fallback_model"
     assert any(
         isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         and node.func.id == "attach_budget" for node in ast.walk(scheduler)
@@ -35,18 +35,15 @@ def assert_scheduled_run_budget(root: Path) -> None:
         node for node in ast.walk(loop)
         if isinstance(node, ast.While) and "api_call_count" in ast.unparse(node.test)
     )
-    assert "admit_iteration(agent, messages, api_call_count)" in ast.unparse(loop_gate.body[1])
-    assert any(isinstance(node, ast.Break) for node in ast.walk(loop_gate.body[1]))
-    assert "failed = True" in ast.unparse(loop_gate.body[1]), "Budget exhaustion must fail the job"
-    assert any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        and node.func.id == "admit_request" for node in ast.walk(loop_gate)
-    ), "Actual requests, including inner retries, must keep their output cap"
-    request_gate = next(
-        node for node in ast.walk(loop_gate)
-        if isinstance(node, ast.If) and "admit_request(agent, api_kwargs)" in ast.unparse(node.test)
-    )
-    assert "failed = True" in ast.unparse(request_gate), "Request budget failure must not become an empty success"
+    iteration_gate = next(n for n in ast.walk(loop_gate) if isinstance(n, ast.If)
+                          and "admit_iteration(agent, s.messages, s.api_call_count)" in ast.unparse(n.test))
+    assert any(isinstance(node, ast.Break) for node in ast.walk(iteration_gate))
+    assert "s.failed = True" in ast.unparse(iteration_gate), "Budget exhaustion must fail the job"
+    request_owner = ast.parse((root / "agent/turn_api_request.py").read_text())
+    request_gate = next(n for n in ast.walk(request_owner) if isinstance(n, ast.If)
+                       and "admit_request(agent, api_kwargs)" in ast.unparse(n.test))
+    assert any(isinstance(n, ast.Raise) for n in ast.walk(request_gate)), "Rejected request cannot become empty success"
+    assert "agent.interrupt" in ast.unparse(request_gate), "Budget exhaustion must stop the native loop"
     stream_retries = next(
         node.value for node in ast.walk(transport)
         if isinstance(node, ast.Assign)

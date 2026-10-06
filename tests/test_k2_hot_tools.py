@@ -59,7 +59,7 @@ class HotToolsTest(unittest.TestCase):
 
     def test_runtime_image_applies_and_checks_overlay(self):
         docker = (SERVICE / "Dockerfile").read_text()
-        self.assertIn("apply --check /tmp/hermes-patches/always_loaded_tools.patch", docker)
+        self.assertIn("apply --check /tmp/hermes-patches/hlt_runtime_contract.patch", docker)
         self.assertIn("assert_always_loaded_tools.py /opt/hermes", docker)
         self.assertIn("analytics_skill_refreshed", (SERVICE / "grounding.py").read_text())
 
