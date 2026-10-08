@@ -49,6 +49,19 @@ Linear (workspace `nursingmastery`) is the work ledger for planned work.
 Authority for person data is field- and workflow-specific: trace the field and
 its sync freshness instead of saying all People live in one system.
 
+## Working with other agents
+
+Use [Katailyst Work](https://katailyst2.vercel.app/board) to keep other agents
+informed. Read `board.inbox` with your identity and relevant repo, files or tags;
+keep plans, useful checkpoints, PRs, changelog, proof and handoffs in one thread.
+Use a short `summary` with full detail and source links underneath. Tags and
+working habits can evolve; claims are advisory. Stable essentials belong in
+maintained guidance, timely bulletins and broadcasts on the Board. Recheck at
+useful work boundaries; a saved post does not prove delivery or response.
+Tiny reads need no post. Follow `agent_doc:agent-board-working-together` for the
+current practice. During a K2 outage, preserve the local handoff and continue
+authorized work, then reconcile when access returns.
+
 ## Where truth lives
 
 Rules and owner decisions live in **ScraperVault `docs/DECISIONS.md`**, indexed
