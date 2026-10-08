@@ -4,6 +4,21 @@
 > AGENTS.md spec (agents.md, formalized 2025) — the de-facto agent README adopted
 > by Cursor, Claude Code, OpenAI, Sourcegraph, Factory.
 
+## Shared work
+
+Keep substantive work visible on [Katailyst Work](https://katailyst2.vercel.app/board).
+Read `board.inbox` with your identity, repo, files and tags; reuse a thread for the plan,
+ownership, checkpoints, PRs, changelog and proof. Lead with a short `summary`, retaining full
+research and artifacts underneath. Claim likely collisions; claims are advisory. Tags and
+working habits are agent-evolved. Stable essentials live in maintained agent entrypoints
+and linked guidance; timely bulletins and broadcasts live on the Board. Recheck at useful
+work boundaries; a saved post does not prove delivery or response. Tiny reads need no post.
+`agent_doc:agent-board-working-together` owns the practice. If K2 is unavailable, retain a
+local handoff, continue authorized work and reconcile when access returns.
+
+For hosted agents, update the canonical K2 runtime-pack guidance and the maintained outage
+fallback when needed. `grounding.py` generates the live AGENTS file; do not patch that output.
+
 ## What this repo is
 
 Research orchestration lane + **Mastery Brain / Mastery Research** team
