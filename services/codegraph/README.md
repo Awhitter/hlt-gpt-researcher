@@ -37,7 +37,7 @@ file before making a behavior claim.
 
 | Path | Auth | Returns |
 |------|------|---------|
-| `/health` | public | liveness only — `{"status","service"}` |
+| `/health` | public | liveness only — `{"status","service"}`; `status` is `degraded` (with a generic `reason`) when the disk is nearly full, the last re-index failed, or a run has been going over 3 hours |
 | `/readiness` | bearer | per-repo index status, branch, commit SHA, `gitnexus_home` |
 | `/verify-source` | bearer | validates one repo/path/full-commit tuple in the private checkout |
 | `/mcp` | bearer | the tool surface |
@@ -58,6 +58,7 @@ service **fails closed**: every path except `/health` returns 503.
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
 | `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools but not GitNexus (default `hlt-web-service,hlt-gpt-researcher`) |
 | `CODEGRAPH_SKIP_INDEX_ON_BOOT` | `1` to skip boot reindex |
+| `CODEGRAPH_MIN_FREE_MB` | Below this free space (default 1024) a run prunes git history, then drops it so checkouts re-clone at depth 1, and refuses to refresh while still low. Each run also prunes old shallow packs. `/health` uses the same threshold |
 | `PORT` | Bind port (Render sets this) |
 
 ## Local

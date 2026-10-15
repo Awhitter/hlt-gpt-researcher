@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -607,8 +608,38 @@ async def health_check(request):  # noqa: ANN001
     used to return repo slugs, branches and 40-char commit SHAs for five
     private repositories — a map of the estate, free to anyone who guessed the
     hostname. Index truth moved to /readiness, behind the bearer token.
+
+    It does say, without naming anything, when the index is going stale: the
+    disk filled for days in October 2026 while this answered "ok".
     """
+    reason = _index_problem()
+    if reason:
+        return JSONResponse({"status": "degraded", "service": "hlt-codegraph", "reason": reason})
     return JSONResponse({"status": "ok", "service": "hlt-codegraph"})
+
+
+def _index_problem() -> str | None:
+    """Why answers may be stale, or None. Reads reindex.sh's status line."""
+    try:
+        free_mb = shutil.disk_usage(REPOS_DIR).free // (1024 * 1024)
+    except OSError:
+        free_mb = None
+    if free_mb is not None and free_mb < int(os.getenv("CODEGRAPH_MIN_FREE_MB", "1024")):
+        return "The index disk is nearly full; re-indexing is paused."
+    try:
+        state, stamp, *_ = (Path(REPOS_DIR) / ".hlt-reindex-status").read_text(encoding="utf-8").split()
+    except (OSError, ValueError):
+        return None
+    if state == "failed":
+        return "The last re-index did not finish; answers may be stale."
+    if state == "running":
+        try:
+            started = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        if datetime.now(timezone.utc) - started > timedelta(hours=3):
+            return "The last re-index did not finish; answers may be stale."
+    return None
 
 
 @mcp.custom_route("/readiness", methods=["GET"])

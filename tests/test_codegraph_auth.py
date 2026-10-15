@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +92,76 @@ def test_public_health_names_no_repositories():
     flat = json.dumps(payload)
     for repo in server.REPO_GITHUB:
         assert repo not in flat, f"public /health names the {repo} index"
+
+
+def test_public_health_says_degraded_after_a_failed_reindex_without_naming_repos(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    status = tmp_path / ".hlt-reindex-status"
+
+    status.write_text("failed 2026-10-14T00:00:00Z 2 of the checkouts did not refresh\n")
+    payload = json.loads(asyncio.run(server.health_check(None)).body)
+    assert payload["status"] == "degraded"
+    flat = json.dumps(payload)
+    for repo in server.REPO_GITHUB:
+        assert repo not in flat
+
+    status.write_text("ok 2026-10-15T00:00:00Z\n")
+    payload = json.loads(asyncio.run(server.health_check(None)).body)
+    assert payload == {"status": "ok", "service": "hlt-codegraph"}
+
+
+def test_public_health_says_degraded_on_a_full_disk_or_a_stuck_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    status = tmp_path / ".hlt-reindex-status"
+    status.write_text("ok 2026-10-15T00:00:00Z\n")
+
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", str(10**12))
+    payload = json.loads(asyncio.run(server.health_check(None)).body)
+    assert payload["status"] == "degraded"
+    assert "disk" in payload["reason"]
+
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    status.write_text("running 2026-01-01T00:00:00Z\n")
+    assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "degraded"
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    status.write_text(f"running {now}\n")
+    assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "ok"
+
+
+def test_reindex_counts_a_failed_fetch_as_a_failure(tmp_path):
+    """On 2026-10-14 a fetch that hit a full disk still logged "checkout ready"."""
+    repos = tmp_path / "repos"
+    checkout = repos / "demo"
+    repos.mkdir()
+    _create_source_repo(checkout)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", str(tmp_path / "missing.git")],
+        check=True,
+    )
+    result = subprocess.run(
+        ["bash", str(Path(server.__file__).with_name("reindex.sh"))],
+        env={
+            **os.environ,
+            "REPOS_DIR": str(repos),
+            "GITNEXUS_HOME": str(tmp_path / "gitnexus"),
+            "CODEGRAPH_REPOS": "demo|example/demo",
+            "CODEGRAPH_SOURCE_ONLY_REPOS": "demo",
+            "CODEGRAPH_FORCE_REINDEX": "1",
+            "CODEGRAPH_MIN_FREE_MB": "0",
+            "GITHUB_TOKEN": "",
+            "GH_TOKEN": "",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "FAILED to index demo" in result.stderr
+    assert "source checkout ready for demo" not in result.stdout
+    assert (repos / ".hlt-reindex-status").read_text().startswith("failed ")
 
 
 def _create_source_repo(path: Path) -> str:

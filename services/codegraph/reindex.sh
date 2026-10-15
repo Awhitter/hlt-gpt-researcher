@@ -81,7 +81,57 @@ freshness_stamp() {
 FRESH_HOURS="${CODEGRAPH_INDEX_FRESH_HOURS:-${CODEGRAPH_REINDEX_HOURS:-24}}"
 FORCE="${CODEGRAPH_FORCE_REINDEX:-0}"
 
+# Each daily `fetch --depth=1` adds a pack and nothing ever removed the old
+# ones, so the 10 GB disk filled (2026-10-13: "No space left on device" on
+# shallow.lock) while /health kept saying ok. Reclaim history every run and
+# refuse to start an index on a nearly full disk.
+MIN_FREE_MB="${CODEGRAPH_MIN_FREE_MB:-1024}"
+# Read by server.py's public /health: "running|ok|failed <time> [reason]".
+STATUS_FILE="$REPOS_DIR/.hlt-reindex-status"
+
 mkdir -p "$REPOS_DIR"
+
+free_mb() {
+  local mb
+  mb="$(df -Pm "$REPOS_DIR" 2>/dev/null | awk 'NR==2 {print $4}')" || true
+  echo "${mb:-0}"
+}
+
+# Status writes must never abort the run, even on a full disk.
+write_status() {
+  { echo "$1 $(date -u +"%Y-%m-%dT%H:%M:%SZ")${2:+ $2}" > "$STATUS_FILE"; } 2>/dev/null || true
+}
+
+reclaim_git_space() {
+  local dest="$1"
+  [[ -d "$dest/.git" ]] || return 0
+  # A run killed mid-fetch leaves these behind, and git refuses to start again.
+  rm -f "$dest/.git/shallow.lock" "$dest/.git/index.lock"
+  git -C "$dest" reflog expire --expire=now --all >/dev/null 2>&1 || true
+  git -C "$dest" gc --prune=now --quiet >/dev/null 2>&1 || true
+}
+
+# A run that dies part way stays "running"; /health treats an old one as failed.
+write_status running
+
+echo "[codegraph] free space before reindex: $(free_mb) MB"
+if (( $(free_mb) < MIN_FREE_MB )); then
+  echo "[codegraph] low disk; reclaiming git history in every checkout" >&2
+  for dest in "$REPOS_DIR"/*/; do
+    reclaim_git_space "${dest%/}"
+  done
+  echo "[codegraph] free space after reclaim: $(free_mb) MB"
+fi
+# gc needs room to write its new pack, so a completely full disk can't be
+# reclaimed that way. Dropping the shallow history is always safe: the next
+# step re-clones at depth 1.
+if (( $(free_mb) < MIN_FREE_MB )); then
+  echo "[codegraph] still low; dropping git history so checkouts re-clone" >&2
+  for dest in "$REPOS_DIR"/*/; do
+    rm -rf "${dest%/}/.git"
+  done
+  echo "[codegraph] free space after dropping history: $(free_mb) MB"
+fi
 
 is_fresh() {
   local slug="$1"
@@ -106,21 +156,31 @@ clone_or_update() {
     url="https://github.com/${full}.git"
   fi
 
+  if (( $(free_mb) < MIN_FREE_MB )); then
+    echo "[codegraph] only $(free_mb) MB free (< $MIN_FREE_MB MB); not touching $slug" >&2
+    return 1
+  fi
+
   if [[ -d "$dest/.git" ]]; then
     echo "[codegraph] updating $slug"
-    git -C "$dest" fetch --depth=1 origin HEAD
-    git -C "$dest" reset --hard FETCH_HEAD
+    rm -f "$dest/.git/shallow.lock" "$dest/.git/index.lock"
+    # set -e does not apply inside a function called from `if`, so each step
+    # fails the repo explicitly (on 2026-10-14 a failed fetch still logged
+    # "checkout ready").
+    git -C "$dest" fetch --depth=1 origin HEAD || return 1
+    git -C "$dest" reset --hard FETCH_HEAD || return 1
+    reclaim_git_space "$dest"
   else
     echo "[codegraph] cloning $full -> $dest"
     rm -rf "$dest"
-    git clone --depth=1 "$url" "$dest"
+    git clone --depth=1 "$url" "$dest" || return 1
   fi
 
   if is_source_only "$slug"; then
     echo "[codegraph] source checkout ready for $slug (structural indexing disabled)"
   else
     echo "[codegraph] analyzing $slug"
-    (cd "$dest" && gitnexus analyze --skip-agents-md --skip-skills)
+    (cd "$dest" && gitnexus analyze --skip-agents-md --skip-skills) || return 1
   fi
 }
 
@@ -144,11 +204,11 @@ index_repo() {
     return
   fi
   if clone_or_update "$slug" "$full"; then
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(freshness_stamp "$slug")"
+    { date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(freshness_stamp "$slug")"; } 2>/dev/null || true
     rm -f "$REPOS_DIR/$slug/.hlt-index-error"
     echo "[codegraph] indexed $slug"
   else
-    date -u +"%Y-%m-%dT%H:%M:%SZ indexing failed" > "$REPOS_DIR/$slug/.hlt-index-error" 2>/dev/null || true
+    { date -u +"%Y-%m-%dT%H:%M:%SZ indexing failed" > "$REPOS_DIR/$slug/.hlt-index-error"; } 2>/dev/null || true
     echo "[codegraph] FAILED to index $slug ($full); continuing" >&2
     FAILED_REPOS+=("$slug")
   fi
@@ -178,7 +238,11 @@ fi
 
 if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished with failures: ${FAILED_REPOS[*]}" >&2
+  write_status failed "${#FAILED_REPOS[@]} of the checkouts did not refresh"
+else
+  write_status ok
 fi
+echo "[codegraph] free space after reindex: $(free_mb) MB"
 
 echo "[codegraph] indexed repos:"
 gitnexus list || true
