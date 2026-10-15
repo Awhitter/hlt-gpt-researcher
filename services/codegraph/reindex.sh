@@ -84,17 +84,23 @@ FORCE="${CODEGRAPH_FORCE_REINDEX:-0}"
 # Each daily `fetch --depth=1` adds a pack and nothing ever removed the old
 # ones, so the 10 GB disk filled (2026-10-13: "No space left on device" on
 # shallow.lock) while /health kept saying ok. Reclaim history every run and
-# refuse to start an index on a nearly full disk.
+# rebuild history in place when gc itself has no room.
 MIN_FREE_MB="${CODEGRAPH_MIN_FREE_MB:-1024}"
+[[ "$MIN_FREE_MB" =~ ^[0-9]+$ ]] || MIN_FREE_MB=1024
 # Read by server.py's public /health: "running|ok|failed <time> [reason]".
 STATUS_FILE="$REPOS_DIR/.hlt-reindex-status"
 
 mkdir -p "$REPOS_DIR"
 
+# Empty when df can't say; an unknown reading never triggers a reclaim.
 free_mb() {
+  df -Pm "$REPOS_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true
+}
+
+disk_low() {
   local mb
-  mb="$(df -Pm "$REPOS_DIR" 2>/dev/null | awk 'NR==2 {print $4}')" || true
-  echo "${mb:-0}"
+  mb="$(free_mb)"
+  [[ -n "$mb" ]] && (( mb < MIN_FREE_MB ))
 }
 
 # Status writes must never abort the run, even on a full disk.
@@ -107,6 +113,10 @@ reclaim_git_space() {
   [[ -d "$dest/.git" ]] || return 0
   # A run killed mid-fetch leaves these behind, and git refuses to start again.
   rm -f "$dest/.git/shallow.lock" "$dest/.git/index.lock"
+  # `fetch origin HEAD` never moves the tracking refs, which would pin the
+  # first clone's snapshot forever; nothing here reads them.
+  git -C "$dest" for-each-ref --format='delete %(refname)' refs/remotes \
+    | git -C "$dest" update-ref --no-deref --stdin >/dev/null 2>&1 || true
   git -C "$dest" reflog expire --expire=now --all >/dev/null 2>&1 || true
   git -C "$dest" gc --prune=now --quiet >/dev/null 2>&1 || true
 }
@@ -115,22 +125,12 @@ reclaim_git_space() {
 write_status running
 
 echo "[codegraph] free space before reindex: $(free_mb) MB"
-if (( $(free_mb) < MIN_FREE_MB )); then
+if disk_low; then
   echo "[codegraph] low disk; reclaiming git history in every checkout" >&2
   for dest in "$REPOS_DIR"/*/; do
     reclaim_git_space "${dest%/}"
   done
   echo "[codegraph] free space after reclaim: $(free_mb) MB"
-fi
-# gc needs room to write its new pack, so a completely full disk can't be
-# reclaimed that way. Dropping the shallow history is always safe: the next
-# step re-clones at depth 1.
-if (( $(free_mb) < MIN_FREE_MB )); then
-  echo "[codegraph] still low; dropping git history so checkouts re-clone" >&2
-  for dest in "$REPOS_DIR"/*/; do
-    rm -rf "${dest%/}/.git"
-  done
-  echo "[codegraph] free space after dropping history: $(free_mb) MB"
 fi
 
 is_fresh() {
@@ -156,14 +156,21 @@ clone_or_update() {
     url="https://github.com/${full}.git"
   fi
 
-  if (( $(free_mb) < MIN_FREE_MB )); then
-    echo "[codegraph] only $(free_mb) MB free (< $MIN_FREE_MB MB); not touching $slug" >&2
-    return 1
-  fi
-
   if [[ -d "$dest/.git" ]]; then
     echo "[codegraph] updating $slug"
     rm -f "$dest/.git/shallow.lock" "$dest/.git/index.lock"
+    if disk_low; then
+      # gc needs room to write a new pack, so a full disk can't be reclaimed
+      # that way. Rebuild only this checkout's history in place: the working
+      # tree keeps its .gitnexus index (a full re-analyze can run out of
+      # memory) and its freshness stamp.
+      echo "[codegraph] still low on disk; rebuilding $slug's git history in place" >&2
+      local origin_url
+      origin_url="$(git -C "$dest" remote get-url origin 2>/dev/null || echo "$url")"
+      rm -rf "$dest/.git"
+      git -C "$dest" init -q || return 1
+      git -C "$dest" remote add origin "$origin_url" || return 1
+    fi
     # set -e does not apply inside a function called from `if`, so each step
     # fails the repo explicitly (on 2026-10-14 a failed fetch still logged
     # "checkout ready").
@@ -171,6 +178,10 @@ clone_or_update() {
     git -C "$dest" reset --hard FETCH_HEAD || return 1
     reclaim_git_space "$dest"
   else
+    if disk_low; then
+      echo "[codegraph] only $(free_mb) MB free (< $MIN_FREE_MB MB); not cloning $slug" >&2
+      return 1
+    fi
     echo "[codegraph] cloning $full -> $dest"
     rm -rf "$dest"
     git clone --depth=1 "$url" "$dest" || return 1

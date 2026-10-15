@@ -612,7 +612,10 @@ async def health_check(request):  # noqa: ANN001
     It does say, without naming anything, when the index is going stale: the
     disk filled for days in October 2026 while this answered "ok".
     """
-    reason = _index_problem()
+    try:
+        reason = _index_problem()
+    except Exception:  # noqa: BLE001 - liveness must answer even if this check breaks
+        reason = None
     if reason:
         return JSONResponse({"status": "degraded", "service": "hlt-codegraph", "reason": reason})
     return JSONResponse({"status": "ok", "service": "hlt-codegraph"})
@@ -624,8 +627,12 @@ def _index_problem() -> str | None:
         free_mb = shutil.disk_usage(REPOS_DIR).free // (1024 * 1024)
     except OSError:
         free_mb = None
-    if free_mb is not None and free_mb < int(os.getenv("CODEGRAPH_MIN_FREE_MB", "1024")):
-        return "The index disk is nearly full; re-indexing is paused."
+    try:
+        min_free_mb = int(os.getenv("CODEGRAPH_MIN_FREE_MB") or "1024")
+    except ValueError:
+        min_free_mb = 1024
+    if free_mb is not None and free_mb < min_free_mb:
+        return "The index disk is nearly full; answers may be stale."
     try:
         state, stamp, *_ = (Path(REPOS_DIR) / ".hlt-reindex-status").read_text(encoding="utf-8").split()
     except (OSError, ValueError):

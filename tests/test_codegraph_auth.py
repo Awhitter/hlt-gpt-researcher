@@ -119,9 +119,15 @@ def test_public_health_says_degraded_on_a_full_disk_or_a_stuck_run(tmp_path, mon
     status.write_text("ok 2026-10-15T00:00:00Z\n")
 
     monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", str(10**12))
-    payload = json.loads(asyncio.run(server.health_check(None)).body)
+    response = asyncio.run(server.health_check(None))
+    payload = json.loads(response.body)
+    assert response.status_code == 200  # Render's health check; degraded must not fail deploys
     assert payload["status"] == "degraded"
     assert "disk" in payload["reason"]
+
+    for unparseable in ("", "1G"):
+        monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", unparseable)
+        assert asyncio.run(server.health_check(None)).status_code == 200
 
     monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
     status.write_text("running 2026-01-01T00:00:00Z\n")
@@ -130,6 +136,52 @@ def test_public_health_says_degraded_on_a_full_disk_or_a_stuck_run(tmp_path, mon
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     status.write_text(f"running {now}\n")
     assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "ok"
+
+
+def _run_reindex(repos: Path, tmp_path: Path, **env: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(Path(server.__file__).with_name("reindex.sh"))],
+        env={
+            **os.environ,
+            "REPOS_DIR": str(repos),
+            "GITNEXUS_HOME": str(tmp_path / "gitnexus"),
+            "CODEGRAPH_FORCE_REINDEX": "1",
+            "GITHUB_TOKEN": "",
+            "GH_TOKEN": "",
+            **env,
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_a_full_disk_rebuilds_history_in_place_and_keeps_the_index(tmp_path):
+    """gc can't run on a full disk; the fallback must not cost the .gitnexus index."""
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    for slug in ("demo", "frozen"):
+        subprocess.run(["git", "clone", "-q", str(upstream), str(repos / slug)], check=True)
+        (repos / slug / ".gitnexus").mkdir()
+        (repos / slug / ".gitnexus" / "graph.db").write_text("index")
+
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="demo|example/demo,frozen|example/frozen",
+        CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+        CODEGRAPH_SKIP_REPOS="frozen",
+        CODEGRAPH_MIN_FREE_MB=str(10**12),
+    )
+
+    assert "rebuilding demo's git history in place" in result.stderr, result.stderr
+    assert (repos / "demo" / ".gitnexus" / "graph.db").read_text() == "index"
+    assert (repos / "demo" / ".git").is_dir()
+    assert (repos / "frozen" / ".git").is_dir()
+    assert (repos / "frozen" / ".gitnexus" / "graph.db").read_text() == "index"
+    assert (repos / ".hlt-reindex-status").read_text().startswith("ok ")
 
 
 def test_reindex_counts_a_failed_fetch_as_a_failure(tmp_path):
@@ -142,22 +194,12 @@ def test_reindex_counts_a_failed_fetch_as_a_failure(tmp_path):
         ["git", "-C", str(checkout), "remote", "add", "origin", str(tmp_path / "missing.git")],
         check=True,
     )
-    result = subprocess.run(
-        ["bash", str(Path(server.__file__).with_name("reindex.sh"))],
-        env={
-            **os.environ,
-            "REPOS_DIR": str(repos),
-            "GITNEXUS_HOME": str(tmp_path / "gitnexus"),
-            "CODEGRAPH_REPOS": "demo|example/demo",
-            "CODEGRAPH_SOURCE_ONLY_REPOS": "demo",
-            "CODEGRAPH_FORCE_REINDEX": "1",
-            "CODEGRAPH_MIN_FREE_MB": "0",
-            "GITHUB_TOKEN": "",
-            "GH_TOKEN": "",
-        },
-        capture_output=True,
-        text=True,
-        timeout=60,
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="demo|example/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+        CODEGRAPH_MIN_FREE_MB="0",
     )
     assert "FAILED to index demo" in result.stderr
     assert "source checkout ready for demo" not in result.stdout
