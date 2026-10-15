@@ -334,8 +334,14 @@ Five rules that exist because each was once a silent no-op:
 
 AI observability: HLT-hosted GPT Researcher emits Langfuse observations when
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. `/health`
-reports redacted readiness under `observability.langfuse`; prompt/output capture
+reports redacted configuration under `observability.langfuse`; prompt/output capture
 stays off unless `LANGFUSE_RECORD_IO=true`.
+
+The API's public `GET /health` is local liveness: service/version/deploy marker
+and redacted observability configuration. It must not scan the corpus or call
+Codegraph or other dependencies. Use authenticated `GET /api/hlt/readiness` for
+integration status and its summary. A green liveness response does not certify
+research readiness; verify both surfaces when releasing a backend change.
 
 ## Rules of engagement
 
