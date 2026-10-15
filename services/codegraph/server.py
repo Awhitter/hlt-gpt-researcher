@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -607,8 +608,54 @@ async def health_check(request):  # noqa: ANN001
     used to return repo slugs, branches and 40-char commit SHAs for five
     private repositories — a map of the estate, free to anyone who guessed the
     hostname. Index truth moved to /readiness, behind the bearer token.
+
+    It does say, without naming anything, when the index is going stale: the
+    disk filled for days in October 2026 while this answered "ok".
     """
+    try:
+        reason = _index_problem()
+    except Exception:  # noqa: BLE001 - liveness must answer even if this check breaks
+        reason = "Index health could not be checked; answers may be stale."
+    if reason:
+        return JSONResponse({"status": "degraded", "service": "hlt-codegraph", "reason": reason})
     return JSONResponse({"status": "ok", "service": "hlt-codegraph"})
+
+
+def _index_problem() -> str | None:
+    """Why answers may be stale, or None. Reads reindex.sh's status line."""
+    try:
+        free_mb = shutil.disk_usage(REPOS_DIR).free // (1024 * 1024)
+    except OSError:
+        free_mb = None
+    try:
+        configured = os.getenv("CODEGRAPH_MIN_FREE_MB") or "1024"
+        min_free_mb = int(configured) if re.fullmatch(r"[0-9]+", configured) else 1024
+    except ValueError:
+        min_free_mb = 1024
+    if free_mb is not None and free_mb < min_free_mb:
+        return "The index disk is nearly full; answers may be stale."
+    try:
+        state, stamp, *_ = (Path(REPOS_DIR) / ".hlt-reindex-status").read_text(encoding="utf-8").split()
+    except FileNotFoundError:
+        return "No completed re-index has been verified; answers may be stale."
+    except (OSError, ValueError):
+        return "Index health could not be checked; answers may be stale."
+    if state == "failed":
+        return "The last re-index did not finish; answers may be stale."
+    try:
+        started = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "Index health could not be checked; answers may be stale."
+    age = datetime.now(timezone.utc) - started
+    if state == "running":
+        if age > timedelta(hours=3):
+            return "The last re-index did not finish; answers may be stale."
+        return "A re-index is in progress; freshness has not been verified."
+    if state == "ok" and age > timedelta(hours=INDEX_STALE_HOURS):
+        return "The last re-index is stale; answers may be stale."
+    if state not in {"running", "ok"}:
+        return "Index health could not be checked; answers may be stale."
+    return None
 
 
 @mcp.custom_route("/readiness", methods=["GET"])

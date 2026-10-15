@@ -37,7 +37,7 @@ file before making a behavior claim.
 
 | Path | Auth | Returns |
 |------|------|---------|
-| `/health` | public | liveness only — `{"status","service"}` |
+| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh is running/failed/stalled, or its status is missing/stale/unreadable; no repository identities |
 | `/readiness` | bearer | per-repo index status, branch, commit SHA, `gitnexus_home` |
 | `/verify-source` | bearer | validates one repo/path/full-commit tuple in the private checkout |
 | `/mcp` | bearer | the tool surface |
@@ -58,7 +58,38 @@ service **fails closed**: every path except `/health` returns 503.
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
 | `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools but not GitNexus (default `hlt-web-service,hlt-gpt-researcher`) |
 | `CODEGRAPH_SKIP_INDEX_ON_BOOT` | `1` to skip boot reindex |
+| `CODEGRAPH_MIN_FREE_MB` | Free-space reserve (default 1024). Refresh prunes unused cached Git objects; if the reserve is still unmet, it preserves the checkout/index and reports failure. Unknown disk readings never trigger destructive recovery. `/health` uses the same threshold |
 | `PORT` | Bind port (Render sets this) |
+
+## Recovery and verification
+
+Boot, scheduled and manual reindex runs share a nonblocking file lock. A second
+run leaves the first run and its status alone. Frozen repositories are untouched;
+an existing failure marker still counts as failed. A recent freshness stamp cannot
+hide a failed refresh. Partial failure returns a nonzero exit code after trying
+the other configured repositories.
+
+Cleanup never deletes a checkout, `.git`, `.gitnexus`, or Git lock files. It expires
+old reflogs, removes unused remote-tracking refs and prunes cached objects only for
+configured, non-frozen checkouts being refreshed. Git cleanup retains the normal
+90/30-day reflog and two-week object grace periods to protect independent writers;
+it never uses immediate pruning. A retry remains unverified until it finishes;
+starting it cannot erase a degraded health signal. If a full disk prevents Git GC,
+or a checkout is incomplete, the run stops refreshing that repository and keeps
+the last available data for an operator. Do not remove an index to make space:
+rebuilding it can exceed this service's memory limit.
+
+After an authorized release, verify the serving commit in Render, disk headroom,
+and a completed scheduled refresh with no errors. Public `/health` must remain
+HTTP 200 without exposing repository names; its `ok` status is not sufficient
+proof. Authenticated `/readiness` must show the expected repository SHAs and fresh
+timestamps, and a source read must resolve an immutable link at that SHA. Frozen
+repositories remain explicitly stale. No endpoint or credential setting needs to
+change for this repair.
+
+The regression suite uses disposable local Git repositories and a stub graph CLI:
+`python -m pytest tests/test_codegraph_auth.py`. It does not rebuild production
+indexes or prove that the production disk has recovered.
 
 ## Local
 
