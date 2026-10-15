@@ -163,6 +163,16 @@ funnel_application_submitted — 2 people, conversion 0.21%, drop-off 99.79%""",
     assert column_result["grounding"]["unsupported"] == [{"value": "37", "line": 1}]
     assert wrong_column.closed is True
 
+    # Failure in session check-in must not strand an owned agent/session.
+    cleanup_failure = _FakeAgent(None, "Research artifact prepared.")
+    pending.append(cleanup_failure)
+    from unittest.mock import patch
+    with patch.object(adapter._memory_sessions, "checkin", side_effect=RuntimeError("synthetic checkin fault")):
+        response = await adapter._handle_runs(_FakeRequest({"input": "Prepare research."}))
+        result = await _wait_for_terminal(adapter, json.loads(response.text)["run_id"])
+        assert result["status"] == "failed"
+        assert cleanup_failure.closed is True
+
 
 def main() -> None:
     if len(sys.argv) != 2:
@@ -180,42 +190,27 @@ def main() -> None:
     compile(source, "gateway/platforms/api_server_runs.py", "exec")
 
     assert "from hlt_numeric_grounding import NumericGroundingLedger" in source
-    runs = _between(
-        source,
-        "async def _handle_runs",
-        "def _request_owns_run",
-    )
-    assert runs.index("NumericGroundingLedger(user_message)") < runs.index(
-        "self._create_agent("
-    )
-    assert "numeric_grounding.observe_tool_event(" in runs
-    assert 'event_type == "tool.completed"' not in runs, (
-        "tool success/error filtering belongs to the owned deterministic ledger"
-    )
-    # Pin the real upstream producers, not just the handler fake above. Both
-    # native executor paths expose the complete pre-persistence result, and the
-    # Codex runtime exposes its completion payload, through the exact kwargs
-    # consumed by NumericGroundingLedger.observe_tool_event().
-    assert tool_executor_source.count("result=display_function_result,") >= 2
-    assert 'cb("tool.completed", name, None, None,' in codex_runtime_source
-    assert "duration=duration, is_error=is_error, result=result" in codex_runtime_source
-
-    run_sync = _between(runs, "            def _run_sync():", "            result, usage =")
-    assert run_sync.index("agent.run_conversation(") < run_sync.index("agent.close()")
-    assert "return r, u" in run_sync
-
-    completion = _between(
-        runs,
-        "            else:\n                final_response =",
-        "        except asyncio.CancelledError:",
-    )
-    assert completion.index("numeric_grounding.validate(final_response)") < completion.index(
-        '"event": "run.completed"'
-    )
-    assert '"event": "run.failed"' in completion
-    assert 'grounding=grounding_summary' in completion
-    assert 'output=final_response' in completion
-    asyncio.run(_assert_live_run_seam())
+    import ast
+    tree = ast.parse(source)
+    execute = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "_execute_run")
+    rendered = ast.unparse(execute)
+    assert rendered.index("NumericGroundingLedger(run.user_message)") < rendered.index("self._create_agent(")
+    assert "numeric_grounding.observe_tool_event(" in rendered
+    assert "event_type == 'tool.completed'" not in rendered
+    # The native executor emits full pre-spill results at its consolidated owner.
+    assert '"tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,' in tool_executor_source
+    assert 'args=("tool.completed", name, None, None),' in codex_runtime_source
+    assert 'kwargs={"duration": duration, "is_error": is_error, "result": result}' in codex_runtime_source
+    sync = ast.unparse(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_run_agent_sync"))
+    assert sync.index("agent.run_conversation(") < sync.index("agent.close()")
+    assert rendered.index("numeric_grounding.validate(result.get('final_response', ''))") < rendered.index("_finish(status, fields, output=")
+    assert "_finish('failed', error=verdict.failure_message(), grounding=verdict.as_dict()" in rendered
+    import os
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+    with TemporaryDirectory(prefix="hlt-api-grounding-check-") as temporary:
+        with patch.dict(os.environ, {"HERMES_HOME": temporary}):
+            asyncio.run(_assert_live_run_seam())
 
 
 if __name__ == "__main__":

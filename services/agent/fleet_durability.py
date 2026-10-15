@@ -160,6 +160,16 @@ def install() -> dict[str, Any]:
         return {"installed": [], "failed": [], "skipped": "different-agent"}
     from cron.jobs import create_job, list_jobs, update_job
     from fleet_run_budget import CANARY_BUDGET
+    from render_config import DEFAULT_FALLBACK_PROVIDERS
+
+    # The subscription transport omits output caps. Keep this bounded scheduled
+    # check on the configured, capped recovery route; prove primary work separately.
+    canary_route = next(
+        (route for route in DEFAULT_FALLBACK_PROVIDERS if route["provider"] == "openrouter"),
+        None,
+    )
+    if canary_route is None:
+        return {"installed": [], "failed": ["budget-compatible recovery route missing"]}
 
     scripts = _home() / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
@@ -172,9 +182,9 @@ def install() -> dict[str, Any]:
     result: dict[str, Any] = {
         "installed": [], "failed": [], "target": AGENT_LOGS,
         "canaryRoute": {
-            "provider": "xai-oauth", "model": "grok-4.6",
-            "verifies": "K2 and authenticated backup; ordinary Slack acceptance verifies Sol/high",
-            "reason": "Codex subscription wire rejects output caps; only this scheduled check uses Grok",
+            **canary_route,
+            "verifies": "K2 and configured OpenRouter recovery only; primary subscription work requires separate proof",
+            "reason": "The scheduled check retains its enforced output cap on the configured recovery transport",
         },
     }
     for kind, schedule, expression in definitions:
@@ -195,7 +205,7 @@ def install() -> dict[str, Any]:
             import grounding
 
             fields.update({
-                "model": "grok-4.6", "provider": "xai-oauth",
+                **canary_route,
                 "reasoning_effort": "high", "enabled_toolsets": ["mcp-katailyst2"],
                 "workdir": str(grounding.grounding_dir(_home())),
             })

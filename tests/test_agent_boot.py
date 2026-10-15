@@ -240,8 +240,8 @@ def test_generated_config_matches_hermes_schema(tmp_path):
     render_config.render(env=FULL_ENV, home=tmp_path)
     config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
-    assert config["model"]["provider"] == "openrouter"
-    assert config["model"]["default"] == "openai/gpt-6-astra"
+    assert config["model"]["provider"] == "openai-codex"
+    assert config["model"]["default"] == "gpt-6-astra"
     assert config["model"]["max_tokens"] == 32_768
     assert config["agent"]["max_turns"] == 24
     assert config["agent"]["platform_max_turns"] == {"slack": 7}
@@ -329,7 +329,7 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     assert summary["deploy_commit"] == "abc123"
     assert summary["hermes_upstream_ref"] == "upstream123"
     assert summary["host_runtime_contract_version"] == "cleo-hermes-host.v2"
-    assert summary["k2_context_plugin"]["version"] == "1.6.0"
+    assert summary["k2_context_plugin"]["version"] == "1.7.0"
 
 
 def test_product_work_skill_is_a_small_k2_activation_shim(tmp_path):
@@ -374,37 +374,36 @@ def test_environment_cannot_override_the_reviewed_primary_route(tmp_path):
         "OPENROUTER_MODEL": "ignored/model",
     }
     summary = render_config.render(env=env, home=tmp_path)
-    assert summary["model_provider"] == "openrouter"
-    assert summary["model"] == "openai/gpt-6-astra"
+    assert summary["model_provider"] == "openai-codex"
+    assert summary["model"] == "gpt-6-astra"
 
 
-def test_astra_provider_and_model_are_the_pinned_primary(tmp_path):
+def test_subscription_provider_and_model_are_the_pinned_primary(tmp_path):
     default = render_config.render(env={}, home=tmp_path)
-    assert default["model_provider"] == "openrouter"
-    assert default["model"] == "openai/gpt-6-astra"
+    assert default["model_provider"] == "openai-codex"
+    assert default["model"] == "gpt-6-astra"
     assert default["reasoning_effort"] == "high"
 
     attempted_override = render_config.build_config(
         {"HERMES_INFERENCE_PROVIDER": "openrouter", "OPENROUTER_MODEL": "anthropic/claude-sonnet-5"}
     )
-    assert attempted_override["model"]["provider"] == "openrouter"
-    assert attempted_override["model"]["default"] == "openai/gpt-6-astra"
+    assert attempted_override["model"]["provider"] == "openai-codex"
+    assert attempted_override["model"]["default"] == "gpt-6-astra"
 
 
-def test_astra_route_explicitly_clears_persisted_fallbacks(tmp_path):
+def test_subscription_route_replaces_persisted_fallbacks(tmp_path):
     config = render_config.build_config(FULL_ENV)
-    assert config["fallback_providers"] == []
+    assert config["fallback_providers"] == [{"provider": "openrouter", "model": "openai/gpt-6-astra"}]
     assert config["agent"]["reasoning_effort"] == "high"
 
     summary = render_config.render(env=FULL_ENV, home=tmp_path)
-    assert summary["configured_model_route"] == [{
-        "provider": "openrouter",
-        "model": "openai/gpt-6-astra",
-        "role": "primary",
-    }]
+    assert summary["configured_model_route"] == [
+        {"provider": "openai-codex", "model": "gpt-6-astra", "role": "primary"},
+        {"provider": "openrouter", "model": "openai/gpt-6-astra", "role": "fallback-1"},
+    ]
 
 
-def test_environment_cannot_add_a_fallback_to_astra():
+def test_environment_cannot_change_the_reviewed_fallback():
     for override in (
         "openrouter:moonshotai/kimi-k3",
         "openrouter:qwen/qwen3.8-max",
@@ -414,7 +413,7 @@ def test_environment_cannot_add_a_fallback_to_astra():
         config = render_config.build_config(
             {**FULL_ENV, "HERMES_FALLBACK_PROVIDERS": override}
         )
-        assert config["fallback_providers"] == []
+        assert config["fallback_providers"] == [{"provider": "openrouter", "model": "openai/gpt-6-astra"}]
 
 
 def test_slack_manifest_uses_only_the_agent_view_pinned_hermes_supports():
@@ -754,7 +753,7 @@ def _cron_seed():
     return _load("cron_seed", SERVICE_DIR / "cron_seed.py")
 
 
-def _load_health_gateway(*, legacy_subscription_policy=False):
+def _load_health_gateway(*, legacy_subscription_policy=False, api_only_policy=False):
     """Load health_gateway.py without putting the service dir on sys.path.
 
     It does bare ``import grounding`` / ``import render_config``, which normally
@@ -770,12 +769,17 @@ def _load_health_gateway(*, legacy_subscription_policy=False):
     }
     sys.modules["grounding"] = grounding
     route_config = render_config
+    if api_only_policy:
+        route_config = _load("hlt_api_render_config", SERVICE_DIR / "render_config.py")
+        route_config.DEFAULT_PROVIDER = "openrouter"
+        route_config.DEFAULT_MODEL = "openai/gpt-6-astra"
+        route_config.DEFAULT_FALLBACK_PROVIDERS = ()
     if legacy_subscription_policy:
         # Preserve provider-aware OAuth recovery coverage without pretending
         # this historical route is the current production default.
         route_config = _load("hlt_legacy_render_config", SERVICE_DIR / "render_config.py")
         route_config.DEFAULT_PROVIDER = "openai-codex"
-        route_config.DEFAULT_MODEL = "gpt-5.6-sol"
+        route_config.DEFAULT_MODEL = "gpt-6-astra"
         route_config.DEFAULT_FALLBACK_PROVIDERS = (
             {"provider": "xai-oauth", "model": "grok-4.6"},
         )
@@ -802,22 +806,21 @@ BASE_ARGV = ["hermes", "gateway", "run", "--external-supervisor"]
 def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     dockerfile = (SERVICE_DIR / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile
+    assert "ARG HERMES_REF=f97608f178d1ffeca59860195ab7da295f7c8e5f" in dockerfile
     assert 'fetch --depth=1 origin "${HERMES_REF}"' in dockerfile
     assert "checkout --detach FETCH_HEAD" in dockerfile
     assert 'rev-parse HEAD)" = "${HERMES_REF}"' in dockerfile
     assert '--branch "${HERMES_REF}"' not in dockerfile
     assert "mcp_prefixed_tool_name('codegraph', 'context')" in dockerfile
     assert "mcp__codegraph__context" in dockerfile
-    assert "POST /v1/runs" in dockerfile
-    assert "GET  /v1/runs/{run_id}" in dockerfile
+    assert '"POST", "/v1/runs"' in dockerfile
+    assert '"GET", "/v1/runs/{run_id}"' in dockerfile
     assert '"pre_llm_call"' in dockerfile
     assert "ENV HERMES_UPSTREAM_REF=${HERMES_REF}" in dockerfile
     assert "grep -q 're.escape(COMPACTION_DONE_STATUS)'" in dockerfile
     assert "[slack,mcp,tts-premium,fal,firecrawl,web]" in dockerfile
     assert "from firecrawl import Firecrawl" in dockerfile
-    assert "upstream_stream_final_content_reconciliation.patch" in dockerfile
-    assert "upstream_stream_final_draft_gate.patch" in dockerfile
+    assert "hlt_runtime_contract.patch" in dockerfile
     assert "FROM node:24-bookworm-slim@sha256:" in dockerfile
     assert "FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:" in dockerfile
     assert "AS hermes-web" in dockerfile
@@ -841,10 +844,10 @@ def test_hermes_runtime_is_pinned_with_the_codegraph_name_regression():
     assert "/usr/local/lib/node_modules/npm" in dockerfile
     assert "ENV HERMES_TUI_DIR=/opt/hermes/ui-tui" in dockerfile
     assert "ui-tui/dist/entry.js" in dockerfile
-    assert "from hermes_cli.main import _make_tui_argv" in dockerfile
-    assert "progressive_tool_result_compaction.patch" in dockerfile
+    assert "from hermes_cli.main_tui_launch import _make_tui_argv" in dockerfile
+    assert "hlt_runtime_contract.patch" in dockerfile
     assert "assert_progressive_tool_result_compaction.py" in dockerfile
-    assert "platform_turn_budget.patch" in dockerfile
+    assert "hlt_runtime_contract.patch" in dockerfile
     assert "assert_platform_turn_budget.py" in dockerfile
 
 
@@ -900,13 +903,13 @@ def test_health_observes_the_route_that_actually_answered(monkeypatch):
 
     assert supervisor.snapshot()["observed_model_route"] is None
     supervisor._note_gateway_line(
-        "INFO API call #3: model=gpt-5.6-sol provider=openai-codex "
+        "INFO API call #3: model=gpt-6-astra provider=openai-codex "
         "prompt=1200 completion=80\n"
     )
 
     assert supervisor.snapshot()["observed_model_route"] == {
         "provider": "openai-codex",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-astra",
         "source": "successful_api_call",
         "seconds_ago": 0.0,
     }
@@ -1056,7 +1059,7 @@ def test_every_configured_model_route_gets_a_separate_readiness_result(monkeypat
         {"provider": "xai-oauth", "model": "grok-4.6", "role": "primary"},
         {
             "provider": "openai-codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "role": "fallback-1",
         },
         {
@@ -1094,7 +1097,7 @@ def test_a_rate_limited_codex_profile_is_not_called_an_available_fallback(monkey
         {"provider": "xai-oauth", "model": "grok-4.6", "role": "primary"},
         {
             "provider": "openai-codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "role": "fallback-1",
         },
     ]
@@ -1137,7 +1140,7 @@ def test_codex_legacy_login_cannot_mask_an_unusable_credential_pool(monkeypatch)
         "has_available": False,
         "profile_count": 2,
         "selectable_count": 0,
-        "minimum_required": 3,
+        "minimum_required": 1,
         "minimum_ready": False,
     }
     assert result["source"] == "hermes-auth-store"
@@ -1150,7 +1153,7 @@ def test_codex_legacy_login_cannot_mask_an_unusable_credential_pool(monkeypatch)
         [
             {
                 "provider": "openai-codex",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
                 "role": "fallback-1",
             }
         ],
@@ -1185,13 +1188,13 @@ def test_codex_readiness_requires_a_logged_in_selectable_pool_entry():
     assert result["credential_pool"]["has_available"] is True
     assert result["credential_pool"]["profile_count"] == 3
     assert result["credential_pool"]["selectable_count"] == 3
-    assert result["credential_pool"]["minimum_required"] == 3
+    assert result["credential_pool"]["minimum_required"] == 1
     assert result["credential_pool"]["minimum_ready"] is True
     assert result["source"] == "credential_pool"
     assert "owner" not in str(result)
 
 
-def test_codex_readiness_separates_serving_from_three_profile_redundancy():
+def test_codex_readiness_accepts_the_existing_selectable_pool():
     health_gateway = _load_health_gateway()
 
     class _PartiallySelectablePool:
@@ -1215,8 +1218,8 @@ def test_codex_readiness_separates_serving_from_three_profile_redundancy():
         "has_available": True,
         "profile_count": 3,
         "selectable_count": 2,
-        "minimum_required": 3,
-        "minimum_ready": False,
+        "minimum_required": 1,
+        "minimum_ready": True,
     }
     assert result["error"] == ""
     assert "private" not in str(result)
@@ -1232,7 +1235,7 @@ def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
             "configured_model_route": [
                 {
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-astra",
                     "role": "primary",
                 },
                 {
@@ -1249,7 +1252,7 @@ def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
     refreshed = [
         {
             "provider": "openai-codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "role": "primary",
             "available": False,
             "detail": {
@@ -1259,7 +1262,7 @@ def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
                 "credential_pool": {
                     "profile_count": 2,
                     "selectable_count": 2,
-                    "minimum_required": 3,
+                    "minimum_required": 1,
                     "minimum_ready": False,
                 },
             },
@@ -1287,7 +1290,7 @@ def test_health_route_refresh_replaces_stale_boot_counts_without_model_call(
     assert health_gateway.BOOT["subscription_auth"]["credential_pool"] == {
         "profile_count": 2,
         "selectable_count": 2,
-        "minimum_required": 3,
+        "minimum_required": 1,
         "minimum_ready": False,
     }
     assert "token" not in str(result).lower()
@@ -1304,7 +1307,7 @@ def test_health_route_refresh_reuses_one_provider_probe_within_cache_window(
             "configured_model_route": [
                 {
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-astra",
                     "role": "primary",
                 }
             ],
@@ -1314,7 +1317,7 @@ def test_health_route_refresh_reuses_one_provider_probe_within_cache_window(
     refreshed = [
         {
             "provider": "openai-codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "role": "primary",
             "available": False,
             "detail": {"logged_in": False, "usable": False},
@@ -1347,7 +1350,7 @@ def test_activation_cache_invalidation_makes_operator_repair_visible(monkeypatch
             "configured_model_route": [
                 {
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-astra",
                     "role": "primary",
                 }
             ],
@@ -1491,7 +1494,7 @@ def test_a_positively_broken_configured_fallback_is_visible(monkeypatch):
                 },
                 {
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-astra",
                     "role": "fallback-1",
                     "available": False,
                 },
@@ -1505,7 +1508,7 @@ def test_a_positively_broken_configured_fallback_is_visible(monkeypatch):
 
     assert payload["status"] == "degraded"
     assert payload["mode"] == "gateway_model_fallback_degraded"
-    assert "openai-codex/gpt-5.6-sol" in payload["note"]
+    assert "openai-codex/gpt-6-astra" in payload["note"]
 
 
 def test_k2_readiness_uses_the_installed_mcp_protocol_version():
@@ -3648,7 +3651,7 @@ def test_hosted_k2_instructions_reserve_the_final_and_use_explicit_refs_directly
     normalized = health_gateway._validate_hook_payload(payload)
     instructions = health_gateway._hosted_k2_run_instructions(normalized)
 
-    assert "hard end-to-end execution budget is 120 seconds" in instructions
+    assert "cumulative active execution budget is 120 seconds" in instructions
     assert "no more than 30 seconds (25% of the budget)" in instructions
     assert "begin composing the final answer no later than 90 seconds" in instructions
     assert "skill:nm-funnel-brief" in instructions
@@ -3682,7 +3685,7 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
 
     def fake_hermes(path, **kwargs):
         calls.append((path, kwargs))
-        return 202, {"run_id": "run_" + "a" * 32, "status": "started"}
+        return 202, {"run_id": "run_" + "a" * 32, "activeExecutionBudget": True, "status": "started"}
 
     monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
     monkeypatch.setattr(
@@ -3713,9 +3716,10 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
     assert calls[0][1]["payload"]["max_iterations"] == 4
     assert "25% of the budget" in calls[0][1]["payload"]["instructions"]
     assert "never trade the requested final for more discovery" in calls[0][1]["payload"]["instructions"]
-    assert scheduled == [
-        ("run_" + "a" * 32, "a-secure-shared-hook-token", 300)
-    ]
+    assert scheduled == []  # Native owner retains the active-time budget across waits.
+    assert calls[0][1]["idempotency_key"] == f"hlt-k2:{WRAPPER_RUN_ID}"
+    assert calls[0][1]["payload"]["provider_recovery"] is True
+    assert calls[0][1]["payload"]["execution_budget_seconds"] == 300
 
     # An exact replay returns the same wrapper receipt and never POSTs Hermes.
     replay = health_gateway.agent_hook(
@@ -4122,7 +4126,7 @@ def _preactivation_boot_state():
         "configured_model_route": [
             {
                 "provider": "openai-codex",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
                 "role": "primary",
             },
             {
@@ -4138,14 +4142,14 @@ def _preactivation_boot_state():
         "model_route_readiness": [
             {
                 "provider": "openai-codex",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
                 "role": "primary",
                 "available": True,
                 "detail": {
                     "credential_pool": {
                         "profile_count": 3,
                         "selectable_count": 3,
-                        "minimum_required": 3,
+                        "minimum_required": 1,
                         "minimum_ready": True,
                     }
                 },
@@ -4281,7 +4285,7 @@ def test_boot_starts_verified_preactivation_pack_and_keeps_activation_watcher(
     assert len(watchers) == 1
     assert watchers[0]["name"] == "k2-activation-watcher"
     assert health_gateway.BOOT["gateway_start_allowed"] is True
-    assert health_gateway.BOOT["authenticated_model_route"]["ready"] is False
+    assert health_gateway.BOOT["authenticated_model_route"]["ready"] is True
     assert health_gateway.BOOT["authenticated_model_route"]["servingReady"] is True
     assert health_gateway.BOOT["runtime_pack_applied"] is True
     assert health_gateway.BOOT["runtime_pack_activation"] == "offline"
@@ -4308,7 +4312,7 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
             "k2_context_plugin": {
                 "installed": True,
                 "enabled": True,
-                "version": "1.6.0",
+                "version": "1.7.0",
             },
             "mcp_mounted": ["katailyst2"],
             "deploy_commit": "commit-a",
@@ -4464,7 +4468,7 @@ def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypa
             "credential_pool": {
                 "profile_count": 3,
                 "selectable_count": 3,
-                "minimum_required": 3,
+                "minimum_required": 1,
                 "minimum_ready": True,
             },
         },
@@ -4487,7 +4491,7 @@ def test_activation_and_dispatch_share_the_exact_sol_pool_and_grok_gate(monkeypa
         (route["provider"], route["model"], route["role"])
         for route in gate["routes"]
     ] == [
-        ("openai-codex", "gpt-5.6-sol", "primary"),
+        ("openai-codex", "gpt-6-astra", "primary"),
         ("xai-oauth", "grok-4.6", "fallback-1"),
     ]
     assert gate["routes"][0]["detail"]["credential_pool"]["selectable_count"] == 3
@@ -4539,14 +4543,14 @@ def test_reviewed_fallback_keeps_serving_while_codex_redundancy_is_degraded():
     state["model_route_readiness"] = [
         {
             "provider": "openai-codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "role": "primary",
             "available": False,
             "detail": {
                 "credential_pool": {
                     "profile_count": 2,
                     "selectable_count": 0,
-                    "minimum_required": 3,
+                    "minimum_required": 1,
                     "minimum_ready": False,
                 }
             },
@@ -4568,7 +4572,7 @@ def test_reviewed_fallback_keeps_serving_while_codex_redundancy_is_degraded():
     assert gate["primaryReady"] is False
     assert gate["primaryRedundancyReady"] is False
     assert gate["fallbackReady"] is True
-    assert gate["ready"] is False
+    assert gate["ready"] is True
     assert gate["servingReady"] is True
     assert health_gateway._reviewed_model_route_can_serve(gate) is True
 
@@ -4614,7 +4618,7 @@ def test_runtime_readiness_keeps_primary_serving_when_redundancy_is_degraded():
     )
     assert observed["servingReady"] is True
     assert observed["redundancyReady"] is False
-    assert observed["ready"] is False
+    assert observed["ready"] is True
     assert observed["checks"]["primary_model_profile_ready"] is True
     assert observed["checks"]["fallback_model_profile_ready"] is False
     assert observed["checks"]["primary_model_pool_redundancy_ready"] is False
@@ -5298,8 +5302,9 @@ def test_health_names_a_degraded_primary_pool_without_calling_gateway_down(
     )
     assert payload["status"] == "degraded"
     assert payload["mode"] == "gateway_model_pool_degraded"
-    assert "only 1 of 3 managed Codex profiles" in payload["note"]
-    assert payload["readiness"]["ready"] is False
+    assert "required Codex profiles are selectable" in payload["note"]
+    assert "OpenRouter keeps work available" in payload["note"]
+    assert payload["readiness"]["ready"] is True
     assert (
         payload["readiness"]["checks"][
             "primary_model_pool_redundancy_ready"
@@ -5440,7 +5445,7 @@ def test_health_names_the_exact_k2_readiness_seam(
             "configured_model_route": [
                 {
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-astra",
                     "role": "primary",
                 },
                 {
@@ -5453,14 +5458,14 @@ def test_health_names_the_exact_k2_readiness_seam(
             "model_route_readiness": [
                 {
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-astra",
                     "role": "primary",
                     "available": True,
                     "detail": {
                         "credential_pool": {
                             "profile_count": 3,
                             "selectable_count": 3,
-                            "minimum_required": 3,
+                            "minimum_required": 1,
                             "minimum_ready": True,
                         }
                     },
@@ -6391,7 +6396,7 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
         "paused": ["nm-monday-brief"],
     }
     assert health_gateway.BOOT["cron_smoke"] == "retired-with-recurring-briefs"
-    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.6.0"
+    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.7.0"
 
 
 def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):
@@ -6516,7 +6521,7 @@ def _astra_boot_state(*, available=True):
 
 
 def test_astra_readiness_requires_no_subscription_pool_or_fallback(monkeypatch):
-    hg = _load_health_gateway()
+    hg = _load_health_gateway(api_only_policy=True)
     state = _astra_boot_state()
     hg.BOOT.update(state)
     monkeypatch.setattr(hg, "subscription_auth_readiness", lambda *_: pytest.fail("Astra queried OAuth"))
@@ -6536,7 +6541,7 @@ def test_astra_readiness_requires_no_subscription_pool_or_fallback(monkeypatch):
 
 
 def test_astra_refresh_updates_api_status_without_mislabeling_oauth(monkeypatch):
-    hg = _load_health_gateway()
+    hg = _load_health_gateway(api_only_policy=True)
     hg.BOOT.update(_astra_boot_state())
     hg.BOOT["openrouter_key_kind"] = "rejected"
     stored_subscription = {"logged_in": False, "rate_limited": True}
@@ -6559,7 +6564,7 @@ def test_astra_refresh_updates_api_status_without_mislabeling_oauth(monkeypatch)
 
 @pytest.mark.parametrize("kind", ["missing", "rejected", "provisioning", "unknown"])
 def test_astra_unusable_or_unproven_key_never_opens_dispatch(monkeypatch, kind):
-    hg = _load_health_gateway()
+    hg = _load_health_gateway(api_only_policy=True)
     state = _astra_boot_state()
     hg.BOOT.update(state)
     monkeypatch.setattr(hg, "openrouter_key_kind", lambda _: kind)
@@ -6574,7 +6579,7 @@ def test_astra_unusable_or_unproven_key_never_opens_dispatch(monkeypatch, kind):
 
 
 def test_astra_policy_rejects_old_sol_route_and_injected_fallback():
-    hg = _load_health_gateway()
+    hg = _load_health_gateway(api_only_policy=True)
     for state in [_preactivation_boot_state(), _astra_boot_state()]:
         if state["configured_model_route"][0]["provider"] == "openrouter":
             state["configured_model_route"].append({
@@ -6588,7 +6593,7 @@ def test_astra_policy_rejects_old_sol_route_and_injected_fallback():
 
 
 def test_astra_activation_and_readiness_accept_exact_api_route(monkeypatch):
-    hg = _load_health_gateway()
+    hg = _load_health_gateway(api_only_policy=True)
     state = _astra_boot_state()
     hg.BOOT.update(state)
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
@@ -6608,3 +6613,68 @@ def test_astra_activation_and_readiness_accept_exact_api_route(monkeypatch):
     unavailable = hg.activationz(authorization="Bearer a-secure-shared-hook-token")
     assert unavailable.status_code == 503
     assert json.loads(unavailable.body)["checks"]["primary_model_route_ready"] is False
+
+
+def test_provider_wait_polling_and_cancel_use_original_native_binding(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv('OPENCLAW_HQ_HOOK_TOKEN', 'a-secure-shared-hook-token')
+    monkeypatch.setenv('HLT_AGENT_RUN_LEDGER_PATH', str(tmp_path / 'wait.sqlite3'))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    native_id = 'run_' + 'f' * 32
+    calls = []
+    recovery = dict(state='waiting_for_provider', reason='rate_limit', retryAt=1900000000000,
+                    automaticResume=True, continuationRequired=False)
+    state = {'status': 'waiting_for_provider', 'recovery': recovery}
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path == '/v1/runs':
+            return 202, dict(run_id=native_id, status='started', nativeStop=True, activeExecutionBudget=True)
+        if path.endswith('/stop'):
+            state.clear(); state.update(status='stopping')
+        return 200, dict(run_id=native_id, **state)
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', api)
+    receipt = health_gateway.dispatch_agent_hook(_hook_payload())
+    assert receipt['stopProtocol'] == 'hermes_hook_v1'
+    _, waiting = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert waiting['status'] == 'waiting_for_provider' and waiting['recovery'] == recovery
+    status, stopping = health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID)
+    assert status == 202 and stopping['status'] == 'running'
+    assert stopping['cancellationRequested'] is True and stopping['terminal'] is False
+    assert [path for path, _ in calls if path.endswith('/stop')] == [f'/v1/runs/{native_id}/stop']
+    assert len([path for path, _ in calls if path == '/v1/runs']) == 1
+    state.clear(); state.update(status='completed', output='Saved artifact')
+    _, complete = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert complete['status'] == 'completed'
+    before = len(calls)
+    status, late_stop = health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID)
+    assert status == 200 and late_stop['status'] == 'completed'
+    assert len(calls) == before
+
+
+def test_cancel_does_not_infer_capability_for_legacy_admission(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv('HLT_AGENT_RUN_LEDGER_PATH', str(tmp_path / 'legacy.sqlite3'))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    monkeypatch.setattr(health_gateway, '_schedule_run_timeout', lambda *a: None)
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k: (202, {'run_id': 'run_' + 'e' * 32}))
+    receipt = health_gateway.dispatch_agent_hook(_hook_payload())
+    assert 'stopProtocol' not in receipt
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k: pytest.fail('unconfirmed Stop must not call native'))
+    status, _ = health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID)
+    assert status == 409
+
+
+@pytest.mark.parametrize("read_status", [404, 503])
+def test_stop_propagates_failed_reconciliation(monkeypatch, tmp_path, read_status):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv('HLT_AGENT_RUN_LEDGER_PATH', str(tmp_path / 'failed-stop-read.sqlite3'))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    native_id = 'run_' + 'd' * 32
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k:
+        (202, dict(run_id=native_id, nativeStop=True, activeExecutionBudget=True)))
+    health_gateway.dispatch_agent_hook(_hook_payload())
+    monkeypatch.setattr(health_gateway, '_hermes_api_json', lambda *a, **k:
+        (200, dict(run_id=native_id, status='stopping')))
+    error = dict(ok=False, runId=WRAPPER_RUN_ID, error='Status unavailable')
+    monkeypatch.setattr(health_gateway, 'read_agent_hook_run', lambda _id: (read_status, error))
+    assert health_gateway.stop_agent_hook_run(WRAPPER_RUN_ID) == (read_status, error)

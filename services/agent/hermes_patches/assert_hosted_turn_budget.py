@@ -14,21 +14,22 @@ def assert_hosted_turn_budget(root: Path) -> None:
     validate = next((n for n in calls if ast.unparse(n.func) == "validate_hosted_turn_limit"), None)
     assert validate is not None, "API must validate the explicit per-run ceiling before admission"
     assert ast.unparse(validate.args[0]) == "body.get('max_iterations')"
-    attach = next((n for n in calls if ast.unparse(n.func) == "attach_hosted_turn_limit"), None)
-    assert attach is not None, "API must attach the requested ceiling to its actual native agent"
-    assert [ast.unparse(arg) for arg in attach.args] == ["agent", "max_turns"]
-    create = next(n for n in calls if ast.unparse(n.func) == "self._create_agent")
-    execute = next(n for n in calls if ast.unparse(n.func) == "agent.run_conversation")
-    assert validate.lineno < create.lineno < attach.lineno < execute.lineno
-    assert any(
-        isinstance(n, ast.Try)
+    launch = next(n for n in calls if ast.unparse(n.func) == "_RunLaunch")
+    assert any(k.arg == "max_turns" and ast.unparse(k.value) == "max_turns" for k in launch.keywords)
+    assert validate.lineno < launch.lineno
+    execute_run = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "_execute_run")
+    assert any(isinstance(n, ast.Call) and ast.unparse(n.func) == "self._create_agent" for n in ast.walk(execute_run))
+    run_sync = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_run_agent_sync")
+    sync_calls = [n for n in ast.walk(run_sync) if isinstance(n, ast.Call)]
+    attach = next(n for n in sync_calls if ast.unparse(n.func) == "attach_hosted_turn_limit")
+    assert [ast.unparse(arg) for arg in attach.args] == ["agent", "run.max_turns"]
+    execute = next(n for n in sync_calls if ast.unparse(n.func) == "agent.run_conversation")
+    assert attach.lineno < execute.lineno
+    assert any(isinstance(n, ast.Try)
         and any(c is attach for statement in n.body for c in ast.walk(statement))
-        and any(
-            isinstance(c, ast.Call) and ast.unparse(c.func) == "agent.close"
-            for statement in n.finalbody for c in ast.walk(statement)
-        )
-        for n in ast.walk(run)
-    ), "A rejected runtime must still close the agent it created"
+        and any(isinstance(c, ast.Call) and ast.unparse(c.func) == "agent.close"
+                for statement in n.finalbody for c in ast.walk(statement))
+        for n in ast.walk(run_sync)), "A rejected runtime must still close its native agent"
 
 
 if __name__ == "__main__":

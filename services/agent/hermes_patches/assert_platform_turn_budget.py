@@ -39,17 +39,12 @@ def assert_platform_turn_budget(hermes_root: Path) -> None:
         {"agent": {"platform_max_turns": {"slack": "broken"}}}, "slack"
     ) == 24
 
-    call_sites = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_current_max_iterations_for_platform"
-    ]
+    owners = [hermes_root / "gateway/run_turn.py", hermes_root / "gateway/run_turn_runner.py"]
+    call_sites = [node for owner in owners for node in ast.walk(ast.parse(owner.read_text()))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "_current_max_iterations_for_platform"]
     assert len(call_sites) == 2
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: assert_platform_turn_budget.py HERMES_ROOT")
     assert_platform_turn_budget(Path(sys.argv[1]))

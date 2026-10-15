@@ -240,7 +240,7 @@ def _parse_number(match: re.Match[str], line: str) -> _Number | None:
     )
 
 
-def _masked_line(line: str) -> str:
+def _masked_line(line: str, citation_ids: frozenset[str] = frozenset()) -> str:
     """Remove common technical numeric forms that are not business claims."""
     def spaces(match: re.Match[str]) -> str:
         return " " * len(match.group(0))
@@ -252,13 +252,22 @@ def _masked_line(line: str) -> str:
     masked = _TIME_RE.sub(spaces, masked)
     masked = _VERSION_RE.sub(spaces, masked)
     masked = _HTTP_STATUS_RE.sub(spaces, masked)
+    # A numbered source marker is document structure, not a business count.
+    # Only exempt markers backed by an explicit URL in this same answer;
+    # arbitrary bracketed metrics and unresolved markers remain checked.
+    if citation_ids:
+        masked = re.sub(
+            r"\[(\d+)\]",
+            lambda match: spaces(match) if match.group(1) in citation_ids else match.group(0),
+            masked,
+        )
     # Markdown list ordinals describe structure, not a metric.
     masked = re.sub(r"^\s*\d+[.)](?=\s)", spaces, masked)
     return masked
 
 
-def _numbers_in_line(line: str) -> list[_Number]:
-    masked = _masked_line(line)
+def _numbers_in_line(line: str, citation_ids: frozenset[str] = frozenset()) -> list[_Number]:
+    masked = _masked_line(line, citation_ids)
     numbers: list[_Number] = []
     for match in _NUMBER_RE.finditer(masked):
         parsed = _parse_number(match, masked)
@@ -466,6 +475,39 @@ class NumericGroundingLedger:
         self._successful_tool_results = 0
         self._add_evidence(user_input)
 
+    def checkpoint(self) -> dict[str, Any]:
+        """Retain the current run's evidence across a native provider wait."""
+        with self._lock:
+            return {
+                "facts": [[kind, str(value), sorted(labels)] for (kind, value), labels in self._facts.items()],
+                "evidence_chars": self._evidence_chars,
+                "truncated": self._truncated,
+                "successful_tool_results": self._successful_tool_results,
+            }
+
+    @classmethod
+    def from_checkpoint(cls, snapshot: dict[str, Any]) -> "NumericGroundingLedger":
+        ledger = cls("")
+        facts = snapshot["facts"]
+        if not isinstance(facts, list) or len(facts) > MAX_EVIDENCE_FACTS:
+            raise ValueError("invalid numeric evidence checkpoint")
+        for kind, value, labels in facts:
+            number = Decimal(value)
+            if not number.is_finite() or not isinstance(kind, str) or not isinstance(labels, list):
+                raise ValueError("invalid numeric evidence fact")
+            if not all(isinstance(label, str) for label in labels):
+                raise ValueError("invalid numeric evidence label")
+            ledger._facts[(kind, number)] = set(labels)
+        for key in ("evidence_chars", "successful_tool_results"):
+            value = snapshot[key]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError("invalid numeric evidence accounting")
+            setattr(ledger, "_" + key, value)
+        if ledger._evidence_chars > MAX_EVIDENCE_CHARS:
+            raise ValueError("numeric evidence checkpoint exceeds its budget")
+        ledger._truncated = bool(snapshot["truncated"])
+        return ledger
+
     def _record_fact(self, number: _Number, labels: set[str]) -> None:
         key = _fact_key(number)
         if key not in self._facts and len(self._facts) >= MAX_EVIDENCE_FACTS:
@@ -660,6 +702,9 @@ class NumericGroundingLedger:
 
     def validate(self, final_response: Any) -> GroundingVerdict:
         text = str(final_response or "")
+        citation_ids = frozenset(re.findall(
+            r"(?m)^\s*\[(\d+)\]:?\s+https?://\S+\s*$", text
+        ))
         with self._lock:
             grounded = {key: set(labels) for key, labels in self._facts.items()}
             tool_results = self._successful_tool_results
@@ -699,7 +744,7 @@ class NumericGroundingLedger:
             if is_table and _METRIC_RE.search(stripped):
                 metric_table = True
 
-            line_numbers = _numbers_in_line(raw_line)
+            line_numbers = _numbers_in_line(raw_line, citation_ids)
             if not line_numbers:
                 continue
 

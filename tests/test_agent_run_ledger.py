@@ -116,3 +116,32 @@ def test_every_write_connection_carries_full_synchronous(tmp_path):
         assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
     finally:
         conn.close()
+
+
+def test_native_wait_and_stop_capability_survive_restart_without_redispatch(tmp_path):
+    path = tmp_path / 'agent-runs.sqlite3'
+    store = ledger_module.AgentRunLedger(path)
+    _admit(store)
+    store.claim_dispatch(WRAPPER_RUN_ID)
+    store.bind_provider(WRAPPER_RUN_ID, 'run_' + 'a' * 32, stop_protocol='hermes_hook_v1')
+    recovery = dict(state='waiting_for_provider', reason='rate_limit', retryAt=1900000000000,
+                    automaticResume=True, continuationRequired=False)
+    store.note_provider_status(WRAPPER_RUN_ID, 'waiting_for_provider', recovery)
+    restarted = ledger_module.AgentRunLedger(path)
+    record = restarted.get(WRAPPER_RUN_ID)
+    assert record['recovery'] == recovery
+    assert record['stop_protocol'] == 'hermes_hook_v1'
+    assert restarted.claim_dispatch(WRAPPER_RUN_ID) is False
+    restarted.note_provider_status(WRAPPER_RUN_ID, 'running')
+    assert restarted.get(WRAPPER_RUN_ID)['recovery'] is None
+    restarted.mark_terminal(WRAPPER_RUN_ID, 'completed', output='Saved artifact')
+    assert restarted.get(WRAPPER_RUN_ID)['recovery'] is None
+
+
+def test_terminal_exhaustion_does_not_claim_automatic_resumption(tmp_path):
+    store = ledger_module.AgentRunLedger(tmp_path / 'agent-runs.sqlite3')
+    _admit(store); store.claim_dispatch(WRAPPER_RUN_ID)
+    store.bind_provider(WRAPPER_RUN_ID, 'run_' + 'b' * 32)
+    wait = dict(state='waiting_for_provider', reason='billing', automaticResume=True, continuationRequired=False)
+    store.mark_terminal(WRAPPER_RUN_ID, 'failed', recovery=wait)
+    assert store.get(WRAPPER_RUN_ID)['recovery'] is None

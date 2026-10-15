@@ -28,14 +28,13 @@ import yaml
 # human, so we leave it alone rather than overwriting their work on next boot.
 GENERATED_BY = "hlt-render-boot"
 HOST_RUNTIME_CONTRACT_VERSION = "cleo-hermes-host.v2"
-K2_CONTEXT_PLUGIN_VERSION = "1.6.0"
+K2_CONTEXT_PLUGIN_VERSION = "1.7.0"
 
-# The owner selected Astra for Cleo, including paid API inference. Keep one
-# exact route across Slack and external runs; an unavailable Astra request
-# remains recoverable instead of silently answering through another model.
-# Existing subscription credentials stay in their native store, untouched.
-DEFAULT_PROVIDER = "openrouter"
-DEFAULT_MODEL = "openai/gpt-6-astra"
+# Use the existing owner-managed subscription first. Hermes owns native OAuth
+# refresh, quota cooldowns, and provider failover inside the same agent turn.
+# OpenRouter keeps work available while the subscription is exhausted.
+DEFAULT_PROVIDER = "openai-codex"
+DEFAULT_MODEL = "gpt-6-astra"
 DEFAULT_MAX_TOKENS = 32_768
 # A live Nursing Mastery funnel brief completed in 20 model iterations. Leaving
 # Hermes at its upstream 500-turn default gives one externally-triggered run
@@ -69,9 +68,10 @@ ALWAYS_LOADED_TOOLS = (
     "mcp__katailyst2__tool_execute",
     "read_spillover",
 )
-# Explicitly empty also clears a fallback left on the persistent Hermes disk.
-# Adding another model is a reviewed route change, never an env override.
-DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = ()
+# The explicit ladder replaces any older persistent fallback policy at boot.
+DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = (
+    {"provider": "openrouter", "model": "openai/gpt-6-astra"},
+)
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the

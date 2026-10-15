@@ -32,7 +32,10 @@ def assert_prompt_refresh_contract(hermes_root: Path) -> None:
         if isinstance(node, ast.FunctionDef)
         and node.name == "_stored_prompt_matches_runtime"
     )
-    namespace: dict[str, object] = {}
+    from agent.surface_switch import identity_line_value, runtime_host_value
+    from agent.runtime_cwd import resolve_agent_cwd
+    namespace: dict[str, object] = {"identity_line_value": identity_line_value,
+        "runtime_host_value": runtime_host_value, "resolve_agent_cwd": resolve_agent_cwd}
     exec(  # noqa: S102 - executes one AST node from the pinned local source
         compile(
             ast.Module(body=[function], type_ignores=[]),

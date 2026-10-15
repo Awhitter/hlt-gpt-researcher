@@ -305,12 +305,12 @@ def test_installer_idempotently_uses_native_jobs_and_keeps_retired_jobs(tmp_path
     monkeypatch.setitem(sys.modules, "grounding", SimpleNamespace(grounding_dir=lambda home: home / "grounding"))
     installed = fleet.install()
     assert not installed["failed"]
-    assert "ordinary Slack acceptance verifies Sol/high" in installed["canaryRoute"]["verifies"]
+    assert "recovery only" in installed["canaryRoute"]["verifies"]
     assert not fleet.install()["failed"]
     assert len(records) == 4
     assert records[0] == {"id": "retired", "name": "nm-monday-brief", "enabled": False}
     canary = next(row for row in records if "daily-canary" in row["name"])
-    assert canary["model"] == "grok-4.6" and canary["provider"] == "xai-oauth"
+    assert canary["model"] == "openai/gpt-6-astra" and canary["provider"] == "openrouter"
     assert canary["reasoning_effort"] == "high"
     assert canary["hlt_run_budget"] == budget.CANARY_BUDGET
     assert canary["prompt"] == fleet.CANARY_PROMPT
@@ -324,6 +324,14 @@ def test_installer_idempotently_uses_native_jobs_and_keeps_retired_jobs(tmp_path
     assert sum(row["no_agent"] for row in records[1:]) == 2
     assert all("schedule" not in fields for _, fields in updates)
     assert len(list((tmp_path / "scripts").glob("hlt-fleet-*.py"))) == 3
+
+    canary["enabled"] = False
+    canary["model"], canary["provider"] = "grok-4.6", "xai-oauth"
+    updates.clear()
+    assert not fleet.install()["failed"]
+    assert canary["enabled"] is False
+    assert canary["model"] == "openai/gpt-6-astra" and canary["provider"] == "openrouter"
+    assert all("schedule" not in fields and "enabled" not in fields for _, fields in updates)
 
 
 def test_reusing_image_for_another_agent_does_not_seed_cleo_jobs(monkeypatch):

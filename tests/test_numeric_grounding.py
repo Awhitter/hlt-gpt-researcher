@@ -418,3 +418,24 @@ def test_http_status_in_metric_paragraph_is_not_business_evidence():
     assert verdict.ok
     assert verdict.checked_claims == 0
     assert not ledger.validate("Application count: 504").ok
+
+
+def test_numbered_source_marker_is_not_a_nurse_or_ratio_claim():
+    ledger = grounding.NumericGroundingLedger("Explain pay transparency and suitability.")
+    answer = (
+        "Appropriate staffing matches patient needs with nurse competencies, "
+        "not simply an advertised staffing ratio.[3]\n\n"
+        "[3] https://www.aacn.org/nursing-excellence/healthy-work-environments"
+    )
+    verdict = ledger.validate(answer)
+    assert verdict.ok
+    assert verdict.checked_claims == 0
+
+
+def test_source_markers_do_not_exempt_real_or_unresolved_numeric_claims():
+    ledger = grounding.NumericGroundingLedger("Read nursing metrics.")
+    source = "\n[3]: https://example.org/evidence"
+    assert not ledger.validate("Nurse count: 45.[3]" + source).ok
+    assert not ledger.validate("Nurse count: [45]" + source).ok
+    assert not ledger.validate("Staffing ratio.[4]" + source).ok
+    assert not ledger.validate("Staffing ratio.[3]").ok

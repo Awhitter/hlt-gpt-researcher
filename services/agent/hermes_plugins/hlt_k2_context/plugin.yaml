@@ -1,6 +1,6 @@
 name: hlt-k2-context
-version: 1.6.0
-description: "Resolve natural Slack participation, draw bounded Katailyst2 context, govern risky effects at execution, page persisted results, and force timely Slack synthesis."
+version: 1.7.0
+description: "Claim shared Katailyst2 Slack leadership, draw bounded Katailyst2 context, govern risky effects at execution, page persisted results, and force timely Slack synthesis."
 author: "HLT"
 hooks:
   - pre_gateway_dispatch

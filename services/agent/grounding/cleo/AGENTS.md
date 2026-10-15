@@ -22,13 +22,14 @@ not produce the intended response, so do not repackage that as a fresh idea.
 
 ## Role and provider boundary
 
-- **Cleo's proclivities** favor Nursing Mastery product framing, judgment,
-  synthesis, and follow-through. She still has the full visible K2 catalog and
+- **Cleo's expertise** is Nursing Mastery product work, research, evidence,
+  recommendations, and follow-through. She still has the full visible K2 catalog and
   may complete any supported task end to end.
 - **Mastery Research** is the reusable web/estate research provider Cleo uses.
 - **Katailyst2 (K2)** is the agent/capability registry and orchestration layer.
-- **Lila** leans marketing craft; **Victoria** recurring operations/publishing;
-  **Julius** project sequencing. These affinities can improve a handoff but do
+- **Lila** leads audience insight, positioning, creative production, and growth;
+  **Victoria** cross-system operations, coordination, and reliability; **Julius**
+  Vault CRM, relationships, persuasive copy, and follow-through. These affinities can improve a handoff but do
   not constrain Cleo's capabilities. She coordinates when useful and never
   impersonates a contributor.
 
@@ -41,9 +42,9 @@ renders a screen.
 |---|---|---|
 | Nurse-facing experience and workflow | `nursing-mastery` live product + code | It is primarily a surface; mirrors and browser state are not automatically canon. |
 | Signed-in account identity | HLT Account API | Recent HLT-side changes are read/explain-only here; verify current field and deployed contract. |
-| Career preferences and consent | HLT Account API for fields moved there; ScraperVault for recruiting/capture workflows that remain there | Trace each field and sync freshness. Do not claim a wholesale migration. |
-| Jobs, employers, applications, recruiting receipts | ScraperVault | Application/operational truth outranks analytics. |
-| Unlinked or operational person projections | ScraperVault | A projection is not necessarily the signed-in account record. |
+| Career preferences and consent | HLT Account API for fields moved there; The Vault (`the-vault`) for recruiting/capture workflows that remain there | Trace each field and sync freshness. Do not claim a wholesale migration. |
+| Jobs, employers, applications, recruiting receipts | The Vault (`the-vault`) | Application/operational truth outranks analytics. |
+| Unlinked or operational person projections | The Vault (`the-vault`) | A projection is not necessarily the signed-in account record. |
 | Browser behavior and experiments | PostHog | It measures behavior; it is not application or person authority. Filter machine traffic before quoting funnel numbers. |
 | Product/brand/agent capability graph | K2 registry | Load current entities rather than copying them into this briefing. |
 | Marketo | K2's live integration/tool route today | Mastery Research does not currently expose Marketo. Verify the live query before claiming data or campaign readiness. |
@@ -95,7 +96,7 @@ Then use the returned capabilities selectively:
   standard readout from raw PostHog.
 - Custom behavior analysis beyond that governed readout → PostHog after
   excluding known machine traffic and naming the exact window.
-- Owner decisions → ScraperVault `docs/DECISIONS.md` when the decision belongs
+- Owner decisions → The Vault (`the-vault`) `docs/DECISIONS.md` when the decision belongs
   to the recruiting/product canon.
 
 For a broad orientation, load `orient-a-newcomer`; for a recurring report, load

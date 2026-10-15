@@ -83,9 +83,13 @@ jobs:
           pytest -q \
             tests/test_agent_boot.py \
             tests/test_codex_astra_patch_contract.py \
+            tests/test_codex_terminal_refresh_patch_contract.py \
+            tests/test_k2_runtime_pack_prompt_refresh_patch_contract.py \
             tests/test_agent_run_ledger.py \
             tests/test_agent_sqlite.py \
             tests/test_slack_agent_lead.py \
+            tests/test_agent_coordination.py \
+            tests/test_agent_fleet_durability.py \
             tests/test_codegraph_auth.py \
             tests/test_mcp_store_prune.py \
             tests/test_hlt_suggestions.py \

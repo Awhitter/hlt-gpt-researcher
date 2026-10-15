@@ -19,6 +19,7 @@ from .runtime_context import (
     is_substantive_mission,
     mission_idempotency_key,
 )
+from .coordination import claim_coordination, coordination_context
 from .slack_agent_lead import (
     ROSTER_NONPARTICIPANT_REFS,
     is_human_authored_message,
@@ -437,17 +438,21 @@ def _pre_tool_call(
     effect_decision = effect_policy_decision(tool_name, args)
     if effect_decision is not None:
         return effect_decision
+    from hlt_artifact_run_context import artifact_directive
+    artifact_decision = artifact_directive(tool_name, args)
+    if artifact_decision is not None and artifact_decision.get("action") == "block":
+        return artifact_decision
     key = _tool_budget_key(turn_id=turn_id, session_id=session_id)
     round_id = str(api_request_id or tool_call_id or "").strip()
     if not key or not round_id:
-        return None
+        return artifact_decision
     with _TOOL_BUDGET_LOCK:
         state = _TOOL_BUDGETS.get(key)
         if state is None:
-            return None
+            return artifact_decision
         rounds = state["rounds"]
         if round_id in rounds:
-            return None
+            return artifact_decision
         if len(rounds) >= SLACK_TOOL_ROUND_LIMIT:
             blocked_rounds = state["blocked_rounds"]
             if round_id not in blocked_rounds:
@@ -460,7 +465,7 @@ def _pre_tool_call(
                 )
             return {"action": "block", "message": _TOOL_BUDGET_BLOCK_MESSAGE}
         rounds.add(round_id)
-    return None
+    return artifact_decision
 
 
 def _spillover_body(value: Any) -> tuple[str, str] | None:
@@ -772,6 +777,53 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, Any] | None:
             channel_id=channel_id,
             message_ts=message_ts,
         )
+        coordination = None
+        transfer_lead_ref = None
+        if decision.allows_dispatch:
+            participant_refs = decision.recognized_mentions or thread_participants or (local_agent_ref,)
+            if decision.channel_kind == "dm" and local_agent_ref not in participant_refs:
+                # Addressing this app is itself an invitation, even when the
+                # human mentions a collaborator in the DM's message text.
+                participant_refs = (*participant_refs, local_agent_ref)
+            if raw_message.get("thread_ts") and len(decision.recognized_mentions) == 1:
+                mentioned_ref = decision.recognized_mentions[0]
+                mentioned_id = roster.by_agent_ref[mentioned_ref].slack_user_id
+                if str(raw_message.get("text") or "").strip() == f"<@{mentioned_id}>":
+                    # A bare human mention transfers the existing thread. K2
+                    # must supersede its prior decision before either lead
+                    # can claim completion; rewritten prompt prose cannot do it.
+                    transfer_lead_ref = mentioned_ref
+            coordination = claim_coordination(
+                os.getenv("KATAILYST2_MCP_URL", "").strip(),
+                os.getenv("KATAILYST2_MCP_TOKEN", "").strip(),
+                {
+                    "callerAgentRef": local_agent_ref,
+                    "continuesThreadRequest": bool(
+                        raw_message.get("thread_ts")
+                        and (transfer_lead_ref or (thread_participants and not decision.recognized_mentions))
+                    ),
+                    **({"explicitLeadSlackUserId": roster.by_agent_ref[transfer_lead_ref].slack_user_id}
+                       if transfer_lead_ref else {}),
+                    "source": {
+                        "platform": "slack", "teamId": workspace_id,
+                        "channelId": channel_id, "threadTs": thread_ts,
+                        "messageTs": message_ts,
+                        "humanUserId": str(raw_message.get("user") or ""),
+                        "actorKind": "human",
+                    },
+                    "mission": str(raw_message.get("text") or getattr(event, "text", "") or ""),
+                    "participantSlackUserIds": [
+                        roster.by_agent_ref[ref].slack_user_id
+                        for ref in participant_refs if ref in roster.by_agent_ref
+                    ],
+                },
+            )
+            receipt["coordination"] = {
+                key: coordination.get(key) for key in (
+                    "coordinationId", "revision", "leadAgentRef", "callerRole", "mayRespond", "mayComplete"
+                )
+            }
+            receipt["selectedAgentRef"] = coordination.get("leadAgentRef")
     except Exception as exc:  # noqa: BLE001 - hook faults must fail closed
         failure = {
             "schema": RECEIPT_SCHEMA,
@@ -828,15 +880,17 @@ def _pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, Any] | None:
 
     logger.info("%s %s", RECEIPT_SCHEMA, json.dumps(receipt, sort_keys=True))
     if decision.allows_dispatch:
-        if decision.recognized_mentions:
-            recovered = _bare_transfer_rewrite(
-                event, selected_agent_ref=decision.selected_agent_ref
-            )
-            if recovered is not None:
-                return recovered
-        # None means normal dispatch without short-circuiting a later policy
-        # hook; Hermes stops evaluating hooks after an explicit allow result.
-        return None
+        if not coordination or not coordination["mayRespond"]:
+            return {"action": "skip", "reason": "coordination_observer"}
+        recovered = _bare_transfer_rewrite(
+            event, selected_agent_ref=coordination.get("leadAgentRef")
+        ) if transfer_lead_ref else None
+        text = recovered["text"] if recovered else str(getattr(event, "text", "") or "")
+        context = recovered["channel_context"] if recovered else str(getattr(event, "channel_context", "") or "")
+        return {
+            "action": "rewrite", "text": text,
+            "channel_context": "\n\n".join(part for part in (context, coordination_context(coordination)) if part),
+        }
     return {"action": "skip", "reason": decision.reason}
 
 
