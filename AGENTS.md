@@ -191,7 +191,7 @@ Katailyst registry: this service is registered as the tier-1 capability
 amend with `scripts/katailyst_mcp.py` + `scripts/katailyst_capability.md`.
 
 Render sidecars: `hlt-codegraph` runs on the standard plan (gitnexus analyze
-OOMs on 512MB) with a 10GB disk at `/data`; boot reindex runs in the
+OOMs on 512MB) with a 20GB disk at `/data`; boot reindex runs in the
 background so the port binds immediately. The second sidecar runs the selected
 HLT agent (`services/agent/`, 5GB disk). Production currently selects **Cleo**,
 the Nursing Mastery product-owner facilitator; see `services/agent/README.md`.
