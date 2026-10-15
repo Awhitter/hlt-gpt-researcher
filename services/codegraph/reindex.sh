@@ -137,8 +137,12 @@ reclaim_git_space() {
   # first clone's snapshot forever; nothing here reads them.
   git -C "$dest" for-each-ref --format='delete %(refname)' refs/remotes \
     | git -C "$dest" update-ref --no-deref --stdin >/dev/null 2>&1 || true
-  git -C "$dest" reflog expire --expire=now --all >/dev/null 2>&1 || true
-  git -C "$dest" gc --prune=now --quiet >/dev/null 2>&1 || true
+  # The refresh lock cannot coordinate an operator's independent Git writer.
+  # Keep normal grace periods so its newly written, not-yet-referenced objects
+  # survive cleanup. If older garbage cannot free enough room, retain the data.
+  git -C "$dest" -c gc.reflogExpire=90.days.ago \
+    -c gc.reflogExpireUnreachable=30.days.ago \
+    gc --prune=2.weeks.ago --quiet >/dev/null 2>&1 || true
 }
 
 # A run that dies part way stays "running"; /health treats an old one as failed.

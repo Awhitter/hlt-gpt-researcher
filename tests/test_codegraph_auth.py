@@ -84,13 +84,18 @@ def test_only_health_is_public():
     assert server.auth_failure("/verify-source", "", TOKEN) == (401, "Unauthorized")
 
 
-def test_public_health_names_no_repositories():
+def test_public_health_names_no_repositories(tmp_path, monkeypatch):
     """Index truth belongs on /readiness, behind the token.
 
     Asserts on the actual response body rather than the source text — the
     first version of this test read the function source and tripped over the
     word "repositories" in its own docstring.
     """
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    (tmp_path / ".hlt-reindex-status").write_text(
+        f"ok {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+    )
     payload = json.loads(asyncio.run(server.health_check(None)).body)
 
     assert payload == {"status": "ok", "service": "hlt-codegraph"}
@@ -140,7 +145,7 @@ def test_public_health_says_degraded_on_a_full_disk_or_a_stuck_run(tmp_path, mon
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     status.write_text(f"running {now}\n")
-    assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "ok"
+    assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "degraded"
 
 
 def _run_reindex(repos: Path, tmp_path: Path, **env: str) -> subprocess.CompletedProcess:
@@ -345,6 +350,12 @@ def test_cleanup_refreshes_source_and_preserves_the_saved_graph(tmp_path):
     index.mkdir()
     (index / "graph.db").write_text("saved graph")
     garbage = subprocess.check_output(["git", "-C", str(checkout), "hash-object", "-w", "--stdin"], input=b"unreferenced cached object").decode().strip()
+    # Only genuinely old unreachable objects may be reclaimed. A Git writer
+    # can have just written a blob without having attached it to a ref yet.
+    old_object = checkout / ".git" / "objects" / garbage[:2] / garbage[2:]
+    old_time = time.time() - 31 * 24 * 3600
+    os.utime(old_object, (old_time, old_time))
+    in_flight = subprocess.check_output(["git", "-C", str(checkout), "hash-object", "-w", "--stdin"], input=b"another writer's new object").decode().strip()
     (upstream / "new-source.txt").write_text("new source")
     subprocess.run(["git", "-C", str(upstream), "add", "."], check=True)
     subprocess.run(["git", "-C", str(upstream), "commit", "-qm", "new source"], check=True)
@@ -355,6 +366,7 @@ def test_cleanup_refreshes_source_and_preserves_the_saved_graph(tmp_path):
     assert result.returncode == 0, result.stderr
     assert subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"]) == expected
     assert subprocess.run(["git", "-C", str(checkout), "cat-file", "-e", garbage], capture_output=True).returncode != 0
+    assert subprocess.run(["git", "-C", str(checkout), "cat-file", "-e", in_flight], capture_output=True).returncode == 0
     assert (index / "graph.db").read_text() == "saved graph"
     assert (checkout / ".hlt-source-ready-at").exists()
     assert (repos / ".hlt-reindex-status").read_text().startswith("ok ")
@@ -393,6 +405,28 @@ def test_public_health_stays_available_when_its_check_fails(monkeypatch):
     assert response.status_code == 200
     assert json.loads(response.body)["status"] == "degraded"
     assert b"private repository path" not in response.body
+
+
+def test_public_health_is_unverified_without_refresh_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    response = asyncio.run(server.health_check(None))
+    assert response.status_code == 200
+    assert json.loads(response.body)["status"] == "degraded"
+
+
+def test_starting_retry_does_not_claim_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    status = tmp_path / ".hlt-reindex-status"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for state in ("failed", "running"):
+        status.write_text(f"{state} {now}\n")
+        response = asyncio.run(server.health_check(None))
+        assert response.status_code == 200
+        assert json.loads(response.body)["status"] == "degraded"
+    status.write_text(f"ok {now}\n")
+    assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "ok"
 
 
 def _create_source_repo(path: Path) -> str:

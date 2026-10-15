@@ -637,7 +637,7 @@ def _index_problem() -> str | None:
     try:
         state, stamp, *_ = (Path(REPOS_DIR) / ".hlt-reindex-status").read_text(encoding="utf-8").split()
     except FileNotFoundError:
-        return None
+        return "No completed re-index has been verified; answers may be stale."
     except (OSError, ValueError):
         return "Index health could not be checked; answers may be stale."
     if state == "failed":
@@ -647,8 +647,10 @@ def _index_problem() -> str | None:
     except ValueError:
         return "Index health could not be checked; answers may be stale."
     age = datetime.now(timezone.utc) - started
-    if state == "running" and age > timedelta(hours=3):
-        return "The last re-index did not finish; answers may be stale."
+    if state == "running":
+        if age > timedelta(hours=3):
+            return "The last re-index did not finish; answers may be stale."
+        return "A re-index is in progress; freshness has not been verified."
     if state == "ok" and age > timedelta(hours=INDEX_STALE_HOURS):
         return "The last re-index is stale; answers may be stale."
     if state not in {"running", "ok"}:

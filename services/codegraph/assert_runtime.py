@@ -44,8 +44,15 @@ console.log(JSON.stringify({gitnexus: pkg.version, treeSitter: 'loaded', cliBin:
     versions = {name: metadata.version(name) for name in
                 ("mcp", "starlette", "uvicorn", "python-dotenv")}
     assert versions["mcp"].startswith("1."), versions
-    public_health = json.loads(asyncio.run(server.health_check(None)).body)
-    assert public_health == {"status": "ok", "service": "hlt-codegraph"}
+    response = asyncio.run(server.health_check(None))
+    public_health = json.loads(response.body)
+    # The build image has no completed refresh. Liveness must work without
+    # misrepresenting its empty index as recovered/ready.
+    assert response.status_code == 200
+    assert public_health == {
+        "status": "degraded", "service": "hlt-codegraph",
+        "reason": "No completed re-index has been verified; answers may be stale.",
+    }
     assert server.auth_failure("/health", "", None) is None
     for path in ("/", "/mcp", "/readiness", "/verify-source"):
         assert server.auth_failure(path, "", None)[0] == 503

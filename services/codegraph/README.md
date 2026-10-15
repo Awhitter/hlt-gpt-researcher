@@ -37,7 +37,7 @@ file before making a behavior claim.
 
 | Path | Auth | Returns |
 |------|------|---------|
-| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh failed/stalled, or its status is stale/unreadable; no repository identities |
+| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh is running/failed/stalled, or its status is missing/stale/unreadable; no repository identities |
 | `/readiness` | bearer | per-repo index status, branch, commit SHA, `gitnexus_home` |
 | `/verify-source` | bearer | validates one repo/path/full-commit tuple in the private checkout |
 | `/mcp` | bearer | the tool surface |
@@ -70,8 +70,11 @@ hide a failed refresh. Partial failure returns a nonzero exit code after trying
 the other configured repositories.
 
 Cleanup never deletes a checkout, `.git`, `.gitnexus`, or Git lock files. It expires
-reflogs, removes unused remote-tracking refs and prunes cached objects only for
-configured, non-frozen checkouts being refreshed. If a full disk prevents Git GC,
+old reflogs, removes unused remote-tracking refs and prunes cached objects only for
+configured, non-frozen checkouts being refreshed. Git cleanup retains the normal
+90/30-day reflog and two-week object grace periods to protect independent writers;
+it never uses immediate pruning. A retry remains unverified until it finishes;
+starting it cannot erase a degraded health signal. If a full disk prevents Git GC,
 or a checkout is incomplete, the run stops refreshing that repository and keeps
 the last available data for an operator. Do not remove an index to make space:
 rebuilding it can exceed this service's memory limit.
