@@ -1085,10 +1085,10 @@ def install(
     if extra_public_prefixes:
         public_prefixes.extend(extra_public_prefixes)
 
-    # 1. /health — used by Railway healthcheckPath (see railway.toml).
+    # 1. /health — local liveness for Railway and the estate monitor. Dependency
+    # probes and corpus scans belong only to authenticated /api/hlt/readiness.
     @app.get("/health", tags=["hlt"])
     def health():  # noqa: D401
-        readiness = get_hlt_readiness()
         return {
             "status": "ok",
             "service": "gpt-researcher-api",
@@ -1096,10 +1096,6 @@ def install(
             "deploy_marker": os.getenv("HLT_DEPLOY_MARKER", "local"),
             "observability": {
                 "langfuse": get_langfuse_runtime_status(),
-            },
-            "integrations": {
-                "status": readiness["status"],
-                "summary": readiness["summary"],
             },
         }
 

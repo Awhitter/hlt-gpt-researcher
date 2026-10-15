@@ -426,6 +426,31 @@ def test_detailed_report_applies_scraper_override(monkeypatch):
     assert report.gpt_researcher.cfg.scraper == "firecrawl"
 
 
+def test_health_does_not_evaluate_dependency_readiness(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    monkeypatch.setenv("API_AUTH_KEY", "api-secret")
+    calls = []
+
+    def unavailable_readiness():
+        calls.append(True)
+        raise TimeoutError("Codegraph unavailable")
+
+    monkeypatch.setattr(hlt_extensions, "get_hlt_readiness", unavailable_readiness)
+    app = FastAPI()
+    hlt_extensions.install(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+    assert health.json()["service"] == "gpt-researcher-api"
+    assert calls == []
+    assert client.get("/api/hlt/readiness").status_code == 401
+    assert calls == []
+    assert client.get("/api/hlt/readiness", headers={"X-API-Key": "api-secret"}).status_code == 500
+    assert calls == [True]
+
+
 def test_hlt_readiness_routes_are_sanitized_and_authenticated(monkeypatch):
     clear_hlt_env(monkeypatch)
     set_firecrawl_import(monkeypatch, True)
@@ -440,7 +465,7 @@ def test_hlt_readiness_routes_are_sanitized_and_authenticated(monkeypatch):
     health = client.get("/health")
     assert health.status_code == 200
     health_body = health.json()
-    assert health_body["integrations"]["status"] in {"partial", "needs_config"}
+    assert "integrations" not in health_body
     assert health_body["observability"]["langfuse"]["configured"] is False
     assert "api-secret" not in json.dumps(health_body)
 
