@@ -196,6 +196,12 @@ background so the port binds immediately. The second sidecar runs the selected
 HLT agent (`services/agent/`, 5GB disk). Production currently selects **Cleo**,
 the Nursing Mastery product-owner facilitator; see `services/agent/README.md`.
 
+Codegraph refreshes serialize through a filesystem lock, preserve cached source
+and graph indexes when disk cleanup cannot recover headroom, and report failures
+without making public liveness fail. `/health` carries only generic warnings;
+authenticated `/readiness` owns repository/commit truth. Never infer recovered
+indexes from HTTP 200 alone. See `services/codegraph/README.md` for recovery proof.
+
 **Naming:** Cleo is the current agent. "Hermes" is only the upstream runtime we
 embed (NousResearch hermes-agent) — never the agent's name. `agent:hermes` in
 Katailyst2 is the fleet orchestrator persona, a different thing entirely. The
