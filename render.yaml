@@ -16,7 +16,7 @@ services:
     disk:
       name: codegraph-data
       mountPath: /data
-      sizeGB: 10
+      sizeGB: 20
     envVars:
       - key: PORT
         value: "8080"
