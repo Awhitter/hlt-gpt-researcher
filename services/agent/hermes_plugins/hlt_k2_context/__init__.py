@@ -26,6 +26,7 @@ from .slack_agent_lead import (
     select_slack_agent_lead,
 )
 from .slack_lead_ledger import RECEIPT_SCHEMA, SlackLeadLedger
+from .reply_outcome import note_turn_started, report_in_background, reply_outcome_record
 
 logger = logging.getLogger(__name__)
 
@@ -856,6 +857,7 @@ def _pre_llm_call(
     this mission without slowly clogging the agent's durable memory.
     """
     mission = str(user_message or "").strip()
+    note_turn_started(str(turn_id or ""))
     if str(platform or "").strip().lower() == "slack":
         _start_slack_tool_budget(turn_id=turn_id, session_id=session_id)
     if scheduled_run_budget:
@@ -909,6 +911,24 @@ def _pre_llm_call(
     )
     context = result.get("context")
     return {"context": K2_TOOL_CONTEXT + ("\n" + context if isinstance(context, str) and context else "")}
+
+
+def _on_session_end(**turn: Any) -> None:
+    """Put each finished Slack/API reply in K2's run ledger (reply_outcome.py)."""
+    record = reply_outcome_record(_agent_ref(), **{
+        key: turn.get(key)
+        for key in (
+            "session_id", "turn_id", "completed", "failed", "interrupted",
+            "turn_exit_reason", "model", "platform",
+        )
+        if key in turn
+    })
+    if record is not None:
+        report_in_background(
+            os.getenv("KATAILYST2_MCP_URL", "").strip(),
+            os.getenv("KATAILYST2_MCP_TOKEN", "").strip(),
+            record,
+        )
 
 
 def register(ctx: Any) -> None:
@@ -967,3 +987,4 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_llm_call", _pre_llm_call)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
+    ctx.register_hook("on_session_end", _on_session_end)

@@ -18,7 +18,7 @@ irreversible effects. See SLACK_TOOLSETS and the hlt-k2-context effect policy.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +28,14 @@ import yaml
 # human, so we leave it alone rather than overwriting their work on next boot.
 GENERATED_BY = "hlt-render-boot"
 HOST_RUNTIME_CONTRACT_VERSION = "cleo-hermes-host.v2"
-K2_CONTEXT_PLUGIN_VERSION = "1.6.0"
+K2_CONTEXT_PLUGIN_VERSION = "1.7.0"
 
-# The owner selected Astra for Cleo, including paid API inference. Keep one
-# exact route across Slack and external runs; an unavailable Astra request
-# remains recoverable instead of silently answering through another model.
-# Existing subscription credentials stay in their native store, untouched.
+# The reviewed default route, used when Cleo's K2 record names no model route
+# (or one outside APPROVED_K2_MODEL_ROUTES below). The owner selected Astra for
+# Cleo on 13 Sep, including paid API inference. One exact route serves Slack and
+# external runs; an unavailable request remains recoverable instead of silently
+# answering through another model. Subscription credentials stay in their
+# native store, untouched.
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = "openai/gpt-6-astra"
 DEFAULT_MAX_TOKENS = 32_768
@@ -72,6 +74,35 @@ ALWAYS_LOADED_TOOLS = (
 # Explicitly empty also clears a fallback left on the persistent Hermes disk.
 # Adding another model is a reviewed route change, never an env override.
 DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = ()
+
+# Cleo's model order is a setting on her Katailyst2 record
+# (``policies.routing.modelRoute``: ``{"primary": "openai/gpt-5.6-sol",
+# "fallbacks": ["xai/grok-4.6", "openrouter/openai/gpt-6.1-sol"]}``), read once
+# at boot; a change there takes one restart. K2 chooses the order; which routes
+# exist stays reviewed here, matching openclaw-hq's ops/model-routing-policy.json
+# for the OpenClaw agents. A route K2 names outside this list is refused with a
+# loud log and the constants above serve instead, so a typo in K2 never stops a
+# boot. Clearing modelRoute in K2 is the rollback.
+#
+# K2 names routes by the OpenClaw host's provider prefix; Hermes names the same
+# credentials differently. ChatGPT and Grok are the owner's subscriptions
+# (Hermes' managed Codex pool and xAI OAuth); OpenRouter is paid API inference.
+K2_ROUTE_PROVIDERS: dict[str, str] = {
+    "openai": "openai-codex",
+    "xai": "xai-oauth",
+    "openrouter": "openrouter",
+}
+APPROVED_K2_MODEL_ROUTES: frozenset[str] = frozenset(
+    {
+        "openai/gpt-5.6-sol",
+        "xai/grok-4.6",
+        # Owner, 15 Oct 2026: the paid last resort after both subscriptions.
+        "openrouter/openai/gpt-6.1-sol",
+        # The reviewed default above, so K2 can also name it explicitly.
+        "openrouter/openai/gpt-6-astra",
+    }
+)
+MAX_K2_FALLBACKS = 6
 
 # Registry identity is deliberately separate from the runtime name. Cleo's
 # durable capabilities and graph links live in K2; this compact pointer lets the
@@ -258,6 +289,118 @@ def fallback_providers(
         dict(route)
         for route in DEFAULT_FALLBACK_PROVIDERS
         if (route["provider"].lower(), route["model"].lower()) != primary
+    ]
+
+
+def default_model_route_selection(
+    *, source: str = "reviewed_default", reason: str = "", k2_route: list[str] | None = None
+) -> dict[str, Any]:
+    """The reviewed constants, labelled with why they are the route."""
+    return {
+        "source": source,
+        "provider": DEFAULT_PROVIDER,
+        "model": DEFAULT_MODEL,
+        "fallbacks": fallback_providers(
+            {}, primary_provider=DEFAULT_PROVIDER, primary_model=DEFAULT_MODEL
+        ),
+        "k2Route": list(k2_route or []),
+        "reason": reason,
+    }
+
+
+def _hermes_route(ref: str) -> dict[str, str]:
+    prefix, _, model = ref.partition("/")
+    return {"provider": K2_ROUTE_PROVIDERS[prefix], "model": model}
+
+
+def pack_model_route(runtime_pack: Any) -> Any:
+    """The route a K2 runtime pack names (``policies.routing.modelRoute``)."""
+    if not isinstance(runtime_pack, Mapping):
+        return None
+    policies = runtime_pack.get("policies")
+    routing = policies.get("routing") if isinstance(policies, Mapping) else None
+    if isinstance(routing, Mapping) and routing.get("modelRoute") is not None:
+        return routing.get("modelRoute")
+    # The summary form lifts it to the top level.
+    return runtime_pack.get("modelRoute")
+
+
+def resolve_model_route(model_route: Any) -> dict[str, Any]:
+    """Map K2's model route onto Hermes, refusing anything unreviewed."""
+    if model_route is None:
+        return default_model_route_selection(
+            reason="Katailyst2 names no model route for this agent"
+        )
+    fields = model_route if isinstance(model_route, Mapping) else {}
+    primary = fields.get("primary")
+    raw_fallbacks = fields.get("fallbacks")
+    if raw_fallbacks is None:
+        raw_fallbacks = []
+    if not isinstance(primary, str) or not primary.strip() or not isinstance(
+        raw_fallbacks, list
+    ):
+        return default_model_route_selection(
+            source="reviewed_default_k2_refused",
+            reason="Katailyst2 model route is not {primary, fallbacks[]}",
+        )
+    route = [primary.strip()] + [
+        entry.strip() if isinstance(entry, str) else repr(entry)
+        for entry in raw_fallbacks
+    ]
+    problem = ""
+    unapproved = [entry for entry in route if entry not in APPROVED_K2_MODEL_ROUTES]
+    if unapproved:
+        problem = "routes not reviewed for this host: " + ", ".join(unapproved)
+    elif len(set(route)) != len(route):
+        problem = "the route repeats an entry"
+    elif len(route) - 1 > MAX_K2_FALLBACKS:
+        problem = f"more than {MAX_K2_FALLBACKS} fallbacks"
+    if problem:
+        return default_model_route_selection(
+            source="reviewed_default_k2_refused",
+            reason=f"Katailyst2 model route refused: {problem}"[:300],
+            k2_route=route,
+        )
+    hermes = [_hermes_route(entry) for entry in route]
+    return {
+        "source": "katailyst2",
+        "provider": hermes[0]["provider"],
+        "model": hermes[0]["model"],
+        "fallbacks": hermes[1:],
+        "k2Route": route,
+        "reason": "",
+    }
+
+
+def expected_model_route(selection: Any = None) -> list[dict[str, str]]:
+    """The exact route readiness must find, re-checked against the allowlist.
+
+    A boot state without a K2 selection (or one that no longer validates)
+    expects the reviewed constants, so a stale or hand-edited snapshot can never
+    widen what the readiness contract accepts.
+    """
+    resolved = default_model_route_selection()
+    if isinstance(selection, Mapping) and selection.get("source") == "katailyst2":
+        k2_route = [str(entry) for entry in (selection.get("k2Route") or [])]
+        if k2_route:
+            candidate = resolve_model_route(
+                {"primary": k2_route[0], "fallbacks": k2_route[1:]}
+            )
+            if candidate["source"] == "katailyst2":
+                resolved = candidate
+    return labelled_route(resolved["provider"], resolved["model"], resolved["fallbacks"])
+
+
+def labelled_route(
+    provider: str, model: str, fallbacks: Iterable[Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """A route as readiness names it: primary, then fallback-1, fallback-2, ..."""
+    return [
+        {"provider": provider, "model": model, "role": "primary"},
+        *[
+            {**dict(route), "role": f"fallback-{index}"}
+            for index, route in enumerate(fallbacks, start=1)
+        ],
     ]
 
 
@@ -449,8 +592,11 @@ def api_server_toolsets(servers: Mapping[str, Any]) -> list[str]:
 
 
 def build_config(
-    env: Mapping[str, str], grounding_dir: str = DEFAULT_GROUNDING_DIR
+    env: Mapping[str, str],
+    grounding_dir: str = DEFAULT_GROUNDING_DIR,
+    model_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    selection = model_selection or default_model_route_selection()
     servers = build_mcp_servers(env)
     registry_ref = agent_ref(env)
     host_runtime_lane = runtime_lane(env)
@@ -479,8 +625,8 @@ def build_config(
             "attachment listed in that block's artifacts array; never invent one."
         )
 
-    model_provider = DEFAULT_PROVIDER
-    model_name = DEFAULT_MODEL
+    model_provider = str(selection["provider"])
+    model_name = str(selection["model"])
 
     config: dict[str, Any] = {
         "_generated_by": GENERATED_BY,
@@ -680,9 +826,7 @@ def build_config(
 
     # An explicit empty list clears any cached recovery chain from an older
     # generated config; omission can preserve it in native consumers.
-    config["fallback_providers"] = fallback_providers(
-        env, primary_provider=model_provider, primary_model=model_name
-    )
+    config["fallback_providers"] = [dict(route) for route in selection["fallbacks"]]
 
     if servers:
         config["mcp_servers"] = servers
@@ -699,34 +843,38 @@ def _existing_is_operator_owned(path: Path) -> bool:
 
 
 def render(
-    env: Mapping[str, str] | None = None, home: str | os.PathLike[str] | None = None
+    env: Mapping[str, str] | None = None,
+    home: str | os.PathLike[str] | None = None,
+    model_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write config.yaml and return a secret-free summary for ``/health``."""
     env = os.environ if env is None else env
     home_path = Path(home or _clean(env, "HERMES_HOME") or "/data/hermes")
     home_path.mkdir(parents=True, exist_ok=True)
     path = home_path / "config.yaml"
+    selection = model_selection or default_model_route_selection()
 
-    config = build_config(env, grounding_dir=str(home_path / "grounding"))
+    config = build_config(
+        env, grounding_dir=str(home_path / "grounding"), model_selection=selection
+    )
     servers: dict[str, Any] = config.get("mcp_servers", {})
     slack_display = config["display"]["platforms"]["slack"]
     summary: dict[str, Any] = {
         "config_path": str(path),
         "model": config["model"]["default"],
         "model_provider": config["model"]["provider"],
-        "configured_model_route": [
-            {
-                "provider": config["model"]["provider"],
-                "model": config["model"]["default"],
-                "role": "primary",
-            },
-            *[
-                {**route, "role": f"fallback-{index}"}
-                for index, route in enumerate(
-                    config.get("fallback_providers", []), start=1
-                )
-            ],
-        ],
+        "configured_model_route": labelled_route(
+            config["model"]["provider"],
+            config["model"]["default"],
+            config.get("fallback_providers", []),
+        ),
+        # Where the route came from: katailyst2 (the agent's record),
+        # reviewed_default (K2 names none), or reviewed_default_k2_refused.
+        "model_route_selection": {
+            "source": selection["source"],
+            "k2Route": list(selection.get("k2Route") or []),
+            "reason": selection.get("reason") or "",
+        },
         "max_tokens": config["model"]["max_tokens"],
         "reasoning_effort": config["agent"]["reasoning_effort"],
         "max_turns": config["agent"]["max_turns"],

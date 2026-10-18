@@ -219,9 +219,12 @@ observed state (`gateway.running`, `config.mcp_mounted`), so treat
 `status: degraded` / `mode: gateway_down` as a real outage even though the HTTP
 code stays 200.
 
-Cleo's owner-selected inference route is `openrouter/openai/gpt-6-astra` at
-high reasoning, with no model fallback. Keep boot config and the managed
-Slack override aligned; resumed sessions must not restore an older model.
+Cleo's model order comes from her Katailyst2 record
+(`policies.routing.modelRoute`), checked against the reviewed allowlist in
+`render_config.py`; with none, the boot runs `openrouter/openai/gpt-6-astra`
+at high reasoning and says so loudly. The managed Slack override reads the
+same boot-written `config.yaml`; resumed sessions must not restore an older
+model. Each finished Slack/API reply is reported to K2 (`agents.run.record`).
 Readiness is provider-aware: an API key does not need an OAuth profile pool.
 Preserve native subscription grants and retired schedules. A deployment is
 proved by a bounded native run with observed model and durable output, not

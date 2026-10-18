@@ -1751,19 +1751,9 @@ def model_route_contract_readiness(
         for route in (state.get("configured_model_route") or [])
         if isinstance(route, Mapping)
     ]
-    expected = [
-        {
-            "provider": render_config.DEFAULT_PROVIDER,
-            "model": render_config.DEFAULT_MODEL,
-            "role": "primary",
-        },
-        *[
-            {**dict(route), "role": f"fallback-{index}"}
-            for index, route in enumerate(
-                render_config.DEFAULT_FALLBACK_PROVIDERS, start=1
-            )
-        ],
-    ]
+    # The route Cleo's K2 record chose at boot, re-checked against the
+    # reviewed allowlist; the reviewed constants when K2 named none.
+    expected = render_config.expected_model_route(state.get("model_route_selection"))
     reasoning_effort = str(state.get("reasoning_effort") or "").strip().lower()
     return {
         "ready": configured == expected and reasoning_effort == "high",
@@ -2035,49 +2025,33 @@ def authenticated_model_route_gate(
         if isinstance(route, Mapping)
     ]
     contract = model_route_contract_readiness()
-    primary_ready = any(
-        route.get("role") == "primary"
-        and route.get("provider") == render_config.DEFAULT_PROVIDER
-        and route.get("model") == render_config.DEFAULT_MODEL
-        and route.get("available") is True
-        for route in checked
-    )
-    fallback_required = bool(render_config.DEFAULT_FALLBACK_PROVIDERS)
-    fallback_ready = fallback_required and all(
-        any(
-            route.get("role") == f"fallback-{index}"
-            and route.get("provider") == expected["provider"]
-            and route.get("model") == expected["model"]
-            and route.get("available") is True
-            for route in checked
+
+    def _matching(expected: Mapping[str, Any]) -> Mapping[str, Any]:
+        return next(
+            (
+                route
+                for route in checked
+                if all(route.get(key) == expected[key] for key in ("role", "provider", "model"))
+            ),
+            {},
         )
-        for index, expected in enumerate(
-            render_config.DEFAULT_FALLBACK_PROVIDERS, start=1
-        )
-    )
-    primary_route = next(
-        (
-            route
-            for route in checked
-            if route.get("role") == "primary"
-            and route.get("provider") == render_config.DEFAULT_PROVIDER
-            and route.get("model") == render_config.DEFAULT_MODEL
-        ),
-        None,
-    )
-    primary_detail = (
-        primary_route.get("detail")
-        if isinstance(primary_route, Mapping)
-        and isinstance(primary_route.get("detail"), Mapping)
-        else {}
-    )
+
+    expected_primary, *expected_fallbacks = contract["expected"]
+    primary_route = _matching(expected_primary)
+    primary_ready = primary_route.get("available") is True
+    fallback_available = [
+        _matching(expected).get("available") is True for expected in expected_fallbacks
+    ]
+    fallback_required = bool(expected_fallbacks)
+    fallback_ready = fallback_required and all(fallback_available)
+    primary_detail = primary_route.get("detail")
     credential_pool = (
         primary_detail.get("credential_pool")
         if isinstance(primary_detail, Mapping)
         and isinstance(primary_detail.get("credential_pool"), Mapping)
         else {}
     )
-    redundancy_required = render_config.DEFAULT_PROVIDER == "openai-codex"
+    redundancy_required = expected_primary["provider"] == "openai-codex"
     redundancy_ready = (
         redundancy_required and credential_pool.get("minimum_ready") is True
     )
@@ -2089,7 +2063,8 @@ def authenticated_model_route_gate(
             and (not fallback_required or fallback_ready)
             and (not redundancy_required or redundancy_ready)
         ),
-        "servingReady": contract_ready and (primary_ready or fallback_ready),
+        # Hermes walks the fallbacks in order, so any one working route serves.
+        "servingReady": contract_ready and (primary_ready or any(fallback_available)),
         "contractReady": contract_ready,
         "primaryReady": primary_ready,
         "primaryRedundancyRequired": redundancy_required,
@@ -2326,12 +2301,41 @@ def _k2_brain_can_serve(k2_readiness: Mapping[str, Any]) -> bool:
     )
 
 
+def _note_model_route_drift(runtime_pack: Any) -> None:
+    """The model route is fixed at boot; say in /health when K2 now names another.
+
+    A K2 that was unreachable at boot, or a route edited in K2 since, leaves
+    this process on its boot route until one restart.
+    """
+    selection = BOOT.get("model_route_selection")
+    if not isinstance(selection, Mapping):
+        return
+    named = render_config.resolve_model_route(
+        render_config.pack_model_route(runtime_pack)
+    )
+    pending = named["k2Route"] if named["source"] == "katailyst2" else []
+    running = (
+        list(selection.get("k2Route") or [])
+        if selection.get("source") == "katailyst2"
+        else []
+    )
+    restart_needed = pending != running
+    if restart_needed and not BOOT.get("model_route_restart_needed"):
+        logger.warning(
+            "Katailyst2 now names model route %s; this process keeps %s until a restart",
+            ", ".join(pending) or "none (the reviewed default)",
+            ", ".join(running) or "the reviewed default",
+        )
+    BOOT["model_route_restart_needed"] = restart_needed
+
+
 def _install_verified_k2_pack(k2_readiness: dict[str, Any]) -> bool:
     """Install one active or narrowly verified preactivation K2 pack."""
     runtime_pack = k2_readiness.pop("_runtime_pack", None)
     if runtime_pack is None:
         _publish_k2_readiness(k2_readiness)
         return False
+    _note_model_route_drift(runtime_pack)
     if _runtime_pack_matches_readiness(k2_readiness):
         _publish_k2_readiness(k2_readiness)
         return True
@@ -2467,6 +2471,54 @@ def _should_watch_for_k2_activation(k2_readiness: Mapping[str, Any]) -> bool:
     )
 
 
+def _probe_boot_k2_readiness() -> dict[str, Any]:
+    preactivation = _probe_k2_boot_contract(
+        require_active=False,
+        probe_well=False,
+    )
+    if preactivation.get("activation_ready") is not True:
+        return preactivation
+    # The actual boot contract is deliberately repeated with
+    # requireActive:true. The preflight call above exists only to break the
+    # offline activation circle; it never authorizes an active runtime.
+    return _probe_k2_boot_contract(require_active=True, probe_well=True)
+
+
+def _select_model_route(k2_readiness: Mapping[str, Any]) -> dict[str, Any]:
+    """Take the model order from the K2 pack, loudly naming any fallback."""
+    runtime_pack = k2_readiness.get("_runtime_pack")
+    if runtime_pack is None:
+        selection = render_config.default_model_route_selection(
+            source="reviewed_default_k2_unavailable",
+            reason=(
+                "Katailyst2 runtime pack unavailable at boot "
+                f"({k2_readiness.get('contract_status') or 'unknown'})"
+            ),
+        )
+    else:
+        selection = render_config.resolve_model_route(
+            render_config.pack_model_route(runtime_pack)
+        )
+    route = " -> ".join(
+        f"{entry['provider']}/{entry['model']}"
+        for entry in [selection, *selection["fallbacks"]]
+    )
+    if selection["source"] == "katailyst2":
+        logger.info(
+            "model route from Katailyst2 %s: %s (K2 names %s)",
+            BOOT.get("agent_ref") or "agent",
+            route,
+            ", ".join(selection["k2Route"]),
+        )
+    else:
+        logger.warning(
+            "model route NOT from Katailyst2: %s; using the reviewed default %s",
+            selection["reason"],
+            route,
+        )
+    return selection
+
+
 def boot() -> None:
     BOOT.clear()
     BOOT.update(grounding.install())
@@ -2476,7 +2528,15 @@ def boot() -> None:
         # Keep one secret and one rotation boundary; never write its value to
         # config or health output.
         os.environ["API_SERVER_KEY"] = hook_token
-    BOOT.update(render_config.render())
+    # Read K2 before writing config.yaml: Cleo's model order lives on her K2
+    # record and is fixed for this process. The probe only needs her identity,
+    # which comes from the environment exactly as render() derives it.
+    BOOT["agent_ref"] = render_config.agent_ref(os.environ) or ""
+    BOOT["runtime_lane"] = render_config.runtime_lane(os.environ)
+    k2_readiness = _probe_boot_k2_readiness()
+    BOOT.update(
+        render_config.render(model_selection=_select_model_route(k2_readiness))
+    )
     BOOT["agent_run_ledger"] = (
         agent_run_ledger_readiness()
         if hook_token
@@ -2525,21 +2585,6 @@ def boot() -> None:
     )
     logger.info("config web_search_readiness: %s", BOOT["web_search_readiness"])
 
-    preactivation = _probe_k2_boot_contract(
-        require_active=False,
-        probe_well=False,
-    )
-    if preactivation.get("activation_ready") is True:
-        # The actual boot contract is deliberately repeated with
-        # requireActive:true. The preflight call above exists only to break the
-        # offline activation circle; it never authorizes an active runtime.
-        k2_readiness = _probe_k2_boot_contract(
-            require_active=True,
-            probe_well=True,
-        )
-    else:
-        k2_readiness = preactivation
-
     if not _install_available_k2_pack(k2_readiness) and (
         BOOT.get("agent_ref") and k2_readiness.get("outage_declared") is True
     ):
@@ -2556,7 +2601,12 @@ def boot() -> None:
         "enabled": plugin_enabled,
         "version": str(configured_plugin.get("version") or ""),
         "hook": "pre_llm_call",
-        "hooks": ["pre_gateway_dispatch", "pre_llm_call", "pre_tool_call"],
+        "hooks": [
+            "pre_gateway_dispatch",
+            "pre_llm_call",
+            "pre_tool_call",
+            "on_session_end",
+        ],
     }
     slack_lead = BOOT.get("slack_agent_lead") or {}
     slack_lead_ready = slack_lead.get("local_agent_ready") is True and (
@@ -2660,7 +2710,7 @@ def boot() -> None:
             "gateway start blocked: Cleo requires a verified K2 brain (active, "
             "reviewed preactivation, or declared-outage fallback), the "
             "mission-context plugin, Slack identity, and at least one authenticated "
-            f"reviewed {render_config.DEFAULT_PROVIDER}/{render_config.DEFAULT_MODEL} route"
+            f"reviewed {BOOT.get('model_provider')}/{BOOT.get('model')} route"
         )
     else:
         supervisor.start()
