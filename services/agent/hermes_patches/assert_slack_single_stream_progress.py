@@ -59,8 +59,11 @@ def main(root: Path) -> None:
     assert "_request_and_confirm_managed_turn_stop" in run_source
     assert "managed_turn_control: Optional[Dict[str, Any]] = None" in run_source
     assert "if not _managed_slack_stream:" in run_source
-    assert 'model = "openai/gpt-6-astra"' in run_source
-    assert 'provider = "openrouter"' in run_source
+    # The managed route is the boot-written config.yaml (Cleo's K2 model
+    # order, reviewed in render_config.py), never a constant in Hermes.
+    assert "def _managed_primary_route()" in run_source
+    assert "provider, model = _managed_primary_route()" in run_source
+    assert "get_fallback_chain(_load_gateway_runtime_config())" in run_source
     assert 'model = "gpt-5.6-sol"' not in run_source
     assert 'model = "grok-4.6"' not in run_source
     assert "def _managed_fallback_chain()" in run_source

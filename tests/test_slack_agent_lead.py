@@ -986,6 +986,7 @@ def test_plugin_registers_lead_selection_before_mission_context():
         "pre_gateway_dispatch",
         "pre_llm_call",
         "pre_tool_call",
+        "on_session_end",
     ]
 
 
@@ -1045,7 +1046,7 @@ def test_manifest_and_image_pin_the_supported_pretyping_hook():
     ).read_text(encoding="utf-8")
 
     assert "- pre_gateway_dispatch" in manifest
-    assert "version: 1.6.0" in manifest
+    assert "version: 1.7.0" in manifest
     assert "hermes_cli/plugins.py" in dockerfile
     assert "pre_gateway_dispatch skip" in dockerfile
     assert "ARG HERMES_REF=29112bef099274229cadff79cdff7bf7b99c4b77" in dockerfile

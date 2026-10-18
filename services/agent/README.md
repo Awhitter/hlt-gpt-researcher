@@ -107,8 +107,8 @@ leave your file alone and say so in `/health`.
 
 | Var | Purpose |
 |-----|---------|
-| `OPENROUTER_API_KEY` | Inference credential for the owner-selected `openai/gpt-6-astra` route. A management/provisioning key is not usable. |
-| Existing ChatGPT / xAI OAuth store | Preserved native credentials; neither is an inference fallback for the current Astra route. |
+| `OPENROUTER_API_KEY` | Inference credential for OpenRouter routes (the reviewed default `openai/gpt-6-astra`, and `openai/gpt-6.1-sol` when K2 names it). A management/provisioning key is not usable. |
+| Existing ChatGPT / xAI OAuth store | Preserved native credentials; they serve only when Cleo's K2 model route names `openai/…` or `xai/…`. |
 | `AGENT_ENABLE_GATEWAY` | `1` starts the Slack gateway; anything else = health only |
 | `AGENT_ID` | `cleo` (default) or `brian` |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | `xoxb-…` / `xapp-…` |
@@ -132,12 +132,35 @@ leave your file alone and say so in `/health`.
 Render supplies `RENDER_GIT_COMMIT`; `/health.config.deploy_commit` exposes it
 so a live agent can be tied to the exact merged build.
 
-`/health.config.configured_model_route` exposes one reviewed route:
-`openrouter/openai/gpt-6-astra` at high reasoning. The owner explicitly selected
-paid Astra inference. Slack and external API turns use this same model, and
-old persisted session/channel overrides cannot replace it. No fallback model
-is configured. If the credential is missing, rejected, or not yet verified,
-the request stays recoverable and readiness is false.
+### Model route: Cleo's K2 record chooses, this repo reviews
+
+Cleo's model order is a setting on her Katailyst2 record
+(`policies.routing.modelRoute`, e.g. `openai/gpt-5.6-sol`, then
+`xai/grok-4.6`, then `openrouter/openai/gpt-6.1-sol`). The boot reads it once
+from the runtime pack before writing `config.yaml`, maps each route onto the
+Hermes provider that holds that credential (`openai/` → the managed Codex pool,
+`xai/` → xAI OAuth, `openrouter/` → the API key), and checks every entry against
+`APPROVED_K2_MODEL_ROUTES` in `render_config.py`. A change in K2 takes one
+restart. When K2 names no route, is unreachable, or names a route outside that
+list, the boot logs it loudly and runs the reviewed default
+(`openrouter/openai/gpt-6-astra`, no fallback). Clearing the route in K2 is the
+rollback; adding a new route is a reviewed change to the allowlist.
+
+`/health.config.model_route_selection.source` says where the route came from
+(`katailyst2`, `reviewed_default`, `reviewed_default_k2_unavailable` or
+`reviewed_default_k2_refused`, with the reason), and
+`/health.config.configured_model_route` lists the exact order at high
+reasoning. Slack and external API turns use this same order; persisted
+session/channel `/model` overrides cannot replace it. If every route's
+credential is missing, rejected, or not yet verified, the request stays
+recoverable and readiness is false.
+
+Each finished Slack or API turn is reported to K2 with `agents.run.record`
+(`Reply on slack` / `Reply on api`, completed or failed, the model, how long,
+and the error line with key-shaped strings redacted), from a background thread
+in the `hlt-k2-context` plugin. Cron, subagent and interrupted turns are not
+replies and are skipped. `agents.health` reads these rows to say whether
+Cleo's replies work.
 
 `model_route_readiness` checks the inference credential without exposing it.
 API-key readiness does not require an unrelated Codex profile pool. The
@@ -145,7 +168,7 @@ readiness gate separately reports whether a pool or fallback is required;
 `fallbackReady: false` with `fallbackRequired: false` means there is no backup,
 not an outage. `gateway.observed_model_route` remains empty until a successful
 model call and then identifies the provider/model that actually answered.
-Configuration and key readiness alone are not proof of a successful Astra turn.
+Configuration and key readiness alone are not proof of a successful model turn.
 Cleo keeps a 32,768-token output ceiling and 24 model iterations
 available for long-running API/K2 work. Interactive Slack turns have a stricter
 seven-iteration ceiling plus five
@@ -524,8 +547,9 @@ Agent View migration above for her. This section is for a new agent app.
 ### Connect the model route
 
 Provision an inference-capable `OPENROUTER_API_KEY` through the existing secret
-manager. `render_config.py` is the sole boot config writer and pins
-`openai/gpt-6-astra`; model/fallback environment aliases do not override it.
+manager. `render_config.py` is the sole boot config writer; it takes the route
+from Cleo's K2 record within its reviewed allowlist and otherwise runs
+`openai/gpt-6-astra`. Model/fallback environment aliases do not override it.
 Verify `/health.config.model_route_readiness`, then complete a bounded private
 native run. Do not treat a 200 health response or an accepted key as proof of
 model completion. Missing capacity must preserve the request, never choose
@@ -658,7 +682,7 @@ those interactive behaviors. Version detection never triggers an upgrade.
 | `gateway_external_dispatch_unavailable` | Slack can run, but the K2 hook bearer/run bridge is not configured. |
 | `gateway_web_search_degraded` | The selected web backend is missing its credential or installed SDK. |
 | `gateway_model_fallback_degraded` | Primary can answer, but at least one configured recovery route is positively unavailable. |
-| `gateway_model_route_contract_degraded` | The process is alive but its configured route is not exactly OpenRouter GPT-6 Astra high with no fallback. |
+| `gateway_model_route_contract_degraded` | The process is alive but its configured route is not exactly the boot's selected route (K2's reviewed order, or the Astra default) at high reasoning. |
 
 Check `config.mcp_mounted` lists the configured servers,
 `config.mcp_without_token` is empty, `config.slack_auth.auth_ok` is true, and

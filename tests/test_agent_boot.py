@@ -329,7 +329,7 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     assert summary["deploy_commit"] == "abc123"
     assert summary["hermes_upstream_ref"] == "upstream123"
     assert summary["host_runtime_contract_version"] == "cleo-hermes-host.v2"
-    assert summary["k2_context_plugin"]["version"] == "1.6.0"
+    assert summary["k2_context_plugin"]["version"] == "1.7.0"
 
 
 def test_product_work_skill_is_a_small_k2_activation_shim(tmp_path):
@@ -2658,7 +2658,12 @@ def test_k2_plugin_registers_bounded_spillover_reader(monkeypatch, tmp_path):
     assert params["properties"]["limit"]["maximum"] == 12_000
     assert params["properties"]["view"]["enum"] == ["raw", "body", "schema"]
     assert params["additionalProperties"] is False
-    assert hooks == ["pre_gateway_dispatch", "pre_llm_call", "pre_tool_call"]
+    assert hooks == [
+        "pre_gateway_dispatch",
+        "pre_llm_call",
+        "pre_tool_call",
+        "on_session_end",
+    ]
     assert "hlt-context" in render_config.api_server_toolsets({})
     assert "session_id" not in params["properties"]
     assert "inbox_id" not in params["properties"]
@@ -4218,7 +4223,9 @@ def test_boot_starts_verified_preactivation_pack_and_keeps_activation_watcher(
     monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
     monkeypatch.setattr(health_gateway, "GATEWAY_ENABLED", True)
     monkeypatch.setattr(health_gateway.grounding, "install", lambda: {})
-    monkeypatch.setattr(health_gateway.render_config, "render", lambda: dict(state))
+    monkeypatch.setattr(
+        health_gateway.render_config, "render", lambda **kwargs: dict(state)
+    )
     monkeypatch.setattr(
         health_gateway,
         "agent_run_ledger_readiness",
@@ -4308,7 +4315,7 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
             "k2_context_plugin": {
                 "installed": True,
                 "enabled": True,
-                "version": "1.6.0",
+                "version": "1.7.0",
             },
             "mcp_mounted": ["katailyst2"],
             "deploy_commit": "commit-a",
@@ -6391,7 +6398,7 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
         "paused": ["nm-monday-brief"],
     }
     assert health_gateway.BOOT["cron_smoke"] == "retired-with-recurring-briefs"
-    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.6.0"
+    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.7.0"
 
 
 def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):
@@ -6608,3 +6615,178 @@ def test_astra_activation_and_readiness_accept_exact_api_route(monkeypatch):
     unavailable = hg.activationz(authorization="Bearer a-secure-shared-hook-token")
     assert unavailable.status_code == 503
     assert json.loads(unavailable.body)["checks"]["primary_model_route_ready"] is False
+
+
+# --- model route from Cleo's K2 record ---------------------------------------
+
+OWNER_ORDER = {
+    "primary": "openai/gpt-5.6-sol",
+    "fallbacks": ["xai/grok-4.6", "openrouter/openai/gpt-6.1-sol"],
+}
+
+
+def test_k2_route_maps_owner_order_onto_hermes_providers():
+    selection = render_config.resolve_model_route(OWNER_ORDER)
+
+    assert selection["source"] == "katailyst2"
+    assert (selection["provider"], selection["model"]) == ("openai-codex", "gpt-5.6-sol")
+    assert selection["fallbacks"] == [
+        {"provider": "xai-oauth", "model": "grok-4.6"},
+        {"provider": "openrouter", "model": "openai/gpt-6.1-sol"},
+    ]
+    assert selection["k2Route"] == [
+        "openai/gpt-5.6-sol",
+        "xai/grok-4.6",
+        "openrouter/openai/gpt-6.1-sol",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("route", "source", "reason"),
+    [
+        (None, "reviewed_default", "names no model route"),
+        ({"primary": "openrouter/moonshotai/kimi-k3"}, "reviewed_default_k2_refused", "openrouter/moonshotai/kimi-k3"),
+        ({"primary": "xai/grok-4.6", "fallbacks": ["xai/grok-4.6"]}, "reviewed_default_k2_refused", "repeats"),
+        ({"primary": "xai/grok-4.6", "fallbacks": "openai/gpt-5.6-sol"}, "reviewed_default_k2_refused", "not {primary"),
+        ("openai/gpt-5.6-sol", "reviewed_default_k2_refused", "not {primary"),
+    ],
+)
+def test_k2_route_outside_the_reviewed_list_falls_back_to_the_constants(route, source, reason):
+    selection = render_config.resolve_model_route(route)
+
+    assert selection["source"] == source
+    assert reason in selection["reason"]
+    assert (selection["provider"], selection["model"]) == (
+        render_config.DEFAULT_PROVIDER,
+        render_config.DEFAULT_MODEL,
+    )
+    assert selection["fallbacks"] == list(render_config.DEFAULT_FALLBACK_PROVIDERS)
+
+
+def test_pack_model_route_reads_full_and_summary_packs():
+    assert render_config.pack_model_route(
+        {"policies": {"routing": {"modelRoute": OWNER_ORDER}}}
+    ) == OWNER_ORDER
+    assert render_config.pack_model_route({"modelRoute": OWNER_ORDER}) == OWNER_ORDER
+    assert render_config.pack_model_route({"policies": {"routing": {}}}) is None
+    assert render_config.pack_model_route(None) is None
+
+
+def test_render_writes_the_k2_route_and_says_where_it_came_from(tmp_path):
+    summary = render_config.render(
+        env=FULL_ENV,
+        home=tmp_path,
+        model_selection=render_config.resolve_model_route(OWNER_ORDER),
+    )
+    written = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+    assert written["model"]["provider"] == "openai-codex"
+    assert written["model"]["default"] == "gpt-5.6-sol"
+    assert written["fallback_providers"] == [
+        {"provider": "xai-oauth", "model": "grok-4.6"},
+        {"provider": "openrouter", "model": "openai/gpt-6.1-sol"},
+    ]
+    assert summary["model_route_selection"]["source"] == "katailyst2"
+    assert [route["role"] for route in summary["configured_model_route"]] == [
+        "primary",
+        "fallback-1",
+        "fallback-2",
+    ]
+
+
+def test_render_without_k2_keeps_the_reviewed_default(tmp_path):
+    summary = render_config.render(env=FULL_ENV, home=tmp_path)
+
+    assert summary["model_route_selection"]["source"] == "reviewed_default"
+    assert summary["configured_model_route"] == render_config.expected_model_route()
+
+
+def test_tampered_boot_selection_cannot_widen_the_contract():
+    tampered = {"source": "katailyst2", "k2Route": ["openrouter/moonshotai/kimi-k3"]}
+
+    assert render_config.expected_model_route(tampered) == render_config.expected_model_route()
+
+
+def _k2_route_boot_state(*, available):
+    selection = render_config.resolve_model_route(OWNER_ORDER)
+    routes = render_config.expected_model_route(
+        {"source": "katailyst2", "k2Route": selection["k2Route"]}
+    )
+    return {
+        "configured_model_route": routes,
+        "model_route_selection": {"source": "katailyst2", "k2Route": selection["k2Route"]},
+        "reasoning_effort": "high",
+        "model_route_readiness": [
+            {**route, "available": ok} for route, ok in zip(routes, available)
+        ],
+    }
+
+
+def test_k2_route_serves_on_its_last_working_fallback():
+    hg = _load_health_gateway()
+    state = _k2_route_boot_state(available=[False, False, True])
+    hg.BOOT.clear()
+    hg.BOOT.update(state)
+
+    gate = hg.authenticated_model_route_gate(state["model_route_readiness"])
+
+    assert gate["contractReady"] is True
+    assert gate["primaryReady"] is False
+    assert gate["primaryRedundancyRequired"] is True
+    assert gate["fallbackReady"] is False
+    assert gate["ready"] is False
+    assert gate["servingReady"] is True
+
+
+def test_k2_route_with_no_working_route_does_not_serve():
+    hg = _load_health_gateway()
+    state = _k2_route_boot_state(available=[False, False, False])
+    hg.BOOT.clear()
+    hg.BOOT.update(state)
+
+    gate = hg.authenticated_model_route_gate(state["model_route_readiness"])
+
+    assert gate["contractReady"] is True
+    assert gate["servingReady"] is False
+
+
+def test_boot_reads_k2_before_writing_config(monkeypatch, caplog):
+    hg = _load_health_gateway()
+    calls = []
+
+    class Stop(Exception):
+        pass
+
+    def probe(**kwargs):
+        calls.append(("probe", kwargs["require_active"]))
+        return {
+            "contract_status": "loaded",
+            "_runtime_pack": {"policies": {"routing": {"modelRoute": OWNER_ORDER}}},
+        }
+
+    def render(**kwargs):
+        calls.append(("render", kwargs["model_selection"]["source"]))
+        raise Stop
+
+    monkeypatch.setattr(hg.grounding, "install", lambda: {})
+    monkeypatch.setattr(hg, "_probe_k2_boot_contract", probe)
+    monkeypatch.setattr(hg.render_config, "render", render)
+    caplog.set_level("INFO", logger="hlt-agent")
+
+    with pytest.raises(Stop):
+        hg.boot()
+
+    assert calls == [("probe", False), ("render", "katailyst2")]
+    assert "model route from Katailyst2" in caplog.text
+    assert "openai-codex/gpt-5.6-sol -> xai-oauth/grok-4.6" in caplog.text
+
+
+def test_boot_without_a_k2_pack_says_so_loudly(caplog):
+    hg = _load_health_gateway()
+    caplog.set_level("WARNING", logger="hlt-agent")
+
+    selection = hg._select_model_route({"contract_status": "outage"})
+
+    assert selection["source"] == "reviewed_default_k2_unavailable"
+    assert "model route NOT from Katailyst2" in caplog.text
+    assert "outage" in caplog.text
