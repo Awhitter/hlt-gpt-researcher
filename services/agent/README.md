@@ -141,7 +141,8 @@ from the runtime pack before writing `config.yaml`, maps each route onto the
 Hermes provider that holds that credential (`openai/` → the managed Codex pool,
 `xai/` → xAI OAuth, `openrouter/` → the API key), and checks every entry against
 `APPROVED_K2_MODEL_ROUTES` in `render_config.py`. A change in K2 takes one
-restart. When K2 names no route, is unreachable, or names a route outside that
+restart (`/health.config.model_route_restart_needed` turns true when K2 names
+a different route than the one running). When K2 names no route, is unreachable, or names a route outside that
 list, the boot logs it loudly and runs the reviewed default
 (`openrouter/openai/gpt-6-astra`, no fallback). Clearing the route in K2 is the
 rollback; adding a new route is a reviewed change to the allowlist.
@@ -151,7 +152,9 @@ rollback; adding a new route is a reviewed change to the allowlist.
 `reviewed_default_k2_refused`, with the reason), and
 `/health.config.configured_model_route` lists the exact order at high
 reasoning. Slack and external API turns use this same order; persisted
-session/channel `/model` overrides cannot replace it. If every route's
+session/channel `/model` overrides cannot replace it; a primary whose
+subscription is signed out starts the turn on the first fallback that resolves.
+If every route's
 credential is missing, rejected, or not yet verified, the request stays
 recoverable and readiness is false.
 

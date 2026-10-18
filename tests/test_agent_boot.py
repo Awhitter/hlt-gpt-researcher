@@ -6790,3 +6790,21 @@ def test_boot_without_a_k2_pack_says_so_loudly(caplog):
     assert selection["source"] == "reviewed_default_k2_unavailable"
     assert "model route NOT from Katailyst2" in caplog.text
     assert "outage" in caplog.text
+
+
+def test_a_route_changed_in_k2_after_boot_asks_for_a_restart(caplog):
+    hg = _load_health_gateway()
+    hg.BOOT.clear()
+    hg.BOOT["model_route_selection"] = {"source": "reviewed_default", "k2Route": []}
+    caplog.set_level("WARNING", logger="hlt-agent")
+
+    hg._note_model_route_drift({"policies": {"routing": {"modelRoute": OWNER_ORDER}}})
+    assert hg.BOOT["model_route_restart_needed"] is True
+    assert "keeps the reviewed default until a restart" in caplog.text
+
+    hg.BOOT["model_route_selection"] = {
+        "source": "katailyst2",
+        "k2Route": [OWNER_ORDER["primary"], *OWNER_ORDER["fallbacks"]],
+    }
+    hg._note_model_route_drift({"policies": {"routing": {"modelRoute": OWNER_ORDER}}})
+    assert hg.BOOT["model_route_restart_needed"] is False

@@ -60,7 +60,7 @@ index 0dca512..522d53f 100644
      async def _drain_pending_after_session_command(
          self,
 diff --git a/gateway/run.py b/gateway/run.py
-index d515321..ec7c376 100644
+index d515321..ff73c4a 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
 @@ -1072,6 +1072,45 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
@@ -443,7 +443,7 @@ index d515321..ec7c376 100644
              "failure_reason": (
                  ctx.result_holder[0].get("failure_reason") if ctx.result_holder[0] else None
              ),
-@@ -8717,6 +8906,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -8717,6 +8906,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              except Exception:
                  resolved_session_key = None
  
@@ -451,8 +451,30 @@ index d515321..ec7c376 100644
 +            # Ignore durable /model, channel, and environment overrides. The
 +            # boot-written route serves fresh and resumed conversations; when
 +            # it fails, Hermes walks only the boot-written fallback order.
++            # A primary whose credential cannot be resolved at all (a signed-out
++            # subscription) starts the turn on the first fallback that can.
 +            provider, model = _managed_primary_route()
-+            runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(provider)
++            try:
++                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(provider)
++            except Exception as primary_error:
++                for entry in _managed_fallback_chain():
++                    try:
++                        runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
++                            str(entry.get("provider") or "")
++                        )
++                    except Exception:
++                        continue
++                    provider = str(entry.get("provider") or "")
++                    model = str(entry.get("model") or "")
++                    logger.warning(
++                        "Managed primary route unavailable (%s); starting on %s/%s",
++                        str(primary_error)[:160],
++                        provider,
++                        model,
++                    )
++                    break
++                else:
++                    raise
 +            runtime_kwargs.pop("model", None)
 +            runtime_kwargs["provider"] = provider
 +            if resolved_session_key:
@@ -466,7 +488,7 @@ index d515321..ec7c376 100644
          model = _resolve_gateway_model(user_config)
          if resolved_session_key:
              self._rehydrate_session_model_override(resolved_session_key)
-@@ -10567,6 +10772,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -10567,6 +10794,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          legacy ``fallback_model`` entries. ``fallback_providers`` stays first
          when both keys are present.
          """
@@ -475,7 +497,7 @@ index d515321..ec7c376 100644
          try:
              # Canonical gateway loader (fail-open): managed overlay + ${VAR}
              # expansion now apply to the fallback chain too.
-@@ -10592,6 +10799,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -10592,6 +10821,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          cached agent's working fallback for that turn.  Only a successful read
          that genuinely lacks the key clears the chain.
          """
@@ -485,7 +507,7 @@ index d515321..ec7c376 100644
          try:
              from hermes_cli.config import read_user_config_raw
              cfg_path = _hermes_home / "config.yaml"
-@@ -19694,6 +19904,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -19694,6 +19926,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              # and interrupt alike.
              self._restore_moa_one_shot(event, _quick_key)
              self._restore_pending_one_turn_model_override(_quick_key)
@@ -507,7 +529,7 @@ index d515321..ec7c376 100644
              # Normal completion/exception/interrupt owns and clears this exact
              # durable marker.  SIGKILL/OOM skips finally, leaving the marker for
              # the next unclean startup's recovery pass.
-@@ -20146,12 +20371,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -20146,12 +20393,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                      allowed_root=_msg_cwd,
                  )
                  if _ctx_result.blocked:
@@ -535,7 +557,7 @@ index d515321..ec7c376 100644
                      return None
                  if _ctx_result.expanded:
                      message_text = _ctx_result.message
-@@ -20467,8 +20701,85 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -20467,8 +20723,85 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  pass
          return source
  
@@ -623,7 +645,7 @@ index d515321..ec7c376 100644
          _msg_start_time = time.time()
          _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
          _msg_preview = (event.text or "")[:80].replace("\n", " ")
-@@ -20761,8 +21072,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -20761,8 +21094,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                  notice = f"{notice}\n\n{session_info}"
                          except Exception:
                              pass
@@ -640,7 +662,7 @@ index d515321..ec7c376 100644
                              metadata=self._thread_metadata_for_source(source),
                          )
              except Exception as e:
-@@ -21509,13 +21826,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -21509,13 +21848,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                  "gateway.compress.turnhold_deferred"
                                              )
                                              try:
@@ -665,7 +687,7 @@ index d515321..ec7c376 100644
                                              except Exception as _werr:
                                                  logger.warning(
                                                      "Failed to deliver compression-turnhold "
-@@ -21677,13 +21998,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -21677,13 +22020,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                      )
                                                  )
                                                  try:
@@ -690,7 +712,7 @@ index d515321..ec7c376 100644
                                                  except Exception as _werr:
                                                      logger.warning(
                                                          "Failed to deliver compression-timeout "
-@@ -21966,9 +22291,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -21966,9 +22313,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                  "configuration."
                                              )
                                              try:
@@ -711,7 +733,7 @@ index d515321..ec7c376 100644
                                              except Exception as _werr:
                                                  logger.warning(
                                                      "Failed to deliver compression-failure warning to user: %s",
-@@ -21990,9 +22323,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -21990,9 +22345,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                              "check `auxiliary.compression.model` in config.yaml."
                                          )
                                          try:
@@ -731,7 +753,7 @@ index d515321..ec7c376 100644
                                          except Exception as _werr:
                                              logger.warning(
                                                  "Failed to deliver aux-model-fallback notice to user: %s",
-@@ -22229,6 +22569,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -22229,6 +22591,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  persist_user_timestamp=persist_user_timestamp,
                  persist_user_display_kind=persist_user_display_kind,
                  message_type=event.message_type,
@@ -740,7 +762,7 @@ index d515321..ec7c376 100644
              )
              _turn_seconds = time.monotonic() - _turn_started_monotonic
  
-@@ -22830,7 +23172,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -22830,7 +23194,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  # intentionally held back (see the `not already_sent` gate above).
                  # Send it now as a small trailing message so Telegram/Discord/etc.
                  # still surface the runtime metadata on the final reply.
@@ -749,7 +771,7 @@ index d515321..ec7c376 100644
                      try:
                          _foot_adapter = self._adapter_for_source(source)
                          if _foot_adapter:
-@@ -28747,6 +29089,338 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -28747,6 +29111,338 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          except Exception:
              pass
  
@@ -1088,7 +1110,7 @@ index d515321..ec7c376 100644
      async def _interrupt_and_clear_session(
          self,
          session_key: str,
-@@ -29719,6 +30393,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -29719,6 +30415,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          session_key: str = None,
          run_generation: Optional[int] = None,
          event_message_id: Optional[str] = None,
@@ -1096,7 +1118,7 @@ index d515321..ec7c376 100644
      ) -> Dict[str, Any]:
          """Forward the message to a remote Hermes API server instead of
          running a local AIAgent.
-@@ -29765,6 +30440,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -29765,6 +30462,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
  
          def _run_still_current() -> bool:
@@ -1109,7 +1131,7 @@ index d515321..ec7c376 100644
              if run_generation is None or not session_key:
                  return True
              return self._is_session_run_current(session_key, run_generation)
-@@ -30011,6 +30692,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30011,6 +30714,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          persist_user_timestamp: Optional[float] = None,
          persist_user_display_kind: Optional[str] = None,
          message_type: Optional[str] = None,
@@ -1118,7 +1140,7 @@ index d515321..ec7c376 100644
      ) -> Dict[str, Any]:
          """Profile-scoping wrapper around the agent run.
  
-@@ -30031,6 +30714,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30031,6 +30736,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  persist_user_timestamp=persist_user_timestamp,
                  persist_user_display_kind=persist_user_display_kind,
                  message_type=message_type,
@@ -1127,7 +1149,7 @@ index d515321..ec7c376 100644
              )
  
          profile_home = self._resolve_profile_home_for_source(source)
-@@ -30044,6 +30729,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30044,6 +30751,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  persist_user_timestamp=persist_user_timestamp,
                  persist_user_display_kind=persist_user_display_kind,
                  message_type=message_type,
@@ -1136,7 +1158,7 @@ index d515321..ec7c376 100644
              )
  
      def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-@@ -30187,6 +30874,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30187,6 +30896,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          persist_user_timestamp: Optional[float] = None,
          persist_user_display_kind: Optional[str] = None,
          message_type: Optional[str] = None,
@@ -1145,7 +1167,7 @@ index d515321..ec7c376 100644
      ) -> Dict[str, Any]:
          """
          Run the agent with the given message and context.
-@@ -30211,6 +30900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30211,6 +30922,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  session_key=session_key,
                  run_generation=run_generation,
                  event_message_id=event_message_id,
@@ -1153,7 +1175,7 @@ index d515321..ec7c376 100644
              )
  
          from run_agent import AIAgent
-@@ -30686,12 +31376,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30686,12 +31398,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          turn_ctx._progress_reply_to = _progress_reply_to
          send_progress_messages = turn_runner.send_progress_messages
          
@@ -1191,7 +1213,7 @@ index d515321..ec7c376 100644
          # #60671 — streaming PCM audio consumer.  Created on the gateway
          # event-loop thread (NOT inside run_sync's executor worker) so the
          # outer finalisation / interrupt paths can reference it without a
-@@ -30795,6 +31507,94 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30795,6 +31529,94 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              except Exception as _stts_err:
                  logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
  
@@ -1286,7 +1308,7 @@ index d515321..ec7c376 100644
          # run_sync extracted to TurnRunner.run_sync (bound method; the
          # executor call below is unchanged).  Its closed-over locals travel
          # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
-@@ -30828,6 +31628,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -30828,6 +31650,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  await asyncio.sleep(0.05)
  
          stream_task = asyncio.create_task(_start_stream_consumer())
@@ -1295,7 +1317,7 @@ index d515321..ec7c376 100644
          
          # Track this agent as running for this session (for interrupt support)
          # We do this in a callback after the agent is created
-@@ -31101,7 +31903,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -31101,7 +31925,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              _turn_process_baseline = process_registry.snapshot_running_ids(_turn_task_id)
              turn_ctx.process_task_id = _turn_task_id
              turn_ctx.process_baseline = _turn_process_baseline
@@ -1303,7 +1325,7 @@ index d515321..ec7c376 100644
              _turn_timeout_fired = threading.Event()
              _turn_cleanup_lock = threading.Lock()
              # task_id above is session-scoped, not turn-scoped (#76115
-@@ -31154,9 +31955,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -31154,9 +31977,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                      name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
                      daemon=True,
                  ).start()
@@ -1323,7 +1345,7 @@ index d515321..ec7c376 100644
  
              _inactivity_timeout = False
              _POLL_INTERVAL = 5.0
-@@ -31365,13 +32176,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -31365,13 +32198,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                  )
  
                  response = {
@@ -1351,7 +1373,7 @@ index d515321..ec7c376 100644
  
              # Track fallback model state: if the agent switched to a
              # fallback model during this run, persist it so /model shows
-@@ -31800,6 +32624,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -31800,6 +32646,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
  
              # Clean up tracking
              tracking_task.cancel()
@@ -1367,7 +1389,7 @@ index d515321..ec7c376 100644
              if session_key:
                  # Only release the slot if this run's generation still owns
                  # it.  A /stop or /new that bumped the generation while we
-@@ -31844,7 +32677,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+@@ -31844,7 +32699,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
          # final answer.  Suppressing delivery here leaves the user staring
          # at silence.  (#10xxx — "agent stops after web search")
          _sc = stream_consumer_holder[0]
@@ -2551,7 +2573,7 @@ index 31e9926..a7fc5e0 100644
          if callable(auth_fn):
              try:
 diff --git a/tests/gateway/test_slack_native_streaming.py b/tests/gateway/test_slack_native_streaming.py
-index c5d0d2b..1cf132f 100644
+index c5d0d2b..19d8e5d 100644
 --- a/tests/gateway/test_slack_native_streaming.py
 +++ b/tests/gateway/test_slack_native_streaming.py
 @@ -18,6 +18,11 @@ Behaviour contract:
@@ -2724,7 +2746,7 @@ index c5d0d2b..1cf132f 100644
  
      @pytest.mark.asyncio
      async def test_rich_blocks_applied_after_seal(self):
-@@ -228,3 +293,1537 @@ class TestDisconnectCleanup:
+@@ -228,3 +293,1581 @@ class TestDisconnectCleanup:
          await adapter.disconnect()
          client.chat_stopStream.assert_awaited()
          assert not adapter._active_streams
@@ -3967,6 +3989,50 @@ index c5d0d2b..1cf132f 100644
 +        assert "managed for this teammate from Katailyst2" in result
 +        assert "openrouter/openai/gpt-6-astra" in result
 +        event.get_command_args.assert_not_called()
++
++    def test_signed_out_primary_starts_on_the_first_resolvable_fallback(
++        self, monkeypatch
++    ):
++        import gateway.run as run_module
++        from gateway.run import GatewayRunner
++
++        monkeypatch.setenv("HLT_MANAGED_MODEL_ROUTE", "1")
++        monkeypatch.setattr(
++            run_module,
++            "_load_gateway_runtime_config",
++            lambda: {
++                "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
++                "fallback_providers": [
++                    {"provider": "xai-oauth", "model": "grok-4.6"},
++                    {"provider": "openrouter", "model": "openai/gpt-6.1-sol"},
++                ],
++            },
++        )
++        tried = []
++
++        def resolve(provider):
++            tried.append(provider)
++            if provider != "openrouter":
++                raise RuntimeError(f"{provider} is signed out")
++            return {"provider": provider, "api_key": "managed"}
++
++        monkeypatch.setattr(
++            run_module, "_resolve_runtime_agent_kwargs_for_provider", resolve
++        )
++        runner = object.__new__(GatewayRunner)
++        runner._peek_session_state = MagicMock(return_value=None)
++        runner._session_state = MagicMock(
++            return_value=SimpleNamespace(
++                conversation=SimpleNamespace(last_resolved_model="")
++            )
++        )
++
++        model, runtime = runner._resolve_session_agent_runtime(
++            session_key=META["gateway_session_key"], user_config={}
++        )
++
++        assert tried == ["openai-codex", "xai-oauth", "openrouter"]
++        assert (model, runtime["provider"]) == ("openai/gpt-6.1-sol", "openrouter")
 +
 +    def test_managed_route_is_the_boot_written_config(self, monkeypatch):
 +        import gateway.run as run_module

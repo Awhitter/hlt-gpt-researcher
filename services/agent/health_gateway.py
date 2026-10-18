@@ -2026,33 +2026,25 @@ def authenticated_model_route_gate(
     ]
     contract = model_route_contract_readiness()
 
-    def _matching(expected: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    def _matching(expected: Mapping[str, Any]) -> Mapping[str, Any]:
         return next(
             (
                 route
                 for route in checked
-                if route.get("role") == expected["role"]
-                and route.get("provider") == expected["provider"]
-                and route.get("model") == expected["model"]
+                if all(route.get(key) == expected[key] for key in ("role", "provider", "model"))
             ),
-            None,
+            {},
         )
 
     expected_primary, *expected_fallbacks = contract["expected"]
     primary_route = _matching(expected_primary)
-    primary_ready = bool(primary_route and primary_route.get("available") is True)
+    primary_ready = primary_route.get("available") is True
     fallback_available = [
-        bool((_matching(expected) or {}).get("available") is True)
-        for expected in expected_fallbacks
+        _matching(expected).get("available") is True for expected in expected_fallbacks
     ]
     fallback_required = bool(expected_fallbacks)
     fallback_ready = fallback_required and all(fallback_available)
-    primary_detail = (
-        primary_route.get("detail")
-        if isinstance(primary_route, Mapping)
-        and isinstance(primary_route.get("detail"), Mapping)
-        else {}
-    )
+    primary_detail = primary_route.get("detail")
     credential_pool = (
         primary_detail.get("credential_pool")
         if isinstance(primary_detail, Mapping)
@@ -2309,12 +2301,41 @@ def _k2_brain_can_serve(k2_readiness: Mapping[str, Any]) -> bool:
     )
 
 
+def _note_model_route_drift(runtime_pack: Any) -> None:
+    """The model route is fixed at boot; say in /health when K2 now names another.
+
+    A K2 that was unreachable at boot, or a route edited in K2 since, leaves
+    this process on its boot route until one restart.
+    """
+    selection = BOOT.get("model_route_selection")
+    if not isinstance(selection, Mapping):
+        return
+    named = render_config.resolve_model_route(
+        render_config.pack_model_route(runtime_pack)
+    )
+    pending = named["k2Route"] if named["source"] == "katailyst2" else []
+    running = (
+        list(selection.get("k2Route") or [])
+        if selection.get("source") == "katailyst2"
+        else []
+    )
+    restart_needed = pending != running
+    if restart_needed and not BOOT.get("model_route_restart_needed"):
+        logger.warning(
+            "Katailyst2 now names model route %s; this process keeps %s until a restart",
+            ", ".join(pending) or "none (the reviewed default)",
+            ", ".join(running) or "the reviewed default",
+        )
+    BOOT["model_route_restart_needed"] = restart_needed
+
+
 def _install_verified_k2_pack(k2_readiness: dict[str, Any]) -> bool:
     """Install one active or narrowly verified preactivation K2 pack."""
     runtime_pack = k2_readiness.pop("_runtime_pack", None)
     if runtime_pack is None:
         _publish_k2_readiness(k2_readiness)
         return False
+    _note_model_route_drift(runtime_pack)
     if _runtime_pack_matches_readiness(k2_readiness):
         _publish_k2_readiness(k2_readiness)
         return True

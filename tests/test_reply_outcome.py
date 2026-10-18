@@ -88,14 +88,24 @@ def test_a_failed_api_turn_keeps_the_error_line_without_key_shaped_strings(outco
     assert "startedAt" not in record
 
 
-def test_a_turn_that_ran_out_without_completing_is_a_failure(outcome):
+def test_a_turn_cap_summary_is_a_delivered_reply(outcome):
     record = outcome.reply_outcome_record(
         "agent:cleo", turn_id="t", completed=False, failed=False,
-        turn_exit_reason="max_iterations_reached(7/7)", platform="slack", now=NOW,
+        turn_exit_reason="max_iterations_reached(7/7)", model="m", platform="slack", now=NOW,
+    )
+
+    assert record["outcome"] == "completed"
+    assert record["summary"] == "Replied on m (summary at the turn cap)."
+
+
+def test_a_turn_that_ended_without_an_answer_is_a_failure(outcome):
+    record = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="t", completed=False, failed=False,
+        turn_exit_reason="empty_response_exhausted", platform="slack", now=NOW,
     )
 
     assert record["outcome"] == "failed"
-    assert "max_iterations_reached(7/7)" in record["summary"]
+    assert "empty_response_exhausted" in record["summary"]
 
 
 @pytest.mark.parametrize(

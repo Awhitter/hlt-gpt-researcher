@@ -80,14 +80,24 @@ def reply_outcome_record(
 ) -> dict[str, Any] | None:
     """The ``agents.run.record`` arguments for one finished turn, or None."""
     turn_id = str(turn_id or "")
+    # Pop the start time first, so turns that are never reported (cron, an
+    # interrupt) do not linger in _TURN_STARTS.
     seconds = _turn_seconds(turn_id, monotonic_now)
     where = REPORTED_PLATFORMS.get(str(platform or "").strip().lower())
     if not agent_ref or not turn_id or not where or interrupted:
         return None
-    worked = bool(completed) and not failed
+    # A Slack turn that reaches its deliberate turn cap still answers: Hermes
+    # asks the model for a summary and delivers it, but reports completed=False.
+    # Counting that as a failure would flag Cleo "Replies are failing" in K2.
+    hit_turn_cap = str(turn_exit_reason or "").startswith("max_iterations_reached(")
+    worked = (bool(completed) or hit_turn_cap) and not failed
     model_name = str(model or "") or "unknown model"
     took = "" if seconds is None else f" in {seconds}s"
     finished = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+    def iso(moment: datetime) -> str:
+        return moment.isoformat().replace("+00:00", "Z")
+
     error = redact_error(turn_exit_reason) or "no error message"
     record: dict[str, Any] = {
         "agentRef": agent_ref,
@@ -95,20 +105,19 @@ def reply_outcome_record(
         "outcome": "completed" if worked else "failed",
         "runtime": "hermes",
         "summary": (
-            f"Replied{took} on {model_name}."
+            f"Replied{took} on {model_name}"
+            + (" (summary at the turn cap)." if hit_turn_cap and not completed else ".")
             if worked
             else f"Reply failed{took} on {model_name}: {error}"
         ),
         # A K2-dispatched run's session is hook:k2:<runId>, which ties this
         # record to K2's own row for the same mission.
         "externalRef": str(session_id or turn_id)[:500],
-        "completedAt": finished.isoformat().replace("+00:00", "Z"),
+        "completedAt": iso(finished),
         "idempotencyKey": f"turn:{turn_id}"[:200],
     }
     if seconds is not None:
-        record["startedAt"] = (
-            (finished - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
-        )
+        record["startedAt"] = iso(finished - timedelta(seconds=seconds))
     return record
 
 

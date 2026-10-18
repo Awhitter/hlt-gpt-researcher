@@ -18,7 +18,7 @@ irreversible effects. See SLACK_TOOLSETS and the hlt-k2-context effect policy.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -331,10 +331,9 @@ def resolve_model_route(model_route: Any) -> dict[str, Any]:
         return default_model_route_selection(
             reason="Katailyst2 names no model route for this agent"
         )
-    primary = model_route.get("primary") if isinstance(model_route, Mapping) else None
-    raw_fallbacks = (
-        model_route.get("fallbacks", []) if isinstance(model_route, Mapping) else None
-    )
+    fields = model_route if isinstance(model_route, Mapping) else {}
+    primary = fields.get("primary")
+    raw_fallbacks = fields.get("fallbacks")
     if raw_fallbacks is None:
         raw_fallbacks = []
     if not isinstance(primary, str) or not primary.strip() or not isinstance(
@@ -389,11 +388,18 @@ def expected_model_route(selection: Any = None) -> list[dict[str, str]]:
             )
             if candidate["source"] == "katailyst2":
                 resolved = candidate
+    return labelled_route(resolved["provider"], resolved["model"], resolved["fallbacks"])
+
+
+def labelled_route(
+    provider: str, model: str, fallbacks: Iterable[Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """A route as readiness names it: primary, then fallback-1, fallback-2, ..."""
     return [
-        {"provider": resolved["provider"], "model": resolved["model"], "role": "primary"},
+        {"provider": provider, "model": model, "role": "primary"},
         *[
             {**dict(route), "role": f"fallback-{index}"}
-            for index, route in enumerate(resolved["fallbacks"], start=1)
+            for index, route in enumerate(fallbacks, start=1)
         ],
     ]
 
@@ -846,7 +852,7 @@ def render(
     home_path = Path(home or _clean(env, "HERMES_HOME") or "/data/hermes")
     home_path.mkdir(parents=True, exist_ok=True)
     path = home_path / "config.yaml"
-    selection = dict(model_selection or default_model_route_selection())
+    selection = model_selection or default_model_route_selection()
 
     config = build_config(
         env, grounding_dir=str(home_path / "grounding"), model_selection=selection
@@ -857,19 +863,11 @@ def render(
         "config_path": str(path),
         "model": config["model"]["default"],
         "model_provider": config["model"]["provider"],
-        "configured_model_route": [
-            {
-                "provider": config["model"]["provider"],
-                "model": config["model"]["default"],
-                "role": "primary",
-            },
-            *[
-                {**route, "role": f"fallback-{index}"}
-                for index, route in enumerate(
-                    config.get("fallback_providers", []), start=1
-                )
-            ],
-        ],
+        "configured_model_route": labelled_route(
+            config["model"]["provider"],
+            config["model"]["default"],
+            config.get("fallback_providers", []),
+        ),
         # Where the route came from: katailyst2 (the agent's record),
         # reviewed_default (K2 names none), or reviewed_default_k2_refused.
         "model_route_selection": {
