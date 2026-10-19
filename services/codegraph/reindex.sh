@@ -87,7 +87,8 @@ FORCE="${CODEGRAPH_FORCE_REINDEX:-0}"
 # retain the last usable checkout if gc cannot recover enough room.
 MIN_FREE_MB="${CODEGRAPH_MIN_FREE_MB:-1024}"
 [[ "$MIN_FREE_MB" =~ ^[0-9]+$ ]] || MIN_FREE_MB=1024
-# Read by server.py's public /health: "running|ok|failed <time> [reason]".
+# Read by server.py's public /health: "running|ok|failed <time> [reason]" or
+# "paused <time> <count> <oldest last-indexed time|never>".
 STATUS_FILE="$REPOS_DIR/.hlt-reindex-status"
 
 mkdir -p "$REPOS_DIR"
@@ -218,6 +219,9 @@ clone_or_update() {
 }
 
 FAILED_REPOS=()
+PAUSED_REPOS=()
+# Oldest last-indexed time among paused repos, or "never".
+PAUSED_SINCE=""
 
 # One repo failing must not abort the rest (set -e would otherwise stop the loop).
 index_repo() {
@@ -230,7 +234,16 @@ index_repo() {
     [[ -f "$stamp" ]] && since="last indexed $(cat "$stamp")"
     echo "[codegraph] SKIPPING $slug — in CODEGRAPH_SKIP_REPOS ($since)." \
          "Its index is FROZEN and answers about it will go stale." >&2
-    [[ ! -f "$REPOS_DIR/$slug/.hlt-index-error" ]] || FAILED_REPOS+=("$slug")
+    # A pause, not a failure: the run did everything it was allowed to do. Any
+    # .hlt-index-error stays put, so /readiness still shows the last attempt.
+    PAUSED_REPOS+=("$slug")
+    local recorded=""
+    [[ -f "$stamp" ]] && recorded="$(cat "$stamp" 2>/dev/null)" || true
+    if [[ ! "$recorded" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      PAUSED_SINCE="never"
+    elif [[ "$PAUSED_SINCE" != "never" && ( -z "$PAUSED_SINCE" || "$recorded" < "$PAUSED_SINCE" ) ]]; then
+      PAUSED_SINCE="$recorded"
+    fi
     return
   fi
   if is_fresh "$slug"; then
@@ -274,6 +287,9 @@ if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished with failures: ${FAILED_REPOS[*]}" >&2
   write_status failed "${#FAILED_REPOS[@]} of the checkouts did not refresh"
   exit 1
+elif [[ ${#PAUSED_REPOS[@]} -gt 0 ]]; then
+  echo "[codegraph] reindex finished; paused: ${PAUSED_REPOS[*]}"
+  write_status paused "${#PAUSED_REPOS[@]} $PAUSED_SINCE"
 else
   write_status ok
 fi
