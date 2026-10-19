@@ -1,8 +1,9 @@
 """Bearer-token auth middleware for the hosted MCP server.
 
 Rejects requests missing a valid `Authorization: Bearer $MCP_AUTH_TOKEN`.
-Exempts `/health` so Railway's healthcheck passes without a token.
-No-op when `MCP_AUTH_TOKEN` is unset (local dev).
+Exempts `/health` so the host's healthcheck passes without a token.
+No-op when `MCP_AUTH_TOKEN` is unset (local dev); a hosted deploy (Render or
+Railway) refuses to start without it.
 """
 from __future__ import annotations
 
@@ -19,6 +20,16 @@ logger = logging.getLogger(__name__)
 _PUBLIC_PATHS: set[str] = {"/health"}
 
 
+def _is_hosted_deploy() -> bool:
+    """True on Render (which sets RENDER=true) or Railway."""
+
+    return bool(
+        os.getenv("RENDER")
+        or os.getenv("RAILWAY_ENVIRONMENT")
+        or os.getenv("RAILWAY_SERVICE_ID")
+    )
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     """Constant-time Bearer-token check for MCP traffic."""
 
@@ -26,11 +37,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._token = os.getenv("MCP_AUTH_TOKEN") or None
         if self._token is None:
-            if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"):
-                raise RuntimeError("MCP_AUTH_TOKEN must be set for Railway MCP deployments")
+            if _is_hosted_deploy():
+                raise RuntimeError("MCP_AUTH_TOKEN must be set for hosted MCP deployments")
             logger.warning(
                 "MCP_AUTH_TOKEN is unset; MCP server is running unauthenticated. "
-                "Set it in Railway env before exposing a public URL."
+                "Set it in the host env before exposing a public URL."
             )
 
     async def dispatch(self, request: Request, call_next):

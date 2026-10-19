@@ -23,7 +23,7 @@
     },
     "gpt-researcher": {
       "type": "http",
-      "url": "https://gpt-researcher-mcp-production.up.railway.app/mcp",
+      "url": "https://hlt-research-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer ${GPTR_MCP_TOKEN}"
       }

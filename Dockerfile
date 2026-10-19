@@ -55,7 +55,12 @@ RUN useradd -ms /bin/bash gpt-researcher && \
     # Add these lines to create and set permissions for outputs directory
     mkdir -p /usr/src/app/outputs && \
     chown -R gpt-researcher:gpt-researcher /usr/src/app/outputs && \
-    chmod 777 /usr/src/app/outputs
+    chmod 777 /usr/src/app/outputs && \
+    # Render disk mount point for the run store and reports (render.yaml).
+    # Owned by the app user so the non-root process can write to it, as
+    # services/agent does for /data.
+    mkdir -p /var/data && \
+    chown gpt-researcher:gpt-researcher /var/data
 USER gpt-researcher
 WORKDIR /usr/src/app
 

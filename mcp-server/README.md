@@ -7,7 +7,7 @@ can import the local `gpt_researcher` library from the repo root.
 Hosted endpoint:
 
 ```text
-https://gpt-researcher-mcp-production.up.railway.app/mcp
+https://hlt-research-mcp.onrender.com/mcp
 ```
 
 Auth:
@@ -19,7 +19,7 @@ Authorization: Bearer $GPTR_MCP_TOKEN
 Public health check:
 
 ```text
-https://gpt-researcher-mcp-production.up.railway.app/health
+https://hlt-research-mcp.onrender.com/health
 ```
 
 ## Tools
@@ -52,5 +52,5 @@ FastMCP validates the full HTTP `Host` header for streamable HTTP. Include the
 local port in `MCP_ALLOWED_HOSTS`; otherwise authenticated `/mcp` calls can fail
 with `Invalid Host header` even though `/health` works.
 
-The Railway MCP service also runs from the repo root. Do not set the service
+The Render MCP service (`hlt-research-mcp`) also builds from the repo root. Do not set the service
 root directory to `mcp-server/`; that would hide the parent package.

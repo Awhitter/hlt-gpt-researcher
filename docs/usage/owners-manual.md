@@ -21,16 +21,16 @@ outside the fork.
 | Surface | URL | Best for | Auth |
 | --- | --- | --- | --- |
 | Browser UI | `https://gpt-researcher-ui.vercel.app` | Human research sessions and visual report flow | Team login; research calls use server token flow |
-| API | `https://gpt-researcher-api-production.up.railway.app` | Scripts, Sidecar server routes, one-off REST clients | `X-API-Key: $API_AUTH_KEY` |
-| MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` | Agents, Claude Code, Claude Desktop, Cursor, Katailyst-discovered tool use | `Authorization: Bearer $GPTR_MCP_TOKEN` |
-| Automation jobs | `https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/*` | Make.com, n8n, or any caller that should start now and poll later | `Authorization: Bearer $GPTR_MCP_TOKEN` |
+| API | `https://hlt-research-api.onrender.com` | Scripts, Sidecar server routes, one-off REST clients | `X-API-Key: $API_AUTH_KEY` |
+| MCP | `https://hlt-research-mcp.onrender.com/mcp` | Agents, Claude Code, Claude Desktop, Cursor, Katailyst-discovered tool use | `Authorization: Bearer $GPTR_MCP_TOKEN` |
+| Automation jobs | `https://hlt-research-mcp.onrender.com/automation/research/jobs/v1/*` | Make.com, n8n, or any caller that should start now and poll later | `Authorization: Bearer $GPTR_MCP_TOKEN` |
 | Katailyst2 Registry | `https://katailyst2.vercel.app/mcp` | Discovery, routing, tool metadata, capability graph | Katailyst2 `kata_…` bearer token |
 
 Health checks:
 
 ```bash
-curl -fsS https://gpt-researcher-api-production.up.railway.app/health
-curl -fsS https://gpt-researcher-mcp-production.up.railway.app/health
+curl -fsS https://hlt-research-api.onrender.com/health
+curl -fsS https://hlt-research-mcp.onrender.com/health
 ```
 
 Connection details and raw curl examples live in
@@ -42,7 +42,7 @@ live in [`docs/usage/branding-and-catalyst-options.md`](./branding-and-catalyst-
 The browser UI is now branded as `Mastery Research`. Its launch screen includes
 research-scope controls for Code files, CMS/Registry, Metrics, and High-quality
 crawl. Those controls do not expose secrets to the browser; the backend expands
-them into server-side MCP presets from Railway env. If a selected scope is not
+them into server-side MCP presets from the API service env. If a selected scope is not
 configured, the run continues with a `hlt_scope_status` event that names the
 active and degraded scopes.
 
@@ -55,7 +55,7 @@ Researcher from anywhere. In this repo, `.mcp.json` already defines the
 ```json
 {
   "type": "http",
-  "url": "https://gpt-researcher-mcp-production.up.railway.app/mcp",
+  "url": "https://hlt-research-mcp.onrender.com/mcp",
   "headers": {
     "Authorization": "Bearer ${GPTR_MCP_TOKEN}"
   }
@@ -96,10 +96,10 @@ image and returns none if it still cannot find one.
 
 The MCP service keeps a bounded hot cache for live `GPTResearcher` objects and a
 SQLite metadata store for completed research context, source metadata, status,
-and report paths. Configure `RESEARCH_RUN_STORE_PATH` and `OUTPUTS_DIR` on a
-Railway volume when restart recovery matters. Railway volumes mount as `root`,
-so the hosted Docker services also set `RAILWAY_RUN_UID=0` to make the mounted
-SQLite and output paths writable.
+and report paths. Configure `RESEARCH_RUN_STORE_PATH` and `OUTPUTS_DIR` on the
+Render disk at `/var/data` when restart recovery matters (`render.yaml`). The
+Dockerfile creates `/var/data` owned by the non-root app user so the mounted
+SQLite and output paths are writable.
 
 ## Content Machine And Admin Handoff
 
@@ -415,20 +415,20 @@ rubrics, or a human review queue.
 | Scope selected but not used | Backend degraded the scope cleanly | Inspect `hlt_scope_status` in the WebSocket log |
 | Deep research is slow | Expected for broad queries or cold start | Narrow the query; use quick search first |
 | Weak sources | Query too broad or retriever underfilled | Add domains, narrow geography/date/persona, or retry |
-| Report looks alive but logs error | Check Railway logs and `outputs/*.json` handling | Run logging tests before redeploy |
+| Report looks alive but logs error | Check the Render service logs and `outputs/*.json` handling | Run logging tests before redeploy |
 
 ## Smoke Commands
 
 API:
 
 ```bash
-curl -fsS https://gpt-researcher-api-production.up.railway.app/health
+curl -fsS https://hlt-research-api.onrender.com/health
 
-curl -i -sS -X POST https://gpt-researcher-api-production.up.railway.app/api/quick_search \
+curl -i -sS -X POST https://hlt-research-api.onrender.com/api/quick_search \
   -H "Content-Type: application/json" \
   -d '{"query":"NCLEX-RN pass rate 2026","summary":true}'
 
-curl -sS -X POST https://gpt-researcher-api-production.up.railway.app/api/quick_search \
+curl -sS -X POST https://hlt-research-api.onrender.com/api/quick_search \
   -H "X-API-Key: $API_AUTH_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query":"NCLEX-RN pass rate 2026","summary":true}'
@@ -437,9 +437,9 @@ curl -sS -X POST https://gpt-researcher-api-production.up.railway.app/api/quick_
 MCP:
 
 ```bash
-curl -fsS https://gpt-researcher-mcp-production.up.railway.app/health
+curl -fsS https://hlt-research-mcp.onrender.com/health
 
-curl -i -sS https://gpt-researcher-mcp-production.up.railway.app/mcp
+curl -i -sS https://hlt-research-mcp.onrender.com/mcp
 ```
 
 Restart persistence:
@@ -453,7 +453,7 @@ UI/WebSocket:
 ```bash
 .venv/bin/python scripts/smoke_websocket_ui.py \
   --ui-url https://gpt-researcher-ui.vercel.app \
-  --api-url https://gpt-researcher-api-production.up.railway.app \
+  --api-url https://hlt-research-api.onrender.com \
   --scope codebase,metrics,firecrawl \
   --allow-degraded-scope
 ```
@@ -489,7 +489,7 @@ Do these in this order:
 5. Add cost/latency tags in the caller runtime so GPT Researcher usage can be
    measured by lane and output type.
 6. For production restart safety, keep the SQLite run store and generated
-   outputs on the same durable Railway volume.
+   outputs on the same durable Render disk.
 
 The automation facade is deliberately research-only. A successful async result
 contains a provider-neutral `knowledge.refine.preview` handoff with the report,

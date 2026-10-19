@@ -85,7 +85,7 @@ following servers auto-mount from `.mcp.json`:
    Live at `multimediamastery.vercel.app/api/media/v1/*`. Default image model:
    FAL nano-banana-2. Cloudinary upload server-side.
 3. **`gpt-researcher`** (HTTP, hosted) — HLT-hosted GPT Researcher MCP server.
-   URL: `https://gpt-researcher-mcp-production.up.railway.app/mcp`.
+   URL: `https://hlt-research-mcp.onrender.com/mcp`.
    Auth: `Authorization: Bearer ${GPTR_MCP_TOKEN}`. Tools:
    `deep_research`, `quick_search`, `write_report`, `get_research_sources`,
    `get_research_context`; resource: `research://{topic}`. Owner's manual:
@@ -126,7 +126,7 @@ Read/Write phase rail (`components/brain/ResearchProgress.tsx`); raw agent
 logs are collapsed by default.
 
 Research memory: finished reports persist to `REPORT_STORE_PATH`
-(`/data/reports.json` on the Railway volume) and are searchable at
+(`/var/data/reports.json` on the Render disk) and are searchable at
 `/api/brain/library` (Library tab). Run completion persists server-side
 (`server_utils.handle_start_command`) and sends a `report_complete`
 websocket message — pipelines like deep research don't stream `report`
@@ -189,6 +189,10 @@ Katailyst registry: this service is registered as the tier-1 capability
 `tool:http-api-https-gpt-researcher-api-production-up-railway-app-post-report`
 (name "Mastery Research (GPT Researcher)", staged, org-shared). Re-register or
 amend with `scripts/katailyst_mcp.py` + `scripts/katailyst_capability.md`.
+
+Research services: `hlt-research-api` (starter) and `hlt-research-mcp`
+(standard) run on Render from the repo-root `Dockerfile` (`render.yaml`; moved
+from Railway on 19 Oct 2026). Research models are OpenRouter GPT-6.1 Sol.
 
 Render sidecars: `hlt-codegraph` runs on the standard plan (gitnexus analyze
 OOMs on 512MB) with a 20GB disk at `/data`; boot reindex runs in the

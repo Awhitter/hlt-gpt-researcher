@@ -1,9 +1,180 @@
-# Mastery Research sidecars on Render (codegraph + Cleo).
+# Mastery Research on Render: the research API and MCP, plus the codegraph and
+# Cleo sidecars. The UI stays on Vercel.
 # Apply via Render Dashboard → Blueprints after this lands on the default branch,
 # or: https://dashboard.render.com/blueprints/new?repo=https://github.com/Awhitter/hlt-gpt-researcher
-# GPT Researcher API/MCP stay on Railway; UI on Vercel.
+# The API and MCP moved here from Railway on 19 Oct 2026. railway.toml and the
+# deploy-to-railway*.sh scripts describe the old Railway services, which stay up
+# until their callers have moved.
 
 services:
+  # GPT Researcher REST API (`backend.server.app`): the K2 `/gather` adapter,
+  # the Vercel UI's backend and scripted research. Both research services build
+  # from the repo-root Dockerfile; railway-start.sh picks the app by
+  # GPT_RESEARCHER_SERVICE.
+  - type: web
+    name: hlt-research-api
+    runtime: docker
+    # starter (512MB): the app imports in ~130MB and runs one research at a
+    # time for the UI and K2 /gather. MAX_SCRAPER_WORKERS stays at 5 to fit.
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    # The run store, reports and library survive restarts here. /var/data is
+    # created and owned by the app user in the Dockerfile.
+    disk:
+      name: research-api-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: GPT_RESEARCHER_SERVICE
+        value: api
+      - key: PORT
+        value: "8000"
+      - key: RESEARCH_RUN_STORE_PATH
+        value: /var/data/research_runs.sqlite3
+      - key: OUTPUTS_DIR
+        value: /var/data/outputs
+      - key: REPORT_STORE_PATH
+        value: /var/data/reports.json
+      # Research only, on OpenRouter (Alec, 15 Oct: small paid use is fine).
+      - key: FAST_LLM
+        value: openrouter:openai/gpt-6.1-sol
+      - key: SMART_LLM
+        value: openrouter:openai/gpt-6.1-sol
+      - key: STRATEGIC_LLM
+        value: openrouter:openai/gpt-6.1-sol
+      - key: EMBEDDING
+        value: openrouter:openai/text-embedding-3-small
+      # Firecrawl is the production search and scraper; Tavily is a fallback.
+      - key: RETRIEVER
+        value: firecrawl,mcp
+      - key: SCRAPER
+        value: firecrawl
+      - key: MAX_SCRAPER_WORKERS
+        value: "5"
+      - key: SCRAPER_RATE_LIMIT_DELAY
+        value: "0.5"
+      - key: KATAILYST2_MCP_URL
+        value: https://katailyst2.vercel.app/mcp
+      # Code scope falls back to GitHub's read-only MCP when the codegraph
+      # sidecar is not configured on this service.
+      - key: GITHUB_MCP_URL
+        value: https://api.githubcopilot.com/mcp/readonly
+      - key: CORS_ALLOW_ORIGINS
+        value: https://gpt-researcher-ui.vercel.app
+      # X-API-Key for every route but /health. K2 sends it as
+      # KATAILYST_RESEARCH_SOURCE_API_KEY; the UI as API_AUTH_KEY.
+      - key: API_AUTH_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: KATAILYST2_MCP_TOKEN
+        sync: false
+      - key: APIFY_TOKEN
+        sync: false
+      - key: GITHUB_MCP_TOKEN
+        sync: false
+      - key: CODEGRAPH_MCP_URL
+        sync: false
+      - key: CODEGRAPH_MCP_TOKEN
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: LINEAR_API_KEY
+        sync: false
+
+  # Hosted GPT Researcher MCP (`mcp_server.server`, streamable HTTP at /mcp)
+  # and the automation research jobs. Callers: K2 tool:mastery-research
+  # (lib/providers/mcp-proxy-mastery-research.ts) and Cleo (GPTR_MCP_URL).
+  - type: web
+    name: hlt-research-mcp
+    runtime: docker
+    # standard (2GB): it runs K2's research jobs, up to
+    # AUTOMATION_RESEARCH_MAX_CONCURRENT at once, each scraping in parallel.
+    plan: standard
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    # Durable automation job store: restart recovery depends on it.
+    disk:
+      name: research-mcp-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: GPT_RESEARCHER_SERVICE
+        value: mcp
+      - key: PORT
+        value: "8000"
+      # FastMCP checks the full Host header on /mcp.
+      - key: MCP_ALLOWED_HOSTS
+        value: hlt-research-mcp.onrender.com
+      - key: AUTOMATION_RESEARCH_MAX_CONCURRENT
+        value: "4"
+      - key: RESEARCH_RUN_STORE_PATH
+        value: /var/data/research_runs.sqlite3
+      - key: OUTPUTS_DIR
+        value: /var/data/outputs
+      - key: REPORT_STORE_PATH
+        value: /var/data/reports.json
+      - key: FAST_LLM
+        value: openrouter:openai/gpt-6.1-sol
+      - key: SMART_LLM
+        value: openrouter:openai/gpt-6.1-sol
+      - key: STRATEGIC_LLM
+        value: openrouter:openai/gpt-6.1-sol
+      - key: EMBEDDING
+        value: openrouter:openai/text-embedding-3-small
+      - key: RETRIEVER
+        value: firecrawl,mcp
+      - key: SCRAPER
+        value: firecrawl
+      - key: MAX_SCRAPER_WORKERS
+        value: "10"
+      - key: SCRAPER_RATE_LIMIT_DELAY
+        value: "0.5"
+      - key: KATAILYST2_MCP_URL
+        value: https://katailyst2.vercel.app/mcp
+      - key: GITHUB_MCP_URL
+        value: https://api.githubcopilot.com/mcp/readonly
+      # Bearer for /mcp and /automation/*; the same value as K2 vault
+      # gptr_mcp_token and Cleo's GPTR_MCP_TOKEN. The service refuses to start
+      # on Render without it.
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: KATAILYST2_MCP_TOKEN
+        sync: false
+      - key: APIFY_TOKEN
+        sync: false
+      - key: GITHUB_MCP_TOKEN
+        sync: false
+      - key: CODEGRAPH_MCP_URL
+        sync: false
+      - key: CODEGRAPH_MCP_TOKEN
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+
   - type: web
     name: hlt-codegraph
     runtime: docker

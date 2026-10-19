@@ -89,3 +89,27 @@ def test_returned_source_policy_round_trips_through_public_schema():
     assert parsed.model_dump(exclude_none=True) == payload
     with pytest.raises(ValidationError):
         SourcePolicyInput.model_validate({**payload, "version": "source_policy.v999"})
+
+
+@pytest.mark.parametrize("host_env", ["RENDER", "RAILWAY_ENVIRONMENT"])
+def test_hosted_mcp_refuses_to_start_without_a_bearer_token(monkeypatch, host_env):
+    from starlette.applications import Starlette
+
+    from mcp_server.auth import BearerAuthMiddleware
+
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    for name in ("RENDER", "RAILWAY_ENVIRONMENT", "RAILWAY_SERVICE_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(host_env, "true")
+
+    with pytest.raises(RuntimeError, match="MCP_AUTH_TOKEN must be set"):
+        BearerAuthMiddleware(Starlette())
+
+
+def test_mcp_health_reports_the_render_commit(monkeypatch):
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abcdef1234567890")
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+
+    response = TestClient(app).get("/health")
+
+    assert response.json()["version"] == "abcdef1"

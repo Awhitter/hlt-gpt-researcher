@@ -271,12 +271,12 @@ Step 2:
 Upstream GPT Researcher points users to the dedicated
 [gptr-mcp](https://github.com/assafelovic/gptr-mcp) repository. This HLT fork
 also ships a small hosted MCP overlay in `mcp_server/` so internal agents can use
-the local `gpt_researcher` package through Railway.
+the local `gpt_researcher` package through Render.
 
 Hosted HLT endpoint:
 
 ```text
-https://gpt-researcher-mcp-production.up.railway.app/mcp
+https://hlt-research-mcp.onrender.com/mcp
 ```
 
 Auth:
@@ -296,7 +296,7 @@ Features:
 - Claude Desktop, Claude Code, Cursor, and Katailyst integration
 - Fast `quick_search` plus stateful `deep_research` -> `write_report` flows
 
-For HLT connection details, Railway deployment notes, and curl smoke tests, see
+For HLT connection details, Render deployment notes, and curl smoke tests, see
 [`docs/usage/hosted-mcp.md`](docs/usage/hosted-mcp.md). For the upstream
 standalone server, use the [official gptr-mcp repository](https://github.com/assafelovic/gptr-mcp).
 

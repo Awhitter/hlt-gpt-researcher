@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Railway start dispatcher for the two HLT services that share this repo root.
+# Start dispatcher for the two HLT services that share this repo root and its
+# Dockerfile: Render `hlt-research-api` and `hlt-research-mcp` (render.yaml),
+# chosen by GPT_RESEARCHER_SERVICE. The name is historical: the Railway services
+# they replace run the same script.
 
 set -euo pipefail
 
