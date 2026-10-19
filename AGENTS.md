@@ -308,7 +308,9 @@ Five rules that exist because each was once a silent no-op:
 
 1. **Capability and effect permission are separate.** `platform_toolsets.slack`
    gives Cleo the practical web, file, code, browser, computer, schedule, media,
-   and MCP workbench needed to finish work. The K2 context hook asks only at the
+   and MCP workbench needed to finish work; unattended K2 runs get the same
+   minus the tools that would need an approval or a screen
+   (`UNATTENDED_EXCLUDED_TOOLSETS`). The K2 context hook asks only at the
    real outward or irreversible boundary: send, publish, spend, delete,
    credential/access change, or protected production change.
 2. **Company facts go in `services/agent/grounding/shared/AGENTS.md`** and
