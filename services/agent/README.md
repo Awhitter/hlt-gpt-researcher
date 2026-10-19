@@ -25,6 +25,10 @@ it separates configured routes from observed provider success, verifies Slack's
 actual OAuth grant, proves the canonical Katailyst2 door and Cleo contract, and
 reports the reversible retirement state of the old recurring briefs.
 
+The open work on Cleo (quick wins, her Katailyst page, the Hermes v0.22.2
+upgrade on a test copy, Slack, weekly work, Linear, model route) is tracked in
+[`docs/prd/cleo-plan.md`](../../docs/prd/cleo-plan.md).
+
 ## How the container is put together
 
 `health_gateway.py` is the main process. It:

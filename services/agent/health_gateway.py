@@ -1360,6 +1360,7 @@ def _hermes_api_json(
     token: str = "",
     payload: Mapping[str, Any] | None = None,
     session_key: str = "",
+    idempotency_key: str = "",
     timeout: float = 6.0,
 ) -> tuple[int, dict[str, Any]]:
     import urllib.error
@@ -1371,6 +1372,8 @@ def _hermes_api_json(
         headers["Authorization"] = f"Bearer {token}"
     if session_key:
         headers["X-Hermes-Session-Key"] = session_key
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     if payload is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(dict(payload)).encode("utf-8")
@@ -1435,6 +1438,13 @@ def _provider_status(value: Any) -> str:
         "success": "completed",
         "canceled": "cancelled",
         "aborted": "cancelled",
+        # Hermes marks a run interrupted when it restarted before the run
+        # settled ("The gateway restarted before this run settled."). It is
+        # terminal there, so K2 must see a terminal failure with that reason
+        # rather than an unknown status it polls until its own deadline.
+        "interrupted": "failed",
+        # A stop has been requested; the run is still winding down.
+        "stopping": "running",
     }
     return aliases.get(normalized, normalized or "unknown")
 
@@ -1598,6 +1608,10 @@ def _dispatch_to_hermes(
             method="POST",
             token=token,
             session_key=normalized["session_key"],
+            # Hermes keeps a durable status only for keyed runs, so a restart
+            # reports them interrupted instead of not found. A 429 is refused
+            # before the key is reserved, so the queued retry may reuse it.
+            idempotency_key=wrapper_id,
             payload={
                 "input": normalized["message"],
                 "session_id": normalized["session_key"],
@@ -1713,6 +1727,18 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
         )
         return 200, _admission_receipt(ledger.get(run_id) or record)
 
+    error_body = response.get("error")
+    if status == 404 and isinstance(error_body, Mapping) and (
+        error_body.get("code") == "run_not_found"
+    ):
+        # Hermes accepted this run but no longer knows it: an unkeyed run lost
+        # in a restart. Nothing will ever settle it, so close it for K2.
+        ledger.mark_terminal(
+            run_id,
+            "failed",
+            error="Cleo restarted and lost this run before it finished. Send it again.",
+        )
+        return 200, _admission_receipt(ledger.get(run_id) or record)
     returned_provider_id = str(response.get("run_id") or provider_run_id)
     if status != 200 or returned_provider_id != provider_run_id:
         ledger.note_provider_unknown(
