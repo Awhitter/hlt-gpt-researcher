@@ -152,6 +152,11 @@ export default function MobileLayout({
               </button>
             )}
 
+            {/* Every other HLT app, Katailyst first, read from Katailyst's registry (app/layout.tsx loads it). */}
+            {hltBranding.enabled && (
+              <hlt-app-switcher app="gpt-researcher" theme="dark" variant="ghost" className="text-gray-300" />
+            )}
+
             {!hltBranding.enabled && <button
               onClick={() => {
                 setShowSettings(!showSettings);

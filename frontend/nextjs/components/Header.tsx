@@ -79,6 +79,10 @@ const Header = ({
               Sign out
             </button>
           )}
+          {/* Every other HLT app, Katailyst first, read from Katailyst's registry (app/layout.tsx loads it). */}
+          {hltBranding.enabled && (
+            <hlt-app-switcher app="gpt-researcher" theme="dark" variant="ghost" className="text-slate-300" />
+          )}
           <div className="flex gap-2 transition-all duration-300 ease-in-out">
             {/* Stop button - shown only during active research */}
             {loading && !isStopped && (
