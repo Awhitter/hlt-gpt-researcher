@@ -2,10 +2,11 @@
 
 > Operator front door: [`START-HERE.md`](./START-HERE.md).
 
-HLT hosts this fork as two Railway services:
+HLT hosts this fork as two Render services, both built from the repo-root
+`Dockerfile` and declared in `render.yaml` (moved from Railway on 19 Oct 2026):
 
-- API/frontend: `https://gpt-researcher-api-production.up.railway.app`
-- MCP: `https://gpt-researcher-mcp-production.up.railway.app/mcp`
+- API/frontend: `https://hlt-research-api.onrender.com`
+- MCP: `https://hlt-research-mcp.onrender.com/mcp`
 
 The browser frontend uses the team-password sign-in. REST and MCP use separate
 machine credentials.
@@ -22,7 +23,7 @@ Claude Code / Cursor `.mcp.json`:
   "mcpServers": {
     "gpt-researcher": {
       "type": "http",
-      "url": "https://gpt-researcher-mcp-production.up.railway.app/mcp",
+      "url": "https://hlt-research-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer ${GPTR_MCP_TOKEN}"
       }
@@ -38,7 +39,7 @@ Claude Desktop:
   "mcpServers": {
     "gpt-researcher": {
       "type": "http",
-      "url": "https://gpt-researcher-mcp-production.up.railway.app/mcp",
+      "url": "https://hlt-research-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer ${GPTR_MCP_TOKEN}"
       }
@@ -51,7 +52,7 @@ Codex `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.mastery_research]
-url = "https://gpt-researcher-mcp-production.up.railway.app/mcp"
+url = "https://hlt-research-mcp.onrender.com/mcp"
 bearer_token_env_var = "GPTR_MCP_TOKEN"
 ```
 
@@ -59,7 +60,7 @@ K2/Hermes agents need only these runtime variables; the shared adapter creates
 the mount automatically:
 
 ```text
-GPTR_MCP_URL=https://gpt-researcher-mcp-production.up.railway.app/mcp
+GPTR_MCP_URL=https://hlt-research-mcp.onrender.com/mcp
 GPTR_MCP_TOKEN=<same value as the service MCP_AUTH_TOKEN>
 ```
 
@@ -86,7 +87,7 @@ Initialize and capture the MCP session id:
 
 ```bash
 headers="$(mktemp)"
-curl -sS -D "$headers" -X POST "https://gpt-researcher-mcp-production.up.railway.app/mcp" \
+curl -sS -D "$headers" -X POST "https://hlt-research-mcp.onrender.com/mcp" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -97,7 +98,7 @@ session_id="$(awk 'tolower($1) == "mcp-session-id:" {print $2}' "$headers" | tr 
 List tools:
 
 ```bash
-curl -sS -X POST "https://gpt-researcher-mcp-production.up.railway.app/mcp" \
+curl -sS -X POST "https://hlt-research-mcp.onrender.com/mcp" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN" \
   -H "mcp-session-id: $session_id" \
   -H "Content-Type: application/json" \
@@ -108,7 +109,7 @@ curl -sS -X POST "https://gpt-researcher-mcp-production.up.railway.app/mcp" \
 Call quick search:
 
 ```bash
-curl -sS -X POST "https://gpt-researcher-mcp-production.up.railway.app/mcp" \
+curl -sS -X POST "https://hlt-research-mcp.onrender.com/mcp" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN" \
   -H "mcp-session-id: $session_id" \
   -H "Content-Type: application/json" \
@@ -121,13 +122,13 @@ curl -sS -X POST "https://gpt-researcher-mcp-production.up.railway.app/mcp" \
 Health is public:
 
 ```bash
-curl -fsS "https://gpt-researcher-api-production.up.railway.app/health"
+curl -fsS "https://hlt-research-api.onrender.com/health"
 ```
 
 API calls require `X-API-Key`:
 
 ```bash
-curl -sS -X POST "https://gpt-researcher-api-production.up.railway.app/api/quick_search" \
+curl -sS -X POST "https://hlt-research-api.onrender.com/api/quick_search" \
   -H "X-API-Key: $API_AUTH_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query":"NCLEX-RN pass rate 2026","summary":true}'
@@ -136,7 +137,7 @@ curl -sS -X POST "https://gpt-researcher-api-production.up.railway.app/api/quick
 Deep report:
 
 ```bash
-curl -sS -X POST "https://gpt-researcher-api-production.up.railway.app/report/" \
+curl -sS -X POST "https://hlt-research-api.onrender.com/report/" \
   -H "X-API-Key: $API_AUTH_KEY" \
   -H "Content-Type: application/json" \
   -d '{"task":"Research NCLEX-RN pass rate changes in 2026","report_type":"research_report","report_source":"web","tone":"Objective","repo_name":"","branch_name":"","generate_in_background":false}'
@@ -149,7 +150,7 @@ without creating an MCP session or holding a connection while research runs:
 
 ```bash
 curl -sS -X POST \
-  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/start" \
+  "https://hlt-research-mcp.onrender.com/automation/research/jobs/v1/start" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -187,11 +188,11 @@ operation receipt with HTTP 200. Poll the paths with the same Bearer token:
 
 ```bash
 curl -sS \
-  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/make-research-2026-08-26-001/status" \
+  "https://hlt-research-mcp.onrender.com/automation/research/jobs/v1/make-research-2026-08-26-001/status" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN"
 
 curl -sS \
-  "https://gpt-researcher-mcp-production.up.railway.app/automation/research/jobs/v1/make-research-2026-08-26-001/result" \
+  "https://hlt-research-mcp.onrender.com/automation/research/jobs/v1/make-research-2026-08-26-001/result" \
   -H "Authorization: Bearer $GPTR_MCP_TOKEN"
 ```
 
@@ -260,20 +261,19 @@ Airtable.
 - MCP service secret: `MCP_AUTH_TOKEN`, sent as `Authorization: Bearer ...`.
 - Local MCP client secret: `GPTR_MCP_TOKEN`; set it to the same value as
   `MCP_AUTH_TOKEN` for clients.
-- Durable run metadata: `RESEARCH_RUN_STORE_PATH`, backed by SQLite. On Railway,
-  set this to a mounted volume path such as `/data/research_runs.sqlite3`.
-- Generated report/log files: `OUTPUTS_DIR`. On Railway, set this to the same
-  mounted volume, such as `/data/outputs`.
-- Volume permissions: Railway mounts volumes as `root`; these hosted Docker
-  services set `RAILWAY_RUN_UID=0` so SQLite metadata and report files are
-  writable on the mounted volume.
+- Durable run metadata: `RESEARCH_RUN_STORE_PATH`, backed by SQLite
+  (`/var/data/research_runs.sqlite3` on Render).
+- Generated report/log files: `OUTPUTS_DIR` (`/var/data/outputs`), with the
+  report library at `REPORT_STORE_PATH` (`/var/data/reports.json`).
+- `/var/data` is the Render disk mount in `render.yaml`. The Dockerfile creates
+  it owned by the non-root app user, so the process can write to the disk.
+  Without a disk the same paths work but reset on every deploy.
 
-To rotate:
-
-1. Set a new `API_AUTH_KEY` or `MCP_AUTH_TOKEN` in Railway.
-2. Redeploy the affected service.
-3. Update local client env (`API_AUTH_KEY` or `GPTR_MCP_TOKEN`).
-4. Re-run the smoke commands above.
+Keys are not rotated for security reasons (Alec, 19 Oct 2026). To change one
+on his request: set it in the Render service env, update every caller in the
+same pass (K2 vault `gptr_mcp_token`, Cleo's `GPTR_MCP_TOKEN`, K2 Vercel
+`KATAILYST_RESEARCH_SOURCE_API_KEY`, the UI's `API_AUTH_KEY`), then re-run the
+smoke commands above.
 
 ## Katailyst Integration
 
@@ -297,7 +297,7 @@ without running a full report:
 ```bash
 .venv/bin/python scripts/smoke_websocket_ui.py \
   --ui-url https://gpt-researcher-ui.vercel.app \
-  --api-url https://gpt-researcher-api-production.up.railway.app \
+  --api-url https://hlt-research-api.onrender.com \
   --scope codebase,metrics,firecrawl \
   --allow-degraded-scope
 ```

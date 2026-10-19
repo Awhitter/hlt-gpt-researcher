@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test the deployed Vercel UI token route and Railway WebSocket path.
+"""Smoke-test the deployed Vercel UI token route and the API WebSocket path.
 
 This intentionally exits after the first non-error stream event. The backend
 will cancel the research task when the WebSocket closes, keeping the smoke test
@@ -164,7 +164,7 @@ async def smoke(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ui-url", default="https://gpt-researcher-ui.vercel.app")
-    parser.add_argument("--api-url", default="https://gpt-researcher-api-production.up.railway.app")
+    parser.add_argument("--api-url", default="https://hlt-research-api.onrender.com")
     parser.add_argument("--query", default="smoke test: GPT Researcher WebSocket startup")
     parser.add_argument(
         "--scope",

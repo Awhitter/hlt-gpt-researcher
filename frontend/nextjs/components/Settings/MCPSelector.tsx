@@ -325,7 +325,7 @@ const MCPSelector: React.FC<MCPSelectorProps> = ({
                 </button>
               </div>
               <small className="text-muted" style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '0.85rem', marginTop: '8px', display: 'block' }}>
-                HLT presets expand server-side from Railway env, so private tokens never enter the browser.
+                HLT presets expand server-side from the API service env, so private tokens never enter the browser.
               </small>
             </div>
 

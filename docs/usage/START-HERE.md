@@ -18,10 +18,10 @@ cites sources.
 | Who | Door | URL / mount | Status |
 | --- | --- | --- | --- |
 | Humans (Kim, Bruce, marketing) | Browser UI | https://gpt-researcher-ui.vercel.app | live |
-| Agents (Claude Code, Cursor, Katailyst2) | MCP | `https://gpt-researcher-mcp-production.up.railway.app/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
+| Agents (Claude Code, Cursor, Katailyst2) | MCP | `https://hlt-research-mcp.onrender.com/mcp` · Bearer `$GPTR_MCP_TOKEN` | live |
 | Make.com, n8n, simple automations | Nonblocking strict HTTP jobs | `POST …/automation/research/jobs/v1/start` → `GET …/{request_id}/status` → `GET …/{request_id}/result` · Bearer `$GPTR_MCP_TOKEN` | deploy with the MCP service |
-| Existing blocking callers | Strict HTTP compatibility route | `POST https://gpt-researcher-mcp-production.up.railway.app/automation/research/v1` · Bearer `$GPTR_MCP_TOKEN` | preserved |
-| Scripts / Sidecar | REST API | `https://gpt-researcher-api-production.up.railway.app` · `X-API-Key: $API_AUTH_KEY` | live |
+| Existing blocking callers | Strict HTTP compatibility route | `POST https://hlt-research-mcp.onrender.com/automation/research/v1` · Bearer `$GPTR_MCP_TOKEN` | preserved |
+| Scripts / Sidecar | REST API | `https://hlt-research-api.onrender.com` · `X-API-Key: $API_AUTH_KEY` | live |
 | Humans, in Slack | **Cleo**, Nursing Mastery product-owner facilitator | `hlt-hermes` on Render → https://hlt-hermes.onrender.com/health | trust the current `/health` seam readback |
 
 The research core is the provider layer. Katailyst2 is the canonical
@@ -109,8 +109,8 @@ local development.
 
 | Surface | Command | Notes |
 | --- | --- | --- |
-| Backend API (Railway) | `./deploy-to-railway.sh` | reads local `.env`; healthcheck `GET /health` |
-| MCP server (Railway) | `./deploy-to-railway-mcp.sh` | same pattern; redeploy BOTH when `backend/server/*` changes — the MCP routes through the same request prep |
+| Backend API (Render `hlt-research-api`) | merge to `main` (auto-deploy) | `render.yaml`; healthcheck `GET /health` |
+| MCP server (Render `hlt-research-mcp`) | merge to `main` (auto-deploy) | same image; both redeploy on every merge, so `backend/server/*` changes reach the MCP's request prep too |
 | Team UI (Vercel) | `cd frontend/nextjs && vercel --prod --scope alecs-projects-e88e78a8` | project `gpt-researcher-ui`; the CLI's default scope is the HLT team, so pass the scope explicitly |
 
 ## Is it working? (60 seconds)

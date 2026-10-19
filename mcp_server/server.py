@@ -40,6 +40,7 @@ def _allowed_hosts() -> list[str]:
         "localhost",
         "0.0.0.0",
         "gpt-researcher-mcp-production.up.railway.app",
+        "hlt-research-mcp.onrender.com",
     ]
 
 
@@ -67,7 +68,11 @@ async def health_check(request):  # noqa: D401, ANN001
         {
             "status": "ok",
             "service": "gpt-researcher-mcp",
-            "version": os.getenv("RAILWAY_GIT_COMMIT_SHA", "local")[:7],
+            "version": (
+                os.getenv("RENDER_GIT_COMMIT")
+                or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+                or "local"
+            )[:7],
             "deploy_marker": os.getenv("HLT_DEPLOY_MARKER", "local"),
             "observability": {
                 "langfuse": get_langfuse_runtime_status(),

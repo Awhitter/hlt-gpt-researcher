@@ -20,9 +20,9 @@ exception — it is web-only, because it runs no MCP tools and reads no local
 corpora (see its docstring in `app.py`).
 
 Adds:
-  1. `GET /health` - dedicated liveness probe (Railway healthcheck target).
+  1. `GET /health` - dedicated liveness probe (Render healthcheck target).
   2. `X-API-Key` middleware - rejects unauthenticated requests outside the
-     frontend shell and static assets. Set `API_AUTH_KEY` in Railway env; if
+     frontend shell and static assets. Set `API_AUTH_KEY` in the host env; if
      unset, the middleware is a no-op (useful for local dev).
   3. `/api/brain/*` and scope-aware research request preparation.
 
@@ -95,7 +95,7 @@ _WS_TOKEN_TTL_SECONDS = 120
 _CODEGRAPH_HEALTH_TTL_SECONDS = 30
 _codegraph_health_cache: tuple[float, list[dict[str, Any]]] | None = None
 
-# Paths that must remain callable without auth so the frontend + Railway
+# Paths that must remain callable without auth so the frontend + Render
 # healthcheck + static assets keep working. Tight allowlist — every other
 # route requires `X-API-Key`.
 _PUBLIC_EXACT: set[str] = {"/", "/health", "/favicon.ico"}
@@ -1085,14 +1085,18 @@ def install(
     if extra_public_prefixes:
         public_prefixes.extend(extra_public_prefixes)
 
-    # 1. /health — local liveness for Railway and the estate monitor. Dependency
+    # 1. /health — local liveness for Render and the estate monitor. Dependency
     # probes and corpus scans belong only to authenticated /api/hlt/readiness.
     @app.get("/health", tags=["hlt"])
     def health():  # noqa: D401
         return {
             "status": "ok",
             "service": "gpt-researcher-api",
-            "version": os.getenv("RAILWAY_GIT_COMMIT_SHA", "local")[:7],
+            "version": (
+                os.getenv("RENDER_GIT_COMMIT")
+                or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+                or "local"
+            )[:7],
             "deploy_marker": os.getenv("HLT_DEPLOY_MARKER", "local"),
             "observability": {
                 "langfuse": get_langfuse_runtime_status(),

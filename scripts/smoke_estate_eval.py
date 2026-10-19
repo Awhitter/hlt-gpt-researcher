@@ -298,7 +298,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--api-url",
-        default="https://gpt-researcher-api-production.up.railway.app",
+        default="https://hlt-research-api.onrender.com",
         help="Backend API base URL (hosts the research WebSocket)",
     )
     parser.add_argument("--depth", choices=["fast", "balanced", "deep"], default="fast")

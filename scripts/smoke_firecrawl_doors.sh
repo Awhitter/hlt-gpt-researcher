@@ -5,7 +5,7 @@
 # Receipts print sizes and status only — never token material.
 set -euo pipefail
 
-BASE="${GPTR_MCP_BASE:-https://gpt-researcher-mcp-production.up.railway.app}"
+BASE="${GPTR_MCP_BASE:-https://hlt-research-mcp.onrender.com}"
 TOK="${GPTR_MCP_TOKEN:?set GPTR_MCP_TOKEN (never echo it)}"
 QUERY="${SMOKE_QUERY:-US nurse residency program turnover reduction evidence 2026}"
 JOB_ID="${SMOKE_JOB_ID:-estate-smoke-$(date +%Y-%m-%d)-a}"
