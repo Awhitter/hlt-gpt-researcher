@@ -65,7 +65,10 @@ in our own code, not Hermes overlays).
 - [x] Queue a mission while Cleo is busy; accept `cleo` and `agent:cleo` (#158)
 - [x] Drop unattended-unsafe toolsets from K2 missions; first-turn answer rule (#159)
 - [ ] Close K2 runs Hermes reports `interrupted` (restart mid-run) as failed with
-      Hermes' reason, and treat `stopping` as running (`health_gateway._provider_status`)
+      Hermes' reason, and treat `stopping` as running (`health_gateway._provider_status`).
+      Send `Idempotency-Key: <wrapper id>` on `POST /v1/runs` (native at our pin),
+      because Hermes keeps a durable status only for keyed runs; without it a
+      restarted run is 404, which now also closes as failed.
 - [x] **Prove #159 live**: run `d7e7ed98` (19 Oct) answered `CLEO-OK 1591` in one
       model call, zero tool turns, 18,052 input tokens (was 67,375 on `48f7bb09`)
 - [ ] **Report cost to K2.** Hermes returns token usage; K2 shows `spentUsd: 0`.
@@ -139,9 +142,11 @@ file:line evidence, from the 19 Oct research (`hermes-upgrade-inventory.md`,
 summarized here; re-derive if the session scratchpad is gone).
 
 Headline facts a future session must not miss:
-- **All 19 overlays fail to apply.** 5 drop (web deps, both stream-final
-  fixes, Codex Astra, most of Codex terminal refresh), 1 partly defers
-  (`scheduled_run_budget`: keep only the loop `admit_iteration` hook), 13 port.
+- **All 18 overlays (`services/agent/hermes_patches/*.patch`) fail to apply.**
+  5 drop (web deps, both stream-final fixes, Codex Astra, most of Codex
+  terminal refresh), 1 partly defers (`scheduled_run_budget`: keep only the
+  loop `admit_iteration` hook), 12 port (the 4,677-line lifecycle patch splits
+  into four smaller overlays).
 - **Python 3.13 no longer works**: every core dependency is marked
   `python_version >= '3.14'`; pip on 3.13 installs Hermes with no deps.
 - **Dashboard/TUI build changed**: `web/package.json build` runs
@@ -187,8 +192,9 @@ Headline facts a future session must not miss:
        `execute_code` effect classifier (from the lifecycle patch, part e);
        explicit `approvals.unattended_mode: deny`.
 3. [ ] K2 run contract: `api_runs_turn_budget` + loop hook; `api_runs_numeric_grounding`
-       with a session-end fix that is safe with memory pooling. Consider sending
-       `Idempotency-Key: <wrapper id>` (native now) to retire the ambiguous-dispatch class.
+       with a session-end fix that is safe with memory pooling. Keep sending
+       `Idempotency-Key: <wrapper id>` (added in Phase 1); re-check that a 429
+       still refuses before the key is reserved at the new pin.
 4. [ ] Trivial ports: platform turn budget, `always_loaded` tools (+ decide
        `defer`), K2 pack prompt refresh, quiet provider failover, bare-transfer
        context, readiness counts.

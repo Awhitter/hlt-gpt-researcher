@@ -3721,6 +3721,8 @@ def test_agent_hook_dispatches_a_real_pollable_hermes_run(monkeypatch, tmp_path)
     assert calls[0][0] == "/v1/runs"
     assert calls[0][1]["token"] == "a-secure-shared-hook-token"
     assert calls[0][1]["session_key"] == f"hook:k2:{K2_RUN_ID}"
+    # Keyed so Hermes keeps a durable status that survives its own restart.
+    assert calls[0][1]["idempotency_key"] == WRAPPER_RUN_ID
     assert calls[0][1]["payload"]["session_id"] == f"hook:k2:{K2_RUN_ID}"
     assert calls[0][1]["payload"]["max_iterations"] == 4
     assert "25% of the budget" in calls[0][1]["payload"]["instructions"]
@@ -4283,6 +4285,27 @@ def test_agent_hook_poll_closes_a_run_hermes_interrupted_on_restart(
     _, closed = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
     assert closed["terminal"] is True and closed["status"] == "failed"
     assert "restarted before this run settled" in closed["error"]
+
+
+def test_agent_hook_poll_closes_a_run_hermes_no_longer_knows(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    run_id = "run_" + "d" * 32
+
+    def fake_hermes(path, **kwargs):
+        if path == "/v1/runs":
+            return 202, {"run_id": run_id, "status": "started"}
+        return 404, {"error": {"message": f"Run not found: {run_id}"}}
+
+    monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
+    monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)
+    health_gateway.dispatch_agent_hook(_hook_payload())
+
+    _, closed = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert closed["terminal"] is True and closed["status"] == "failed"
+    assert "lost this run" in closed["error"]
 
 
 @pytest.mark.parametrize("hermes_status", ["running", "waiting_for_approval"])
