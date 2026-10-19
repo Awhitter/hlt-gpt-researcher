@@ -1578,15 +1578,8 @@ def _deny_unattended_approval(provider_run_id: str) -> None:
             type(exc).__name__,
         )
         return
-    if status == 200:
-        logger.info("refused a pending approval on unattended run %s", provider_run_id)
-    else:
-        # A second poll can arrive after the first refusal resolved the card.
-        logger.info(
-            "pending approval on unattended run %s not refused (HTTP %s)",
-            provider_run_id,
-            status,
-        )
+    # 409 is normal: a later poll can land after an earlier refusal cleared it.
+    logger.info("approval refusal on unattended run %s: HTTP %s", provider_run_id, status)
 
 
 def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
