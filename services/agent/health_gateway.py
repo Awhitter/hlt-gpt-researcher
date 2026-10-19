@@ -1551,17 +1551,11 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _deny_unattended_approval(provider_run_id: str) -> None:
-    """Refuse a dangerous-command card that nobody on a K2 mission can answer.
+    """Deny every pending approval card on a K2 run; nobody can answer it.
 
-    Pinned Hermes means ``api_server`` runs to follow ``approvals.unattended_mode``
-    (default deny), but the gateway process exports ``HERMES_EXEC_ASK``, which
-    routes a flagged shell command to the approval card instead, and nothing on
-    this path ever answers it. On 18 and 19 Oct a one-line proof mission ran a
-    shell command, sat at the card until the run was stopped, and ended
-    interrupted, so the reply never reached K2's ledger. Denying at once is what
-    Hermes does on its other unattended surfaces: the model is told the command
-    was refused and finishes the turn another way. ``all`` clears every queued
-    card in one call, since each one blocks its own tool thread.
+    Hermes means ``api_server`` runs to follow ``approvals.unattended_mode: deny``,
+    but the gateway's ``HERMES_EXEC_ASK`` sends flagged shell commands to a card
+    instead, so the run waited until it was stopped and its reply was lost.
     """
     try:
         status, _ = _hermes_api_json(
@@ -1569,7 +1563,7 @@ def _deny_unattended_approval(provider_run_id: str) -> None:
             method="POST",
             token=_hook_token(),
             payload={"choice": "deny", "all": True},
-            timeout=4.0,
+            timeout=4.0,  # runs inline in K2's status poll
         )
     except Exception as exc:
         logger.warning(
@@ -1578,8 +1572,11 @@ def _deny_unattended_approval(provider_run_id: str) -> None:
             type(exc).__name__,
         )
         return
-    # 409 is normal: a later poll can land after an earlier refusal cleared it.
-    logger.info("approval refusal on unattended run %s: HTTP %s", provider_run_id, status)
+    logger.info(
+        "approval refusal on unattended run %s: HTTP %s (409 = already cleared)",
+        provider_run_id,
+        status,
+    )
 
 
 def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
