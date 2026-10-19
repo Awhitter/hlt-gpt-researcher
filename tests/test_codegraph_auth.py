@@ -297,16 +297,57 @@ exec {real_git} "$@"
         assert first.result(timeout=15).returncode == 0
 
 
-def test_frozen_failure_is_not_relabelled_as_ok(tmp_path):
+def test_frozen_failure_is_reported_as_paused_not_ok(tmp_path):
     repos = tmp_path / "repos"
     checkout = repos / "demo"
     checkout.mkdir(parents=True)
     error = checkout / ".hlt-index-error"
     error.write_text("previous failure")
     result = _run_reindex(repos, tmp_path, CODEGRAPH_REPOS="demo|example/demo", CODEGRAPH_SKIP_REPOS="demo")
-    assert result.returncode == 1
+    assert result.returncode == 0, result.stderr
     assert error.read_text() == "previous failure"
-    assert (repos / ".hlt-reindex-status").read_text().startswith("failed ")
+    assert (repos / ".hlt-reindex-status").read_text().split()[0] == "paused"
+
+
+def test_paused_run_records_count_and_oldest_index(tmp_path):
+    repos = tmp_path / "repos"
+    for slug, stamp in (("old", "2026-08-06T06:18:27Z"), ("newer", "2026-09-22T20:22:39Z")):
+        (repos / slug).mkdir(parents=True)
+        (repos / slug / ".hlt-indexed-at").write_text(stamp + "\n")
+    (repos / "newer" / ".hlt-index-error").write_text("previous failure")
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="newer|example/newer,old|example/old",
+        CODEGRAPH_SKIP_REPOS="newer,old",
+    )
+    assert result.returncode == 0, result.stderr
+    state, _, count, since = (repos / ".hlt-reindex-status").read_text().split()
+    assert (state, count, since) == ("paused", "2", "2026-08-06T06:18:27Z")
+
+    (repos / "never").mkdir()
+    _run_reindex(repos, tmp_path, CODEGRAPH_REPOS="old|example/old,never|example/never", CODEGRAPH_SKIP_REPOS="old,never")
+    assert (repos / ".hlt-reindex-status").read_text().split()[2:] == ["2", "never"]
+
+
+def test_public_health_names_paused_count_and_date_but_no_repositories(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    ran = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    status = tmp_path / ".hlt-reindex-status"
+    status.write_text(f"paused {ran.strftime('%Y-%m-%dT%H:%M:%SZ')} 5 2026-08-06T06:18:27Z\n")
+    payload = json.loads(asyncio.run(server.health_check(None)).body)
+    assert payload["status"] == "degraded"
+    assert payload["reason"] == (
+        f"Daily refresh ran {ran.day} {ran:%b %H:%M} UTC. "
+        "5 repositories paused since 6 Aug; answers about them are stale."
+    )
+    for repo in server.REPO_GITHUB:
+        assert repo not in json.dumps(payload)
+
+    status.write_text("paused 2026-01-01T00:00:00Z 1 never\n")
+    reason = json.loads(asyncio.run(server.health_check(None)).body)["reason"]
+    assert reason == "The last re-index is stale; answers may be stale."
 
 
 def test_recent_stamp_does_not_hide_a_failed_refresh(tmp_path):

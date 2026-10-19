@@ -635,7 +635,7 @@ def _index_problem() -> str | None:
     if free_mb is not None and free_mb < min_free_mb:
         return "The index disk is nearly full; answers may be stale."
     try:
-        state, stamp, *_ = (Path(REPOS_DIR) / ".hlt-reindex-status").read_text(encoding="utf-8").split()
+        state, stamp, *detail = (Path(REPOS_DIR) / ".hlt-reindex-status").read_text(encoding="utf-8").split()
     except FileNotFoundError:
         return "No completed re-index has been verified; answers may be stale."
     except (OSError, ValueError):
@@ -651,11 +651,30 @@ def _index_problem() -> str | None:
         if age > timedelta(hours=3):
             return "The last re-index did not finish; answers may be stale."
         return "A re-index is in progress; freshness has not been verified."
-    if state == "ok" and age > timedelta(hours=INDEX_STALE_HOURS):
+    if state in {"ok", "paused"} and age > timedelta(hours=INDEX_STALE_HOURS):
         return "The last re-index is stale; answers may be stale."
+    if state == "paused":
+        return _paused_reason(started, detail)
     if state not in {"running", "ok"}:
         return "Index health could not be checked; answers may be stale."
     return None
+
+
+def _paused_reason(ran: datetime, detail: list[str]) -> str:
+    """The run finished; some repositories sit on CODEGRAPH_SKIP_REPOS. No names: /health is public."""
+    count = detail[0] if detail and detail[0].isdigit() else "Some"
+    since = ""
+    if len(detail) > 1:
+        try:
+            oldest = datetime.strptime(detail[1], "%Y-%m-%dT%H:%M:%SZ")
+            since = f" since {oldest.day} {oldest:%b}"
+        except ValueError:  # "never": at least one paused repo has no index yet
+            pass
+    noun = "repository" if count == "1" else "repositories"
+    return (
+        f"Daily refresh ran {ran.day} {ran:%b %H:%M} UTC. "
+        f"{count} {noun} paused{since}; answers about them are stale."
+    )
 
 
 @mcp.custom_route("/readiness", methods=["GET"])
