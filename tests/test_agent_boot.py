@@ -4297,7 +4297,9 @@ def test_agent_hook_poll_closes_a_run_hermes_no_longer_knows(monkeypatch, tmp_pa
     def fake_hermes(path, **kwargs):
         if path == "/v1/runs":
             return 202, {"run_id": run_id, "status": "started"}
-        return 404, {"error": {"message": f"Run not found: {run_id}"}}
+        return 404, {
+            "error": {"message": f"Run not found: {run_id}", "code": "run_not_found"}
+        }
 
     monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
     monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)

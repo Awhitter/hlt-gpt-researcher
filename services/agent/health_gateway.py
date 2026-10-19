@@ -1727,7 +1727,10 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
         )
         return 200, _admission_receipt(ledger.get(run_id) or record)
 
-    if status == 404:
+    error_body = response.get("error")
+    if status == 404 and isinstance(error_body, Mapping) and (
+        error_body.get("code") == "run_not_found"
+    ):
         # Hermes accepted this run but no longer knows it: an unkeyed run lost
         # in a restart. Nothing will ever settle it, so close it for K2.
         ledger.mark_terminal(
