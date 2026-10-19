@@ -1550,6 +1550,45 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
     return _admission_receipt(ledger.get(wrapper_id) or record)
 
 
+def _deny_unattended_approval(provider_run_id: str) -> None:
+    """Refuse a dangerous-command card that nobody on a K2 mission can answer.
+
+    Pinned Hermes means ``api_server`` runs to follow ``approvals.unattended_mode``
+    (default deny), but the gateway process exports ``HERMES_EXEC_ASK``, which
+    routes a flagged shell command to the approval card instead, and nothing on
+    this path ever answers it. On 18 and 19 Oct a one-line proof mission ran a
+    shell command, sat at the card until the run was stopped, and ended
+    interrupted, so the reply never reached K2's ledger. Denying at once is what
+    Hermes does on its other unattended surfaces: the model is told the command
+    was refused and finishes the turn another way. ``all`` clears every queued
+    card in one call, since each one blocks its own tool thread.
+    """
+    try:
+        status, _ = _hermes_api_json(
+            f"/v1/runs/{provider_run_id}/approval",
+            method="POST",
+            token=_hook_token(),
+            payload={"choice": "deny", "all": True},
+            timeout=4.0,
+        )
+    except Exception as exc:
+        logger.warning(
+            "could not refuse the pending approval on unattended run %s: %s",
+            provider_run_id,
+            type(exc).__name__,
+        )
+        return
+    if status == 200:
+        logger.info("refused a pending approval on unattended run %s", provider_run_id)
+    else:
+        # A second poll can arrive after the first refusal resolved the card.
+        logger.info(
+            "pending approval on unattended run %s not refused (HTTP %s)",
+            provider_run_id,
+            status,
+        )
+
+
 def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
     if not re.fullmatch(r"run_[a-f0-9]{32}", run_id):
         return 400, {"ok": False, "error": "invalid runId"}
@@ -1601,6 +1640,8 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
         )
     elif provider_status in {"queued", "running", "waiting_for_approval"}:
         ledger.note_provider_status(run_id, provider_status)
+        if provider_status == "waiting_for_approval":
+            _deny_unattended_approval(provider_run_id)
     else:
         ledger.note_provider_unknown(
             run_id,

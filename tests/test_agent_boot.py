@@ -4061,6 +4061,48 @@ def test_agent_hook_poll_preserves_terminal_truth(
         assert body["usage"] == {"total_tokens": 42}
 
 
+@pytest.mark.parametrize("hermes_status", ["running", "waiting_for_approval"])
+def test_agent_hook_poll_refuses_an_approval_nobody_can_answer(
+    monkeypatch, tmp_path, hermes_status
+):
+    health_gateway = _load_health_gateway()
+    run_id = "run_" + "b" * 32
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    approvals = []
+
+    def fake_hermes(path, **kwargs):
+        if path == "/v1/runs":
+            return 202, {"run_id": run_id, "status": "started"}
+        if path.endswith("/approval"):
+            approvals.append((path, kwargs.get("method"), kwargs.get("payload")))
+            return 200, {"run_id": run_id, "status": "running"}
+        return 200, {"run_id": run_id, "status": hermes_status}
+
+    monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
+    monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)
+    admitted = health_gateway.agent_hook(
+        _hook_payload(), authorization="Bearer a-secure-shared-hook-token"
+    )
+    assert admitted.status_code == 202
+
+    response = health_gateway.agent_hook_run(
+        WRAPPER_RUN_ID, authorization="Bearer a-secure-shared-hook-token"
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["status"] == hermes_status
+    # A K2 mission has nobody at Hermes' approval card; refusing it lets the turn
+    # finish (and reach K2's reply ledger) instead of waiting until it is stopped.
+    expected = (
+        [(f"/v1/runs/{run_id}/approval", "POST", {"choice": "deny", "all": True})]
+        if hermes_status == "waiting_for_approval"
+        else []
+    )
+    assert approvals == expected
+
+
 def test_terminal_receipt_is_redacted_bounded_and_survives_restart(
     monkeypatch, tmp_path
 ):
