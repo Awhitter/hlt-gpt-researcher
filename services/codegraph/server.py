@@ -668,8 +668,8 @@ def _paused_reason(ran: datetime, detail: list[str]) -> str:
         try:
             oldest = datetime.strptime(detail[1], "%Y-%m-%dT%H:%M:%SZ")
             since = f" since {oldest.day} {oldest:%b}"
-        except ValueError:
-            since = " and never indexed" if detail[1] == "never" else ""
+        except ValueError:  # "never": at least one paused repo has no index yet
+            pass
     noun = "repository" if count == "1" else "repositories"
     return (
         f"Daily refresh ran {ran.day} {ran:%b %H:%M} UTC. "
