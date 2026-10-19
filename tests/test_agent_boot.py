@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -3777,6 +3778,139 @@ def test_agent_hook_rejects_a_session_that_does_not_match_the_k2_run(monkeypatch
 
     assert response.status_code == 400
     assert "exactly match" in json.loads(response.body)["error"]
+
+
+def test_agent_hook_accepts_the_bare_agent_ref_k2_forwards():
+    health_gateway = _load_health_gateway()
+    health_gateway.BOOT.clear()
+    health_gateway.BOOT["agent_ref"] = "agent:cleo"
+    payload = _hook_payload()
+    payload["metadata"]["katailyst_agent_ref"] = "cleo"
+
+    assert health_gateway._validate_hook_payload(payload)["agent_ref"] == "agent:cleo"
+    payload["metadata"]["katailyst_agent_ref"] = "agent:lila"
+    with pytest.raises(ValueError, match="katailyst_agent_ref"):
+        health_gateway._validate_hook_payload(payload)
+
+
+SECOND_K2_RUN_ID = "22222222-2222-4222-8222-222222222222"
+SECOND_WRAPPER_RUN_ID = "run_22222222222242228222222222222222"
+
+
+def _second_hook_payload():
+    payload = _hook_payload(message="Draft the new-grad pay explainer.")
+    payload["sessionKey"] = f"hook:k2:{SECOND_K2_RUN_ID}"
+    payload["metadata"]["katailyst_run_id"] = SECOND_K2_RUN_ID
+    return payload
+
+
+def _busy_hermes(health_gateway, monkeypatch):
+    """Hermes with one API slot: a second admission gets its real 429."""
+    state = {"busy": False, "posts": [], "scheduled": []}
+
+    def fake_hermes(path, **kwargs):
+        if path == "/v1/runs":
+            if state["busy"]:
+                return 429, {"error": {"message": "Too many concurrent runs (max 1)"}}
+            state["busy"] = True
+            state["posts"].append(kwargs["payload"])
+            return 202, {"run_id": "run_" + uuid.uuid4().hex}
+        return 200, {"run_id": path.rsplit("/", 1)[-1], "status": "running"}
+
+    monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
+    monkeypatch.setattr(
+        health_gateway,
+        "_schedule_run_timeout",
+        lambda run_id, token, seconds: state["scheduled"].append(seconds),
+    )
+    return state
+
+
+def test_a_mission_sent_while_cleo_is_busy_waits_its_turn(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    hermes = _busy_hermes(health_gateway, monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(health_gateway.time, "monotonic", lambda: clock[0])
+
+    first = health_gateway.dispatch_agent_hook(_hook_payload())
+    second = health_gateway.dispatch_agent_hook(_second_hook_payload())
+
+    assert first["admissionStatus"] == "provider_bound"
+    # The 429 used to close this mission as failed; it now waits, unsent.
+    assert second["status"] == "queued" and second["terminal"] is False
+    assert len(hermes["posts"]) == 1
+
+    clock[0] += 12
+    _, still_waiting = health_gateway.read_agent_hook_run(SECOND_WRAPPER_RUN_ID)
+    assert still_waiting["status"] == "queued"
+
+    hermes["busy"] = False
+    clock[0] += 8
+    _, started = health_gateway.read_agent_hook_run(SECOND_WRAPPER_RUN_ID)
+
+    assert started["admissionStatus"] == "provider_bound"
+    assert hermes["posts"][1]["input"] == "Draft the new-grad pay explainer."
+    # The 20 seconds spent waiting come out of the mission's own budget.
+    assert hermes["scheduled"] == [300, 280]
+    assert "budget is 280 seconds" in hermes["posts"][1]["instructions"]
+
+
+def test_a_waiting_mission_fails_plainly_instead_of_hanging(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    hermes = _busy_hermes(health_gateway, monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(health_gateway.time, "monotonic", lambda: clock[0])
+
+    health_gateway.dispatch_agent_hook(_hook_payload())
+    health_gateway.dispatch_agent_hook(_second_hook_payload())
+
+    # Cleo stays busy for the whole budget: the waiting mission is closed.
+    clock[0] += 290
+    _, expired = health_gateway.read_agent_hook_run(SECOND_WRAPPER_RUN_ID)
+    assert expired["terminal"] is True and expired["status"] == "failed"
+    assert "whole time budget" in expired["error"]
+    assert len(hermes["posts"]) == 1
+
+
+def test_a_restart_fails_waiting_missions_and_an_exact_replay_requeues(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    before = _load_health_gateway()
+    _set_hook_runtime_ready(monkeypatch, before)
+    _busy_hermes(before, monkeypatch)
+    before.dispatch_agent_hook(_hook_payload())
+    before.dispatch_agent_hook(_second_hook_payload())
+
+    # A new process has an empty in-memory line but the same durable ledger.
+    after = _load_health_gateway()
+    _set_hook_runtime_ready(monkeypatch, after)
+    hermes = _busy_hermes(after, monkeypatch)
+    replayed = after.dispatch_agent_hook(_second_hook_payload())
+    assert replayed["admissionStatus"] == "provider_bound"
+    assert len(hermes["posts"]) == 1
+
+    lost = _load_health_gateway()
+    _set_hook_runtime_ready(monkeypatch, lost)
+    third = _hook_payload(message="Summarize the funnel.")
+    third_id = "33333333-3333-4333-8333-333333333333"
+    third["sessionKey"] = f"hook:k2:{third_id}"
+    third["metadata"]["katailyst_run_id"] = third_id
+    _busy_hermes(lost, monkeypatch)["busy"] = True
+    lost.dispatch_agent_hook(third)
+
+    restarted = _load_health_gateway()
+    _set_hook_runtime_ready(monkeypatch, restarted)
+    _, closed = restarted.read_agent_hook_run("run_" + third_id.replace("-", ""))
+    assert closed["terminal"] is True
+    assert "restarted while this mission waited" in closed["error"]
 
 
 def test_concurrent_exact_replays_cross_the_provider_boundary_once(

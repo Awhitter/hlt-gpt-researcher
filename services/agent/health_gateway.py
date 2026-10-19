@@ -565,6 +565,18 @@ SLACK_IDENTITY_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 _RUN_LEDGER_LOCK = threading.Lock()
 _RUN_LEDGER: agent_run_ledger.AgentRunLedger | None = None
 _RUN_LEDGER_PATH: Path | None = None
+# Hermes runs one API mission at a time (gateway.api_server.max_concurrent_runs).
+# A K2 mission that arrives while Cleo is busy waits here, oldest first, and is
+# dispatched by its own K2 status poll. Memory only: the ledger stores no
+# mission text, so a restart fails the waiting missions instead of losing them
+# silently.
+_HOOK_QUEUE_LOCK = threading.Lock()
+_HOOK_QUEUE: dict[str, dict[str, Any]] = {}
+# K2 polls every five seconds; a mission nobody has polled for this long was
+# abandoned by K2 and must not hold up the line.
+HOOK_QUEUE_ABANDONED_SECONDS = 45
+# Starting a mission with less budget than this would only produce a timeout.
+HOOK_QUEUE_MIN_RUN_SECONDS = 30
 
 
 def _read_integer_file(path: Path) -> int | None:
@@ -1234,7 +1246,10 @@ def _validate_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     metadata = payload.get("metadata")
     if not isinstance(metadata, Mapping):
         raise ValueError("metadata must be an object")
-    if metadata.get("katailyst_agent_ref") != expected_ref:
+    # K2 forwards the ref its caller typed, so "cleo" and "agent:cleo" both
+    # name this runtime.
+    supplied_ref = str(metadata.get("katailyst_agent_ref") or "").strip()
+    if supplied_ref.removeprefix("agent:") != expected_ref.removeprefix("agent:"):
         raise ValueError("metadata.katailyst_agent_ref does not match this runtime")
     k2_run_id = str(metadata.get("katailyst_run_id") or "").strip()
     if not k2_run_id:
@@ -1486,15 +1501,91 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
         fingerprint=_hook_admission_fingerprint(normalized),
     )
     wrapper_id = str(record["wrapper_run_id"])
+    if record.get("admission_status") != "queued":
+        return _admission_receipt(record)
+    # An exact replay after a restart brings the mission text back, so it can
+    # rejoin the line instead of being failed as lost.
+    now = time.monotonic()
+    with _HOOK_QUEUE_LOCK:
+        _HOOK_QUEUE.setdefault(
+            wrapper_id,
+            {"normalized": normalized, "queued_at": now, "polled_at": now},
+        )
+    return _advance_hook_queue(wrapper_id)
 
-    # Only the process that atomically moves queued -> dispatching may call
+
+def _fail_queued_mission(wrapper_id: str, reason: str) -> None:
+    if get_agent_run_ledger().fail_queued(wrapper_id, reason):
+        logger.warning("queued K2 mission %s failed: %s", wrapper_id, reason)
+
+
+def _advance_hook_queue(wrapper_id: str) -> dict[str, Any]:
+    """Send this waiting mission to Hermes if it is next in line."""
+    ledger = get_agent_run_ledger()
+    now = time.monotonic()
+    with _HOOK_QUEUE_LOCK:
+        abandoned = [
+            other_id
+            for other_id, other in _HOOK_QUEUE.items()
+            if other_id != wrapper_id
+            and now - other["polled_at"] > HOOK_QUEUE_ABANDONED_SECONDS
+        ]
+        for other_id in abandoned:
+            del _HOOK_QUEUE[other_id]
+        entry = _HOOK_QUEUE.get(wrapper_id)
+        if entry is not None:
+            entry["polled_at"] = now
+        next_id = min(
+            _HOOK_QUEUE, key=lambda key: _HOOK_QUEUE[key]["queued_at"], default=None
+        )
+    for other_id in abandoned:
+        _fail_queued_mission(
+            other_id,
+            "K2 stopped checking on this mission while it waited for Cleo; "
+            "nothing was sent to the model.",
+        )
+    if entry is None:
+        _fail_queued_mission(
+            wrapper_id,
+            "Cleo restarted while this mission waited for an earlier one; "
+            "nothing was sent to the model. Send it again.",
+        )
+        return _admission_receipt(ledger.get(wrapper_id) or {})
+    if next_id != wrapper_id:
+        return _admission_receipt(ledger.get(wrapper_id) or {})
+
+    normalized = entry["normalized"]
+    budget = int(normalized["timeout_seconds"])
+    remaining = budget - int(now - entry["queued_at"])
+    if remaining < max(1, min(HOOK_QUEUE_MIN_RUN_SECONDS, budget // 2)):
+        with _HOOK_QUEUE_LOCK:
+            _HOOK_QUEUE.pop(wrapper_id, None)
+        _fail_queued_mission(
+            wrapper_id,
+            "Cleo was busy with another mission for this mission's whole time "
+            "budget; nothing was sent to the model. Send it again.",
+        )
+        return _admission_receipt(ledger.get(wrapper_id) or {})
+
+    # Only the caller that atomically moves queued -> dispatching may call
     # Hermes. A replay of dispatching is the crash-ambiguous state and must not
     # speculate that a second POST is safe.
-    if record.get("admission_status") != "queued" or not ledger.claim_dispatch(
-        wrapper_id
-    ):
-        return _admission_receipt(ledger.get(wrapper_id) or record)
+    if not ledger.claim_dispatch(wrapper_id):
+        return _admission_receipt(ledger.get(wrapper_id) or {})
+    receipt = _dispatch_to_hermes(
+        wrapper_id, {**normalized, "timeout_seconds": remaining}
+    )
+    if receipt.get("admissionStatus") != "queued":
+        with _HOOK_QUEUE_LOCK:
+            _HOOK_QUEUE.pop(wrapper_id, None)
+    return receipt
 
+
+def _dispatch_to_hermes(
+    wrapper_id: str, normalized: Mapping[str, Any]
+) -> dict[str, Any]:
+    ledger = get_agent_run_ledger()
+    record: Mapping[str, Any] = {}
     token = _hook_token()
     try:
         status, response = _hermes_api_json(
@@ -1539,7 +1630,12 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(error, Mapping):
         error = error.get("message") or error.get("code")
     detail = f"Hermes admission HTTP {status}: {error or 'invalid response'}"
-    if 400 <= status < 500:
+    if status == 429:
+        # Hermes refuses for concurrency before it creates a run, so this
+        # mission provably never started: put it back in line.
+        ledger.release_dispatch(wrapper_id)
+        logger.info("K2 mission %s waits: Cleo is busy (%s)", wrapper_id, detail)
+    elif 400 <= status < 500:
         # A concrete client rejection is the one safe proof that Hermes did not
         # accept this mission. Persist it as terminal so K2 can close the run.
         ledger.mark_terminal(wrapper_id, "failed", error=detail)
@@ -1586,6 +1682,8 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
     record = ledger.get(run_id)
     if record is None:
         return 404, {"ok": False, "runId": run_id, "error": "run not admitted"}
+    if record.get("admission_status") == "queued":
+        return 200, _advance_hook_queue(run_id)
     if record.get("admission_status") != "provider_bound":
         return 200, _admission_receipt(record)
 
