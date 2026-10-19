@@ -32,7 +32,7 @@ one Linear grooming pass Alec approved with a single yes.
 | K2 missions | Working | Runs `48f7bb09`, `00abe3e8`, `105ebcea` completed 19 Oct with receipts |
 | Busy handling | Working | #158: a second mission waits instead of failing (live proof 19 Oct) |
 | Approval cards on missions | Working | #157: auto-refused; seen in live logs 19 Oct |
-| Mission tool weight | Shipped | #159: unattended missions lose shell/code/browser/etc. Measure tokens on next proof |
+| Mission tool weight | Working | #159: one call, no tools, 18k input tokens on run `d7e7ed98` (was 67k) |
 | Slack answers | Unproven | Only one Cleo Slack message in 2 weeks (a failure, 16 Oct) |
 | Weekly work | Off | All Hermes cron jobs retired (Aug 21, Sep 7) after spam |
 | Linear grooming | Not built | `file-a-linear-story` skill only; writes not gated in code |
@@ -66,8 +66,8 @@ in our own code, not Hermes overlays).
 - [x] Drop unattended-unsafe toolsets from K2 missions; first-turn answer rule (#159)
 - [ ] Close K2 runs Hermes reports `interrupted` (restart mid-run) as failed with
       Hermes' reason, and treat `stopping` as running (`health_gateway._provider_status`)
-- [ ] **Prove #159 live**: rerun the "no tools" proof; target zero tool attempts
-      and well under the 67k input tokens of run `48f7bb09`
+- [x] **Prove #159 live**: run `d7e7ed98` (19 Oct) answered `CLEO-OK 1591` in one
+      model call, zero tool turns, 18,052 input tokens (was 67,375 on `48f7bb09`)
 - [ ] **Report cost to K2.** Hermes returns token usage; K2 shows `spentUsd: 0`.
       Find where K2 turns host usage into `spentUsd` (K2 `agents.run.*`,
       `lib/agents/durable-agent-run-service.ts`) and either send a cost figure
