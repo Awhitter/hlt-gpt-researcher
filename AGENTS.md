@@ -290,8 +290,10 @@ final. Keep both upstream patch assertions green when advancing the pin.
 
 K2 runtime-pack rows with `linkType: product_binding` are inline product
 context, not `registry.get` targets. Cleo should reason from that supplied
-summary and use a real `hub:*` ref for retrieval. External API runs queue one
-at a time so they cannot double the worker set beside Slack; `/health.resources`
+summary and use a real `hub:*` ref for retrieval. External API runs go one
+at a time so they cannot double the worker set beside Slack. A mission that
+arrives while one runs waits in an in-memory line that K2's status polls move
+forward; it is never failed for Hermes' busy 429. `/health.resources`
 reports cgroup headroom and per-process RSS as advisory telemetry only.
 
 Cleo's bounded fleet jobs are installed through the native Hermes scheduler by

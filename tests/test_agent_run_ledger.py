@@ -82,6 +82,27 @@ def test_dispatch_claim_is_one_way_and_provider_binding_is_durable(tmp_path):
     assert record["provider_run_id"] == "run_" + "a" * 32
 
 
+def test_a_refused_claim_returns_to_the_queue_and_only_queued_rows_fail(tmp_path):
+    store = ledger_module.AgentRunLedger(tmp_path / "agent-runs.sqlite3")
+    _admit(store)
+
+    with pytest.raises(ledger_module.AdmissionStateError):
+        store.release_dispatch(WRAPPER_RUN_ID)
+    assert store.claim_dispatch(WRAPPER_RUN_ID) is True
+    store.release_dispatch(WRAPPER_RUN_ID)
+    assert store.get(WRAPPER_RUN_ID)["admission_status"] == "queued"
+
+    assert store.claim_dispatch(WRAPPER_RUN_ID) is True
+    assert store.fail_queued(WRAPPER_RUN_ID, "too late") is False
+    store.release_dispatch(WRAPPER_RUN_ID)
+    assert store.fail_queued(WRAPPER_RUN_ID, "Cleo was busy") is True
+    record = store.get(WRAPPER_RUN_ID)
+    assert record["admission_status"] == "terminal"
+    assert record["provider_status"] == "failed"
+    assert record["error_text"] == "Cleo was busy"
+    assert store.claim_dispatch(WRAPPER_RUN_ID) is False
+
+
 def test_terminal_output_is_bounded_and_secret_redacted(tmp_path):
     store = ledger_module.AgentRunLedger(tmp_path / "agent-runs.sqlite3")
     _admit(store)

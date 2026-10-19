@@ -286,6 +286,43 @@ class AgentRunLedger:
             )
         return cursor.rowcount == 1
 
+    def release_dispatch(self, run_id: str) -> None:
+        """Return a claim to the queue after Hermes provably refused it.
+
+        Only a 429 at admission qualifies: Hermes rejects for concurrency before
+        it creates a run, so nothing crossed the provider boundary.
+        """
+        with self._lock, closing(self._connect()) as conn, conn:
+            cursor = conn.execute(
+                """
+                UPDATE agent_run_admissions
+                   SET admission_status = 'queued',
+                       provider_status = 'queued',
+                       recovery_code = NULL,
+                       updated_at = ?
+                 WHERE wrapper_run_id = ? AND admission_status = 'dispatching'
+                """,
+                (utc_now_iso(), run_id),
+            )
+        if cursor.rowcount != 1:
+            raise AdmissionStateError("cannot release a non-dispatching admission")
+
+    def fail_queued(self, run_id: str, error: Any) -> bool:
+        """Close a mission that never reached Hermes. False if it moved on."""
+        now = utc_now_iso()
+        with self._lock, closing(self._connect()) as conn, conn:
+            cursor = conn.execute(
+                """
+                UPDATE agent_run_admissions
+                   SET admission_status = 'terminal', provider_status = 'failed',
+                       recovery_code = NULL, error_text = ?, updated_at = ?,
+                       terminal_at = ?
+                 WHERE wrapper_run_id = ? AND admission_status = 'queued'
+                """,
+                (redact_bounded_text(error, MAX_ERROR_CHARS), now, now, run_id),
+            )
+        return cursor.rowcount == 1
+
     def mark_dispatch_ambiguous(self, run_id: str, detail: Any = "") -> None:
         with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
