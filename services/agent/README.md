@@ -268,6 +268,13 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
   bound, the native Hermes run. Only `completed`, `failed` and `cancelled` are
   terminal; `waiting_for_approval` stays nonterminal. Terminal output and usage
   are bounded, secret-redacted, and persisted across wrapper restarts.
+- Nobody can answer a Hermes approval card on a K2 run, so a poll that sees
+  `waiting_for_approval` denies every pending card for that run, whatever
+  raised it. This is the `approvals.unattended_mode: deny` posture Hermes
+  intends for `api_server` runs; plugin effect approvals already resolve that
+  way, but the gateway's `HERMES_EXEC_ASK` routes flagged shell commands to a
+  card. The model hears the action was refused and finishes its reply. Only
+  runs in this wrapper's ledger are affected.
 - The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
   not synthesize a second agent loop, does not post into Slack, and retains
   Hermes' normal model, tools and session behavior.

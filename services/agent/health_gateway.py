@@ -1550,6 +1550,35 @@ def dispatch_agent_hook(payload: Mapping[str, Any]) -> dict[str, Any]:
     return _admission_receipt(ledger.get(wrapper_id) or record)
 
 
+def _deny_unattended_approval(provider_run_id: str) -> None:
+    """Deny every pending approval card on a K2 run; nobody can answer it.
+
+    Hermes means ``api_server`` runs to follow ``approvals.unattended_mode: deny``,
+    but the gateway's ``HERMES_EXEC_ASK`` sends flagged shell commands to a card
+    instead, so the run waited until it was stopped and its reply was lost.
+    """
+    try:
+        status, _ = _hermes_api_json(
+            f"/v1/runs/{provider_run_id}/approval",
+            method="POST",
+            token=_hook_token(),
+            payload={"choice": "deny", "all": True},
+            timeout=4.0,  # runs inline in K2's status poll
+        )
+    except Exception as exc:
+        logger.warning(
+            "could not refuse the pending approval on unattended run %s: %s",
+            provider_run_id,
+            type(exc).__name__,
+        )
+        return
+    logger.info(
+        "approval refusal on unattended run %s: HTTP %s (409 = already cleared)",
+        provider_run_id,
+        status,
+    )
+
+
 def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
     if not re.fullmatch(r"run_[a-f0-9]{32}", run_id):
         return 400, {"ok": False, "error": "invalid runId"}
@@ -1601,6 +1630,8 @@ def read_agent_hook_run(run_id: str) -> tuple[int, dict[str, Any]]:
         )
     elif provider_status in {"queued", "running", "waiting_for_approval"}:
         ledger.note_provider_status(run_id, provider_status)
+        if provider_status == "waiting_for_approval":
+            _deny_unattended_approval(provider_run_id)
     else:
         ledger.note_provider_unknown(
             run_id,
