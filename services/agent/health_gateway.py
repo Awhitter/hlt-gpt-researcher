@@ -1572,13 +1572,17 @@ def _advance_hook_queue(wrapper_id: str) -> dict[str, Any]:
     # speculate that a second POST is safe.
     if not ledger.claim_dispatch(wrapper_id):
         return _admission_receipt(ledger.get(wrapper_id) or {})
-    receipt = _dispatch_to_hermes(
-        wrapper_id, {**normalized, "timeout_seconds": remaining}
-    )
-    if receipt.get("admissionStatus") != "queued":
-        with _HOOK_QUEUE_LOCK:
-            _HOOK_QUEUE.pop(wrapper_id, None)
-    return receipt
+    try:
+        return _dispatch_to_hermes(
+            wrapper_id, {**normalized, "timeout_seconds": remaining}
+        )
+    finally:
+        # Leave the line unless Hermes sent this mission back to wait, so a
+        # failure after the claim cannot hold up everyone behind it.
+        record = ledger.get(wrapper_id) or {}
+        if record.get("admission_status") != "queued":
+            with _HOOK_QUEUE_LOCK:
+                _HOOK_QUEUE.pop(wrapper_id, None)
 
 
 def _dispatch_to_hermes(

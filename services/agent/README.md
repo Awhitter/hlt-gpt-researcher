@@ -272,9 +272,10 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
   status poll moves the oldest waiting mission forward, and the time it waited
   comes out of its `timeoutSeconds`. The line lives in memory because the
   ledger stores no mission text, so a waiting mission fails plainly when Cleo
-  restarts (an exact K2 replay re-queues it), when K2 stops polling it for
-  45 seconds, or when the wait leaves under half its budget (30 seconds at
-  most). Nothing reaches the model in any of those cases.
+  restarts (an exact K2 replay re-queues it with a fresh budget), when the
+  line next moves after K2 has not polled it for 45 seconds, or when the wait
+  leaves under half its budget (30 seconds at most). Nothing reaches the model
+  in any of those cases.
 - `GET /hooks/agent/runs/{runId}` reads the durable wrapper ledger and, once
   bound, the native Hermes run. Only `completed`, `failed` and `cancelled` are
   terminal; `waiting_for_approval` stays nonterminal. Terminal output and usage

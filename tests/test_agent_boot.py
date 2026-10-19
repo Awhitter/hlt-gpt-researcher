@@ -3878,6 +3878,58 @@ def test_a_waiting_mission_fails_plainly_instead_of_hanging(monkeypatch, tmp_pat
     assert len(hermes["posts"]) == 1
 
 
+def test_the_line_is_first_in_first_out_and_skips_abandoned_missions(
+    monkeypatch, tmp_path
+):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    hermes = _busy_hermes(health_gateway, monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(health_gateway.time, "monotonic", lambda: clock[0])
+    third = _hook_payload(message="Summarize the funnel.")
+    third_id = "33333333-3333-4333-8333-333333333333"
+    third_wrapper = "run_" + third_id.replace("-", "")
+    third["sessionKey"] = f"hook:k2:{third_id}"
+    third["metadata"]["katailyst_run_id"] = third_id
+
+    health_gateway.dispatch_agent_hook(_hook_payload())
+    clock[0] += 1
+    health_gateway.dispatch_agent_hook(_second_hook_payload())
+    clock[0] += 1
+    health_gateway.dispatch_agent_hook(third)
+
+    # Cleo frees up, but the third mission cannot jump the second.
+    hermes["busy"] = False
+    _, behind = health_gateway.read_agent_hook_run(third_wrapper)
+    assert behind["status"] == "queued" and len(hermes["posts"]) == 1
+
+    # K2 gave up on the second mission; the third's next poll clears it.
+    clock[0] += 50
+    _, started = health_gateway.read_agent_hook_run(third_wrapper)
+    assert started["admissionStatus"] == "provider_bound"
+    assert hermes["posts"][1]["input"] == "Summarize the funnel."
+    _, abandoned = health_gateway.read_agent_hook_run(SECOND_WRAPPER_RUN_ID)
+    assert abandoned["terminal"] is True
+    assert "stopped checking" in abandoned["error"]
+
+
+def test_a_failure_after_the_claim_does_not_block_the_line(monkeypatch, tmp_path):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(health_gateway, "_dispatch_to_hermes", broken)
+    with pytest.raises(RuntimeError):
+        health_gateway.dispatch_agent_hook(_hook_payload())
+    assert health_gateway._HOOK_QUEUE == {}
+
+
 def test_a_restart_fails_waiting_missions_and_an_exact_replay_requeues(
     monkeypatch, tmp_path
 ):
