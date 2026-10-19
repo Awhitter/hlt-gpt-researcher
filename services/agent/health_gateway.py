@@ -1344,6 +1344,7 @@ def _hosted_k2_run_instructions(normalized: Mapping[str, Any]) -> str:
             "This is a governed internal Katailyst2 mission for Cleo.",
             f"The hard end-to-end execution budget is {timeout_seconds} seconds; its clock starts before the first model call.",
             turn_contract,
+            "If the request itself holds everything the answer needs, or it asks for no tools, answer in this first turn with no tool calls.",
             f"Spend no more than {retrieval_seconds} seconds (25% of the budget) on all retrieval and tool calls combined, and begin composing the final answer no later than {final_by_seconds} seconds after start, reserving {reserve_seconds} seconds to finish.",
             source_contract,
             "Return the best evidence-bounded answer before the deadline even when some evidence remains unavailable; never trade the requested final for more discovery.",

@@ -586,9 +586,38 @@ def slack_toolsets(servers: Mapping[str, Any]) -> list[str]:
     return list(SLACK_TOOLSETS) + sorted(f"mcp-{name}" for name in servers)
 
 
+# A K2 mission runs unattended, so nobody can answer an approval card or a
+# clarifying question. These toolsets either always need one there (shell,
+# code, schedules, sub-agents, paid media) or a live screen that the API host
+# lacks (browser, computer). Offering them only cost each call their schemas
+# and a wasted turn: on 19 Oct a "use no tools" proof still tried
+# execute_code and terminal before answering.
+UNATTENDED_EXCLUDED_TOOLSETS = frozenset(
+    {
+        "terminal",
+        "code_execution",
+        "browser",
+        "computer_use",
+        "cronjob",
+        "clarify",
+        "delegation",
+        "image_gen",
+        "tts",
+    }
+)
+
+
 def api_server_toolsets(servers: Mapping[str, Any]) -> list[str]:
-    """Keep native reads available; spillover ownership is session-bound."""
-    return slack_toolsets(servers)
+    """Slack's workbench minus what cannot run unattended.
+
+    Native reads, skills and every MCP server stay; spillover ownership is
+    session-bound.
+    """
+    return [
+        name
+        for name in slack_toolsets(servers)
+        if name not in UNATTENDED_EXCLUDED_TOOLSETS
+    ]
 
 
 def build_config(

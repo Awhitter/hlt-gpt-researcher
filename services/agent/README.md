@@ -289,7 +289,14 @@ All routes below require `Authorization: Bearer $OPENCLAW_HQ_HOOK_TOKEN`.
   runs in this wrapper's ledger are affected.
 - The wrapper dispatches to Hermes' loopback-only `/v1/runs` surface. It does
   not synthesize a second agent loop, does not post into Slack, and retains
-  Hermes' normal model, tools and session behavior.
+  Hermes' normal model and session behavior.
+- K2 runs get Slack's workbench minus `UNATTENDED_EXCLUDED_TOOLSETS`
+  (`render_config.py`): terminal, code execution, browser, computer, cron,
+  clarify, delegation, image and speech generation. Unattended, each of those
+  needs an approval or a question nobody can answer, or a screen the host
+  lacks. Reads, files, skills, `read_spillover` and every MCP server stay. The
+  per-run instructions also tell Cleo to answer in her first turn, with no
+  tool calls, when the request holds everything the answer needs.
 - `timeoutSeconds` is the hard end-to-end provider budget. The per-run system
   instructions cap retrieval at 25%, reserve time for the requested final, use
   K2-selected context refs directly, and allow at most one focused recovery

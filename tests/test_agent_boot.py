@@ -118,6 +118,12 @@ def test_external_runs_use_the_pinned_hermes_loopback_surface():
         config["mcp_servers"]
     )
     assert "hlt-context" in config["platform_toolsets"]["api_server"]
+    # Unattended K2 missions keep reads, skills and every MCP server but not
+    # tools that need an approval nobody can give or a screen the host lacks.
+    api_tools = set(config["platform_toolsets"]["api_server"])
+    assert {"web", "file", "skills", "mcp-katailyst2", "mcp-linear"} <= api_tools
+    assert not api_tools & render_config.UNATTENDED_EXCLUDED_TOOLSETS
+    assert "terminal" in config["platform_toolsets"]["slack"]
     assert config["approvals"] == {"mode": "manual", "cron_mode": "deny"}
     assert config["plugins"]["enabled"] == ["hlt-k2-context"]
 
