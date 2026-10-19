@@ -4253,6 +4253,38 @@ def test_agent_hook_poll_preserves_terminal_truth(
         assert body["usage"] == {"total_tokens": 42}
 
 
+def test_agent_hook_poll_closes_a_run_hermes_interrupted_on_restart(
+    monkeypatch, tmp_path
+):
+    health_gateway = _load_health_gateway()
+    monkeypatch.setenv("OPENCLAW_HQ_HOOK_TOKEN", "a-secure-shared-hook-token")
+    monkeypatch.setenv("HLT_AGENT_RUN_LEDGER_PATH", str(tmp_path / "agent-runs.sqlite3"))
+    _set_hook_runtime_ready(monkeypatch, health_gateway)
+    run_id = "run_" + "c" * 32
+    status = {"value": "stopping"}
+
+    def fake_hermes(path, **kwargs):
+        if path == "/v1/runs":
+            return 202, {"run_id": run_id, "status": "started"}
+        return 200, {
+            "run_id": run_id,
+            "status": status["value"],
+            "error": "The gateway restarted before this run settled.",
+        }
+
+    monkeypatch.setattr(health_gateway, "_hermes_api_json", fake_hermes)
+    monkeypatch.setattr(health_gateway, "_schedule_run_timeout", lambda *args: None)
+    health_gateway.dispatch_agent_hook(_hook_payload())
+
+    _, winding_down = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert winding_down["status"] == "running" and winding_down["terminal"] is False
+
+    status["value"] = "interrupted"
+    _, closed = health_gateway.read_agent_hook_run(WRAPPER_RUN_ID)
+    assert closed["terminal"] is True and closed["status"] == "failed"
+    assert "restarted before this run settled" in closed["error"]
+
+
 @pytest.mark.parametrize("hermes_status", ["running", "waiting_for_approval"])
 def test_agent_hook_poll_refuses_an_approval_nobody_can_answer(
     monkeypatch, tmp_path, hermes_status

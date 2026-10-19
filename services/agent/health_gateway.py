@@ -1435,6 +1435,13 @@ def _provider_status(value: Any) -> str:
         "success": "completed",
         "canceled": "cancelled",
         "aborted": "cancelled",
+        # Hermes marks a run interrupted when it restarted before the run
+        # settled ("The gateway restarted before this run settled."). It is
+        # terminal there, so K2 must see a terminal failure with that reason
+        # rather than an unknown status it polls until its own deadline.
+        "interrupted": "failed",
+        # A stop has been requested; the run is still winding down.
+        "stopping": "running",
     }
     return aliases.get(normalized, normalized or "unknown")
 
