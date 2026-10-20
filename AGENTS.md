@@ -6,7 +6,7 @@
 
 ## Shared work
 
-Keep substantive work visible on [Katailyst Work](https://katailyst2.vercel.app/board).
+Keep substantive work visible on the [Logbook](https://katailyst2.vercel.app/board).
 Read `board.inbox` with your identity, repo, files and tags; reuse a thread for the plan,
 ownership, checkpoints, PRs, changelog and proof. Lead with a short `summary`, retaining full
 research and artifacts underneath. Claim likely collisions; claims are advisory. Tags and
@@ -392,10 +392,10 @@ research readiness; verify both surfaces when releasing a backend change.
 ## Inspecting the live system
 
 - **Cron status:** `~/hlt/katailyst/.github/workflows/repo-hygiene-nightly.yml`
-- **Registry health:** call `registry_health` MCP tool, or hit
-  `https://www.katailyst.com/mcp` (needs Bearer auth)
-  Katailyst2 is also available at `https://katailyst2.vercel.app/api/mcp`; repo-local agents can
-  choose either because `.mcp.json` exposes both endpoints explicitly.
+- **Registry health:** the `katailyst` server in `.mcp.json` is Katailyst2
+  (`https://katailyst2.vercel.app/api/mcp`, Bearer auth); `ops.health` reports its health.
+  `katailyst-v1` (`https://www.katailyst.com/mcp`) is the read-only legacy registry: look things up
+  there only when Katailyst2 lacks them.
 - **Drift report:** `bash ~/.openclaw/workspace/system/check-llms-drift.sh`
 
 ## Honest scope of this stub
