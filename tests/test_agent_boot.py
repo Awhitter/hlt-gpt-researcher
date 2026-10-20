@@ -2565,7 +2565,7 @@ def test_k2_readiness_rejects_the_legacy_server_before_loading_identity(monkeypa
     monkeypatch.setattr(health_gateway, "_mcp_post", fake_post)
 
     result = health_gateway.k2_agent_readiness(
-        "https://www.katailyst.com/mcp", "legacy-secret", "agent:cleo"
+        "https://katailyst-1.vercel.app/mcp", "legacy-secret", "agent:cleo"
     )
 
     assert len(calls) == 1

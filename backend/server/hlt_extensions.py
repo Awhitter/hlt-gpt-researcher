@@ -116,7 +116,7 @@ _DEFAULT_CODEBASE_REPOS = (
     "Awhitter/evidence-based-business (EBB — metrics and analytics layer)",
 )
 
-# Katailyst2 is the current generation; www.katailyst.com is v1/legacy.
+# Katailyst2 is the current generation; v1 is the read-only legacy at katailyst-1.vercel.app.
 _DEFAULT_KATAILYST_MCP_URL = "https://katailyst2.vercel.app/mcp"
 
 _SCOPE_INSTRUCTIONS = {

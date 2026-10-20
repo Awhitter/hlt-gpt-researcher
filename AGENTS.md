@@ -391,8 +391,8 @@ research readiness; verify both surfaces when releasing a backend change.
 - **Cron status:** `~/hlt/katailyst/.github/workflows/repo-hygiene-nightly.yml`
 - **Registry health:** the `katailyst` server in `.mcp.json` is Katailyst2
   (`https://katailyst2.vercel.app/api/mcp`, Bearer auth); `ops.health` reports its health.
-  `katailyst-v1` (`https://www.katailyst.com/mcp`) is the read-only legacy registry: look things up
-  there only when Katailyst2 lacks them.
+  `katailyst-legacy` (`https://katailyst-1.vercel.app/mcp`) is v1, the read-only legacy registry: look
+  things up there only when Katailyst2 lacks them. katailyst.com is moving to Katailyst2, so never use it for v1.
 - **Drift report:** `bash ~/.openclaw/workspace/system/check-llms-drift.sh`
 
 ## Honest scope of this stub
