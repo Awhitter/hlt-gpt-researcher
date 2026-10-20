@@ -7,9 +7,9 @@
         "Authorization": "Bearer ${KATAILYST_MCP_TOKEN}"
       }
     },
-    "katailyst-v1": {
+    "katailyst-legacy": {
       "type": "http",
-      "url": "https://www.katailyst.com/mcp",
+      "url": "https://katailyst-1.vercel.app/mcp",
       "headers": {
         "Authorization": "Bearer ${KATAILYST_MCP_TOKEN}"
       }

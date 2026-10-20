@@ -62,8 +62,6 @@ stays the thin compose point.
 This repo is one of HLT's sibling repos that share the **Katailyst registry** as their capability
 brain. The estate map is katailyst2's
 [`ESTATE.md`](https://github.com/Awhitter/katailyst2/blob/main/ESTATE.md).
-- **Atlas:** `~/hlt/katailyst/docs/ecosystem-map/01-ecosystem-atlas-master.md`
-- **Repo runtime ledger:** `~/hlt/katailyst/docs/ecosystem-map/03-repo-runtime-ledger.md`
 
 Sibling repos: `katailyst, sidecar, mastery-publishing, multimedia-mastery,
 engage, jobs, forum-template, agent-canvas, brand-design-lab,
@@ -379,31 +377,19 @@ research readiness; verify both surfaces when releasing a backend change.
 
 ## Read first (in order)
 
-1. `llms.txt` — repo orientation auto-generated nightly, link cross-repo.
-   Root `llm*.txt` dumps are gitignored in this fork; if absent, regenerate
-   them from the nightly hygiene workflow or use the ecosystem maps above.
-2. `README.md` — human-facing overview if present
-3. `package.json` (or `pyproject.toml` / `Cargo.toml`) — stack + scripts
-4. The "Inspect first in this repo" list in `llms.txt`
+1. [`docs/usage/START-HERE.md`](docs/usage/START-HERE.md) — operators and agents
+2. `README.md` — human-facing overview
+3. `pyproject.toml` and `frontend/nextjs/package.json` — stack and scripts
 
 ## Inspecting the live system
 
-- **Cron status:** `~/hlt/katailyst/.github/workflows/repo-hygiene-nightly.yml`
 - **Registry health:** the `katailyst` server in `.mcp.json` is Katailyst2
   (`https://katailyst2.vercel.app/api/mcp`, Bearer auth); `ops.health` reports its health.
-  `katailyst-v1` (`https://www.katailyst.com/mcp`) is the read-only legacy registry: look things up
-  there only when Katailyst2 lacks them.
-- **Drift report:** `bash ~/.openclaw/workspace/system/check-llms-drift.sh`
+  `katailyst-legacy` (`https://katailyst-1.vercel.app/mcp`) is v1, the read-only legacy registry: look
+  things up there only when Katailyst2 lacks them. katailyst.com is moving to Katailyst2, so never use it for v1.
 
-## Honest scope of this stub
+## Keeping this file true
 
-This file is a **stub auto-generated 2026-04-17** by the observability +
-discoverability perfection arc (see
-`~/hlt/katailyst/docs/planning/active/2026-04-17-observability-discoverability-perfection.md`).
-It is the same shape across all 15 hlt repos so an agent landing cold has
-a consistent first read. Per-repo specifics belong in `llms.txt` (which IS
-maintained nightly from the canonical Obsidian system maps).
-
-If you make a meaningful behavior change in this repo, edit this file by
-hand to capture the new agent-relevant constraints. Don't let the
-auto-generated stub become the only word on the repo's actual rules.
+This file is maintained by hand. When a change alters what an agent here must know, edit it in the same PR.
+How this repo fits the other HLT systems lives in Katailyst's
+[`ESTATE.md`](https://github.com/Awhitter/katailyst2/blob/main/ESTATE.md) and its systems registry.
