@@ -59,11 +59,9 @@ stays the thin compose point.
 
 ## Where it sits in the HLT ecosystem
 
-This repo is one of **14 active sibling repos under `~/hlt/`** that share the
-**Katailyst registry** as their capability brain (1,663 entities, 11,151
-graph links, 30+ MCP tools). The full ecosystem map lives at:
-
-- **Master:** `~/hlt/katailyst/docs/ecosystem-map/05-llms-ecosystem-master.md`
+This repo is one of HLT's sibling repos that share the **Katailyst registry** as their capability
+brain. The estate map is katailyst2's
+[`ESTATE.md`](https://github.com/Awhitter/katailyst2/blob/main/ESTATE.md).
 - **Atlas:** `~/hlt/katailyst/docs/ecosystem-map/01-ecosystem-atlas-master.md`
 - **Repo runtime ledger:** `~/hlt/katailyst/docs/ecosystem-map/03-repo-runtime-ledger.md`
 
@@ -77,10 +75,9 @@ research-team`.
 Drop into this repo with Claude Code / Cursor / any MCP client and the
 following servers auto-mount from `.mcp.json`:
 
-1. **`katailyst`** (HTTP, hosted) — the registry. Tools: `discover`, `traverse`,
-   `get_entity`, `registry_capabilities`, `registry_health`, `registry_agent_context`,
-   `katailyst_orchestrate`, `tool_describe`/`tool_execute`, `memory_query`/`memory_write`.
-   First call to make in any new task: `discover` with a 2-sentence intent.
+1. **`katailyst`** (HTTP, hosted) — Katailyst2, the registry. Start each session with
+   `katailyst.start`; then `registry.search`, `traverse`, `tool.describe`/`tool.execute`,
+   `memory.query`/`memory.write`.
 2. **`multimediaMastery`** (HTTP, hosted) — image / video / TTS generation.
    Live at `multimediamastery.vercel.app/api/media/v1/*`. Default image model:
    FAL nano-banana-2. Cloudinary upload server-side.
