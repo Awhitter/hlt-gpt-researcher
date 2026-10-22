@@ -336,7 +336,7 @@ def test_cleo_has_a_k2_identity_and_broad_capability_policy(tmp_path):
     assert summary["deploy_commit"] == "abc123"
     assert summary["hermes_upstream_ref"] == "upstream123"
     assert summary["host_runtime_contract_version"] == "cleo-hermes-host.v2"
-    assert summary["k2_context_plugin"]["version"] == "1.7.0"
+    assert summary["k2_context_plugin"]["version"] == "1.8.0"
 
 
 def test_product_work_skill_is_a_small_k2_activation_shim(tmp_path):
@@ -2669,6 +2669,7 @@ def test_k2_plugin_registers_bounded_spillover_reader(monkeypatch, tmp_path):
         "pre_gateway_dispatch",
         "pre_llm_call",
         "pre_tool_call",
+        "post_api_request",
         "on_session_end",
     ]
     assert "hlt-context" in render_config.api_server_toolsets({})
@@ -4606,7 +4607,7 @@ def test_runtime_proof_changes_only_with_runtime_inputs():
             "k2_context_plugin": {
                 "installed": True,
                 "enabled": True,
-                "version": "1.7.0",
+                "version": "1.8.0",
             },
             "mcp_mounted": ["katailyst2"],
             "deploy_commit": "commit-a",
@@ -6689,7 +6690,7 @@ def test_the_home_channel_env_is_normalised_for_the_scheduler(monkeypatch, tmp_p
         "paused": ["nm-monday-brief"],
     }
     assert health_gateway.BOOT["cron_smoke"] == "retired-with-recurring-briefs"
-    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.7.0"
+    assert health_gateway.BOOT["k2_context_plugin"]["version"] == "1.8.0"
 
 
 def test_a_malformed_home_channel_seeds_nothing(tmp_path, monkeypatch):

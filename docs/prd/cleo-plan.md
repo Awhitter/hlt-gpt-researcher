@@ -76,6 +76,13 @@ in our own code, not Hermes overlays).
       `lib/agents/durable-agent-run-service.ts`) and either send a cost figure
       from the wrapper receipt or price usage in K2. Needed before any schedule
       relies on `spendCapUsd`.
+      Implemented on `claude/cleo-run-cost`, not yet deployed or seen in
+      production: each Slack/API reply's `agents.run.record` now carries
+      `inputTokens`, `outputTokens` and `model` when Hermes' `post_api_request`
+      hook reported usage for that turn, with `costBasis: "unknown"`. Hermes
+      reports tokens, not dollars, so no `costUsd` is sent; a dollar amount
+      appears only once a real one exists (a priced receipt or K2-side pricing).
+      If K2 rejects the usage fields, the run is recorded without them.
 - [ ] **Gate Linear writes in code.** `hlt_k2_context.effect_policy_decision`
       does not classify `mcp__linear__save_issue`/create/update; the skill's
       "wait for a yes" is only prompted. Classify writes as needing approval on

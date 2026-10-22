@@ -2765,6 +2765,7 @@ def boot() -> None:
             "pre_gateway_dispatch",
             "pre_llm_call",
             "pre_tool_call",
+            "post_api_request",
             "on_session_end",
         ],
     }
