@@ -185,6 +185,87 @@ def test_record_run_tries_the_wire_alias_only_for_an_unknown_name(outcome, monke
     assert names == ["agents.run.record"]
 
 
+def test_usage_from_two_provider_calls_is_sent_once_with_the_turn(plugin, outcome):
+    # The shape Hermes' _usage_summary_for_api_request_hook passes as usage=.
+    plugin._post_api_request(
+        turn_id="turn-u", model="openai/gpt-6-astra", response_model="gpt-6-astra-2026",
+        usage={"input_tokens": 900, "cache_read_tokens": 100, "cache_write_tokens": 0,
+               "output_tokens": 50, "reasoning_tokens": 10, "request_count": 1,
+               "prompt_tokens": 1000, "total_tokens": 1050},
+    )
+    plugin._post_api_request(
+        turn_id="turn-u", model="openai/gpt-6-astra", response_model="gpt-6-astra-2026",
+        usage={"input_tokens": 1500, "output_tokens": 250, "prompt_tokens": 2000},
+    )
+    plugin._post_api_request(turn_id="other-turn", usage={"prompt_tokens": 7})
+
+    record = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="turn-u", completed=True, model="openai/gpt-6-astra",
+        platform="slack", now=NOW,
+    )
+    again = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="turn-u", completed=True, platform="slack", now=NOW,
+    )
+
+    assert record["inputTokens"] == 3000
+    assert record["outputTokens"] == 300
+    assert record["model"] == "gpt-6-astra-2026"
+    assert record["costBasis"] == "unknown"
+    assert "costUsd" not in record
+    assert not set(outcome.USAGE_FIELDS) & set(again)
+
+
+def test_a_turn_without_reported_usage_sends_no_usage_fields(plugin, outcome):
+    plugin._post_api_request(turn_id="turn-n", usage=None, model="m")
+    plugin._post_api_request(turn_id="turn-n", usage={"prompt_tokens": None}, model="m")
+
+    record = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="turn-n", completed=True, model="m", platform="slack", now=NOW,
+    )
+
+    assert not set(outcome.USAGE_FIELDS) & set(record)
+
+
+def test_a_rejection_of_the_usage_fields_retries_without_them(outcome, monkeypatch):
+    calls = []
+
+    def post(url, token, payload, *, session_id="", timeout=0):
+        if payload["method"] == "initialize":
+            return {"result": {}}, "sess-1", {}
+        arguments = payload["params"]["arguments"]
+        calls.append(arguments)
+        if "inputTokens" in arguments:
+            return {"error": {"code": -32602, "message": "Invalid arguments: unrecognized key 'inputTokens'"}}, session_id, {}
+        return {"result": {"structuredContent": {"recorded": True}}}, session_id, {}
+
+    monkeypatch.setattr(outcome, "_post", post)
+    outcome.record_run("u", "t", {
+        "agentRef": "agent:cleo", "idempotencyKey": "turn:t", "inputTokens": 10,
+        "outputTokens": 2, "model": "m", "costBasis": "unknown",
+    })
+
+    assert calls == [
+        {"agentRef": "agent:cleo", "idempotencyKey": "turn:t", "inputTokens": 10,
+         "outputTokens": 2, "model": "m", "costBasis": "unknown"},
+        {"agentRef": "agent:cleo", "idempotencyKey": "turn:t"},
+    ]
+
+
+def test_a_non_validation_refusal_with_usage_is_not_retried(outcome, monkeypatch):
+    calls = []
+
+    def post(url, token, payload, *, session_id="", timeout=0):
+        if payload["method"] == "initialize":
+            return {"result": {}}, "sess-1", {}
+        calls.append(payload["params"]["arguments"])
+        return {"result": {"isError": True, "content": "forbidden"}}, session_id, {}
+
+    monkeypatch.setattr(outcome, "_post", post)
+    with pytest.raises(RuntimeError):
+        outcome.record_run("u", "t", {"agentRef": "a", "inputTokens": 1})
+    assert len(calls) == 1
+
+
 def test_plugin_reports_slack_turns_end_to_end(plugin, outcome, monkeypatch):
     reported = []
     monkeypatch.setenv("KATAILYST2_MCP_URL", "https://k2.example/mcp")

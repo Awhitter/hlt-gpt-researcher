@@ -26,7 +26,12 @@ from .slack_agent_lead import (
     select_slack_agent_lead,
 )
 from .slack_lead_ledger import RECEIPT_SCHEMA, SlackLeadLedger
-from .reply_outcome import note_turn_started, report_in_background, reply_outcome_record
+from .reply_outcome import (
+    note_api_usage,
+    note_turn_started,
+    report_in_background,
+    reply_outcome_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -913,6 +918,19 @@ def _pre_llm_call(
     return {"context": K2_TOOL_CONTEXT + ("\n" + context if isinstance(context, str) and context else "")}
 
 
+def _post_api_request(
+    turn_id: str = "",
+    usage: Any = None,
+    model: str = "",
+    response_model: str = "",
+    **_: Any,
+) -> None:
+    """Count each provider call's tokens toward its turn's run record."""
+    note_api_usage(
+        str(turn_id or ""), usage, model=model, response_model=response_model
+    )
+
+
 def _on_session_end(**turn: Any) -> None:
     """Put each finished Slack/API reply in K2's run ledger (reply_outcome.py)."""
     record = reply_outcome_record(_agent_ref(), **{
@@ -987,4 +1005,5 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_llm_call", _pre_llm_call)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
+    ctx.register_hook("post_api_request", _post_api_request)
     ctx.register_hook("on_session_end", _on_session_end)

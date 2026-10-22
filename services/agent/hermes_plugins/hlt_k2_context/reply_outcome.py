@@ -11,6 +11,11 @@ reply.
 Only replies count. Cron jobs and fleet housekeeping run on their own
 platforms; a subagent's turn belongs to the turn that started it; a turn the
 user interrupted (a new message, /stop) did not finish either way.
+
+Usage: Hermes' ``post_api_request`` hook reports normalized token counts for
+each provider call, never a price. Those counts are summed per turn and sent as
+``inputTokens``/``outputTokens``/``model`` with ``costBasis: "unknown"``; no
+``costUsd`` is sent, because no measured dollar amount exists here.
 """
 
 from __future__ import annotations
@@ -37,7 +42,14 @@ _MAX_OPEN_TURNS = 256
 _SECRET_SHAPED = re.compile(
     r"\b(?:sk|pk|rk|xox[abpr])[-_][A-Za-z0-9_-]{8,}|\bBearer\s+\S+|\b[A-Za-z0-9_-]{40,}\b"
 )
+USAGE_FIELDS = ("inputTokens", "outputTokens", "model", "costBasis", "costUsd")
+# Wording K2 and MCP servers use when a tool's arguments fail its schema.
+_VALIDATION_ERROR_WORDS = (
+    "invalid", "validation", "unrecognized", "unexpected", "additional propert",
+    "not allowed", "-32602",
+)
 _TURN_STARTS: dict[str, float] = {}
+_TURN_USAGE: dict[str, dict[str, Any]] = {}
 _TURN_STARTS_LOCK = threading.Lock()
 
 
@@ -49,6 +61,40 @@ def note_turn_started(turn_id: str, *, now: float | None = None) -> None:
         if len(_TURN_STARTS) >= _MAX_OPEN_TURNS:
             _TURN_STARTS.pop(next(iter(_TURN_STARTS)))
         _TURN_STARTS[turn_id] = time.monotonic() if now is None else now
+        _TURN_USAGE.pop(turn_id, None)
+
+
+def _token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if value >= 0 else None
+
+
+def note_api_usage(
+    turn_id: str, usage: Any, *, model: Any = "", response_model: Any = ""
+) -> None:
+    """Add one provider call's token counts (Hermes ``post_api_request``) to its turn."""
+    if not turn_id or not isinstance(usage, Mapping):
+        return
+    # Hermes splits cached input out of input_tokens; prompt_tokens is the
+    # whole input the provider processed.
+    input_tokens = _token_count(usage.get("prompt_tokens"))
+    if input_tokens is None:
+        input_tokens = _token_count(usage.get("input_tokens"))
+    output_tokens = _token_count(usage.get("output_tokens"))
+    if input_tokens is None and output_tokens is None:
+        return
+    answered_by = str(response_model or model or "")
+    with _TURN_STARTS_LOCK:
+        totals = _TURN_USAGE.get(turn_id)
+        if totals is None:
+            if len(_TURN_USAGE) >= _MAX_OPEN_TURNS:
+                _TURN_USAGE.pop(next(iter(_TURN_USAGE)))
+            totals = _TURN_USAGE[turn_id] = {"input": 0, "output": 0, "model": ""}
+        totals["input"] += input_tokens or 0
+        totals["output"] += output_tokens or 0
+        if answered_by:
+            totals["model"] = answered_by
 
 
 def _turn_seconds(turn_id: str, now: float | None) -> int | None:
@@ -57,6 +103,11 @@ def _turn_seconds(turn_id: str, now: float | None) -> int | None:
     if started is None:
         return None
     return max(0, round((time.monotonic() if now is None else now) - started))
+
+
+def _take_turn_usage(turn_id: str) -> dict[str, Any] | None:
+    with _TURN_STARTS_LOCK:
+        return _TURN_USAGE.pop(turn_id, None)
 
 
 def redact_error(value: Any) -> str:
@@ -83,6 +134,7 @@ def reply_outcome_record(
     # Pop the start time first, so turns that are never reported (cron, an
     # interrupt) do not linger in _TURN_STARTS.
     seconds = _turn_seconds(turn_id, monotonic_now)
+    usage = _take_turn_usage(turn_id)
     where = REPORTED_PLATFORMS.get(str(platform or "").strip().lower())
     if not agent_ref or not turn_id or not where or interrupted:
         return None
@@ -118,6 +170,12 @@ def reply_outcome_record(
     }
     if seconds is not None:
         record["startedAt"] = iso(finished - timedelta(seconds=seconds))
+    if usage is not None:
+        record["inputTokens"] = usage["input"]
+        record["outputTokens"] = usage["output"]
+        if usage["model"] or model:
+            record["model"] = str(usage["model"] or model)[:200]
+        record["costBasis"] = "unknown"
     return record
 
 
@@ -147,19 +205,34 @@ def record_run(url: str, token: str, record: Mapping[str, Any]) -> None:
     )
     if initialized.get("error"):
         raise RuntimeError(str(initialized["error"])[:200])
-    last_error = ""
-    for name in RECORD_TOOL_NAMES:
-        called, _, _ = rpc(
-            "tools/call", {"name": name, "arguments": dict(record)}, session_id
+
+    def call(arguments: dict[str, Any]) -> str:
+        last_error = ""
+        for name in RECORD_TOOL_NAMES:
+            called, _, _ = rpc(
+                "tools/call", {"name": name, "arguments": arguments}, session_id
+            )
+            result = called.get("result") if isinstance(called.get("result"), Mapping) else {}
+            if not called.get("error") and result.get("isError") is not True:
+                return ""
+            last_error = str(called.get("error") or result.get("content") or "isError")
+            # Only an unknown name is worth the alias; any other refusal is final.
+            if "not found" not in last_error.lower() and "unknown tool" not in last_error.lower():
+                break
+        return last_error
+
+    last_error = call(dict(record))
+    # A K2 that refuses the optional usage fields must still get the run.
+    if last_error and any(field in record for field in USAGE_FIELDS) and any(
+        word in last_error.lower() for word in _VALIDATION_ERROR_WORDS
+    ):
+        logger.warning(
+            "Katailyst2 refused the run's usage fields; recording it without them: %s",
+            redact_error(last_error),
         )
-        result = called.get("result") if isinstance(called.get("result"), Mapping) else {}
-        if not called.get("error") and result.get("isError") is not True:
-            return
-        last_error = str(called.get("error") or result.get("content") or "isError")
-        # Only an unknown name is worth the alias; any other refusal is final.
-        if "not found" not in last_error.lower() and "unknown tool" not in last_error.lower():
-            break
-    raise RuntimeError(last_error[:200])
+        last_error = call({k: v for k, v in record.items() if k not in USAGE_FIELDS})
+    if last_error:
+        raise RuntimeError(last_error[:200])
 
 
 def report_in_background(
@@ -191,3 +264,4 @@ def report_in_background(
 def _reset_for_tests() -> None:
     with _TURN_STARTS_LOCK:
         _TURN_STARTS.clear()
+        _TURN_USAGE.clear()

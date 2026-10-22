@@ -28,7 +28,7 @@ import yaml
 # human, so we leave it alone rather than overwriting their work on next boot.
 GENERATED_BY = "hlt-render-boot"
 HOST_RUNTIME_CONTRACT_VERSION = "cleo-hermes-host.v2"
-K2_CONTEXT_PLUGIN_VERSION = "1.7.0"
+K2_CONTEXT_PLUGIN_VERSION = "1.8.0"
 
 # The reviewed default route, used when Cleo's K2 record names no model route
 # (or one outside APPROVED_K2_MODEL_ROUTES below). The owner selected Astra for
