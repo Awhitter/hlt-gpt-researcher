@@ -128,7 +128,11 @@ websocket message — pipelines like deep research don't stream `report`
 chunks, so this is what delivers the final answer to the UI; the browser
 then upserts the same research_id with its richer orderedData. `prepare_research_request` injects the
 top related prior reports into new runs (disable per-request with
-`hlt_research_scope.memory: false`).
+`hlt_research_scope.memory: false`). Explicit MCP `scope="none"` disables
+prior-report lookup as well as automatic estate scope, so report metadata is
+not appended to its external search query. Web `quick_search` forwards the
+configured per-query result limit to the retriever and caps returned results
+before optional summarization. This is a result-count limit, not a spending cap.
 
 Strict MCP research can carry a typed `source_policy`: exact required URLs and
 allowed domains are admitted before retrieval, normalized into a durable

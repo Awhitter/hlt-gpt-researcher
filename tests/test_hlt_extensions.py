@@ -253,6 +253,7 @@ def test_codebase_prefers_codegraph_over_github(monkeypatch):
     monkeypatch.setenv("CODEGRAPH_MCP_URL", "https://codegraph.example/mcp")
     monkeypatch.setenv("CODEGRAPH_MCP_TOKEN", "cg-secret")
     monkeypatch.setenv("GITHUB_MCP_URL", "https://github.example/mcp")
+    monkeypatch.setattr(hlt_extensions, "_codegraph_repository_readiness", lambda: [])
 
     _, mcp_enabled, _, configs, metadata, _ = hlt_extensions.prepare_research_request(
         task="Can MMM2 generate video?",

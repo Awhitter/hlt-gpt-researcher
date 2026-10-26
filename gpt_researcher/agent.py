@@ -542,7 +542,10 @@ class GPTResearcher:
         Returns:
             List of search results or a synthesized summary string.
         """
-        search_results = await get_search_results(query, self.retrievers[0], query_domains=query_domains)
+        search_results = await get_search_results(
+            query, self.retrievers[0], query_domains=query_domains,
+            max_results=self.cfg.max_search_results_per_query,
+        )
 
         if not aggregated_summary:
             return search_results
