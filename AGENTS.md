@@ -23,7 +23,7 @@ fallback when needed. `grounding.py` generates the live AGENTS file; do not patc
 
 Research orchestration lane + **Mastery Brain / Mastery Research** team
 surface. Synced with upstream `assafelovic/gpt-researcher` (check with
-`git rev-list --left-right --count upstream/master...HEAD`). Used for deep
+`git rev-list --left-right --count upstream/main...HEAD`). Used for deep
 customer/competitive research and for nontechnical teammates to ask
 capability questions across the estate.
 
@@ -128,7 +128,11 @@ websocket message — pipelines like deep research don't stream `report`
 chunks, so this is what delivers the final answer to the UI; the browser
 then upserts the same research_id with its richer orderedData. `prepare_research_request` injects the
 top related prior reports into new runs (disable per-request with
-`hlt_research_scope.memory: false`).
+`hlt_research_scope.memory: false`). Explicit MCP `scope="none"` disables
+prior-report lookup as well as automatic estate scope, so report metadata is
+not appended to its external search query. Web `quick_search` forwards the
+configured per-query result limit to the retriever and caps returned results
+before optional summarization. This is a result-count limit, not a spending cap.
 
 Strict MCP research can carry a typed `source_policy`: exact required URLs and
 allowed domains are admitted before retrieval, normalized into a durable
@@ -176,7 +180,7 @@ audience-scoped report against the hosted API, refreshes the recruiting
 content inventory, and opens a PR into `my-docs/audience/`; it needs the
 `API_AUTH_KEY` and `FIRECRAWL_API_KEY` repo secrets.
 `.github/workflows/upstream-sync.yml` (Mondays) merges
-`assafelovic/gpt-researcher` master into a `sync/upstream-*` branch, runs the
+`assafelovic/gpt-researcher` main into a `sync/upstream-*` branch, runs the
 HLT test suite, and opens an AI-reviewable PR (with conflict markers
 committed when the merge conflicts).
 

@@ -82,12 +82,15 @@ not. Pin a list such as `["codebase","cms"]` or pass `"none"` to override.
 scope activates an MCP preset it escalates to a short scoped research pass
 (`mode: "scoped_research"`) — a web-only answer about our own systems would be
 wrong, so it pays for the tool calls. Expect seconds, not milliseconds, on
-estate questions; call it with `scope="none"` when you need a guaranteed cheap
-web lookup.
+estate questions. Use `scope="none"` for web lookup without estate scope or
+prior-report memory, and `summary=false` to skip the researcher summary model
+call. Search-provider charges can still apply.
 
 Depth controls breadth as well as effort: Fast, Balanced, and Deep use up to 5,
 8, and 12 results per query. MCP callers may set `max_sources_per_query` from
-3–20. Source-page images are collected automatically and retain their source
+3–20. Web quick search passes that limit to the retriever and caps results before
+returning or summarizing them; it is not a spending cap. Source-page images are
+collected automatically and retain their source
 page; generated illustrations are opt-in with
 `include_generated_images=true` and never synthesize a named real person's
 likeness. Logos, icons, and SVG chrome are rejected; when the first scrape finds

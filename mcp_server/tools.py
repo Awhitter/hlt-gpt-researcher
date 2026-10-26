@@ -161,7 +161,7 @@ def _build_research_scope(scope: str | list[str] | None, depth: str) -> dict[str
     if scope is None or scope == "auto":
         return {"auto": True, "depth": normalized_depth}
     if scope == "none":
-        return {"depth": normalized_depth}
+        return {"memory": False, "depth": normalized_depth}
     if isinstance(scope, str):
         scope = [scope]
     keys = [key for key in scope if key in _VALID_SCOPE_KEYS]
