@@ -23,7 +23,7 @@ fallback when needed. `grounding.py` generates the live AGENTS file; do not patc
 
 Research orchestration lane + **Mastery Brain / Mastery Research** team
 surface. Synced with upstream `assafelovic/gpt-researcher` (check with
-`git rev-list --left-right --count upstream/master...HEAD`). Used for deep
+`git rev-list --left-right --count upstream/main...HEAD`). Used for deep
 customer/competitive research and for nontechnical teammates to ask
 capability questions across the estate.
 
@@ -176,7 +176,7 @@ audience-scoped report against the hosted API, refreshes the recruiting
 content inventory, and opens a PR into `my-docs/audience/`; it needs the
 `API_AUTH_KEY` and `FIRECRAWL_API_KEY` repo secrets.
 `.github/workflows/upstream-sync.yml` (Mondays) merges
-`assafelovic/gpt-researcher` master into a `sync/upstream-*` branch, runs the
+`assafelovic/gpt-researcher` main into a `sync/upstream-*` branch, runs the
 HLT test suite, and opens an AI-reviewable PR (with conflict markers
 committed when the merge conflicts).
 
