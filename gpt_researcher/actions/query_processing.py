@@ -9,7 +9,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-async def get_search_results(query: str, retriever: Any, query_domains: List[str] = None, researcher=None) -> List[Dict[str, Any]]:
+async def get_search_results(query: str, retriever: Any, query_domains: List[str] = None, researcher=None, *, max_results: int | None = None) -> List[Dict[str, Any]]:
     """
     Get web search results for a given query.
 
@@ -18,6 +18,7 @@ async def get_search_results(query: str, retriever: Any, query_domains: List[str
         retriever: The retriever instance
         query_domains: Optional list of domains to search
         researcher: The researcher instance (needed for MCP retrievers)
+        max_results: Optional provider request and returned result limit
 
     Returns:
         A list of search results
@@ -32,7 +33,10 @@ async def get_search_results(query: str, retriever: Any, query_domains: List[str
     else:
         search_retriever = retriever(query, query_domains=query_domains)
     
-    return search_retriever.search()
+    if max_results is None:
+        return search_retriever.search()
+    results = search_retriever.search(max_results=max_results)
+    return results[:max_results] if results is not None else results
 
 async def generate_sub_queries(
     query: str,
