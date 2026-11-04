@@ -3580,9 +3580,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, supervisor.shutdown)
     boot()
     try:
-        from computer_surface import install_computer_surface
+        from computer_surface import configure_computer_surface
 
-        BOOT["computer_surface"] = install_computer_surface(
+        BOOT["computer_surface"] = configure_computer_surface(
             app,
             hook_token=_hook_token(),
             listen_port=int(os.getenv("PORT", "8080")),

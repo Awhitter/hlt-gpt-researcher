@@ -343,7 +343,20 @@ turn-final answer seals it exactly once. Raw tool progress, commands, paths,
 provider warnings, logs, and private reasoning remain off. The model does not
 use a Slack send tool to duplicate its own response.
 
-## Open Cleo's computer
+## Browser workbench containment (4 November 2026)
+
+The native browser workbench is quarantined by default. `HLT_COMPUTER_SURFACE_ENABLED=1`
+is the only opt-in; absent, false, or any other value keeps all dashboard, handoff,
+session and native socket routes unregistered. Slack and the authenticated run API
+remain separate. Deploying expires all in-memory computer sessions.
+
+Do not re-enable the workbench until the affected credentials are retired and its
+file/config/environment/terminal access is isolated from runtime secrets. A file-path
+filter alone cannot provide that boundary because terminal and WebSocket paths can
+reach the same process. Keep the central K2 encrypted key store; do not distribute
+its credentials into a general-purpose agent computer.
+
+## Open Cleo's computer (when qualified and enabled)
 
 K2's Cleo profile is the front door to the full native Hermes dashboard. Choose
 **Open computer** there; K2 authenticates the teammate, redeems a one-use handoff
