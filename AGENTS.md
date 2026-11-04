@@ -241,7 +241,11 @@ and other accounts remain intact. Keep the dependency-free eleven-case assertion
 green when advancing the Hermes pin. Dead grants need fresh native login; never
 clear quota limits or copy another host's single-use refresh token as a repair.
 
-Cleo's native dashboard mounts at `/computer` behind the K2 browser session.
+Cleo's native dashboard is quarantined by default as of 4 November 2026.
+`HLT_COMPUTER_SURFACE_ENABLED=1` is required to register any computer/handoff/socket
+routes; do not re-enable before secret isolation and incident credential retirement
+are qualified. Slack and the run API remain independent. When enabled, the dashboard
+mounts at `/computer` behind the K2 browser session.
 Its declared public hostname admits authenticated remote WebSockets; its TUI
 dials the same listener on `127.0.0.1:$PORT` using the native `/api/ws` and
 `/api/pub` aliases. Those aliases are direct-loopback-only and reject forwarded

@@ -602,3 +602,51 @@ def test_computer_surface_rejects_invalid_listener_ports(listen_port):
             FastAPI(), hook_token="hook", listen_port=listen_port,
             dashboard_app=_dashboard(),
         )
+
+
+@pytest.mark.parametrize("flag", [None, "0", "false", "", "true"])
+def test_quarantine_never_loads_dashboard_or_registers_computer_routes(monkeypatch, flag):
+    surface = _load_computer_surface()
+    if flag is None:
+        monkeypatch.delenv("HLT_COMPUTER_SURFACE_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("HLT_COMPUTER_SURFACE_ENABLED", flag)
+    app = FastAPI()
+
+    @app.get("/health")
+    def health():
+        return {"ok": True}
+
+    @app.post("/v1/runs")
+    def run():
+        return {"existing_api": True}
+
+    def forbidden_install(*args, **kwargs):
+        raise AssertionError("quarantine must not install native routes")
+
+    monkeypatch.setattr(surface, "install_computer_surface", forbidden_install)
+    result = surface.configure_computer_surface(app, hook_token="synthetic-hook")
+    assert result == {"ready": False, "targetKind": "hermes", "reason": "security_quarantine"}
+    client = TestClient(app)
+    assert client.get("/health").json() == {"ok": True}
+    assert client.post("/v1/runs").json() == {"existing_api": True}
+    for path in ["/computer/api/files/read?path=/synthetic-secret", "/computer/api/env",
+                 "/computer/api/config", "/agents/cleo/computer"]:
+        assert client.get(path, follow_redirects=False).status_code == 404
+    for path in ["/hooks/control-ui-handoff", "/agents/cleo/computer/session"]:
+        assert client.post(path, json={}).status_code == 404
+    for path in ["/computer/api/ws", "/api/ws", "/api/pub"]:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(path):
+                pass
+
+
+def test_computer_surface_requires_explicit_operator_opt_in(monkeypatch):
+    surface = _load_computer_surface()
+    monkeypatch.setenv("HLT_COMPUTER_SURFACE_ENABLED", "1")
+    app = FastAPI()
+    called = []
+    monkeypatch.setattr(surface, "install_computer_surface",
+                        lambda application, **kwargs: called.append((application, kwargs)) or {"ready": True})
+    assert surface.configure_computer_surface(app, hook_token="synthetic") == {"ready": True}
+    assert called == [(app, {"hook_token": "synthetic"})]

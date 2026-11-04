@@ -661,3 +661,19 @@ def install_computer_surface(
         "launchPath": LAUNCH_PATH,
         "dashboardPath": DASHBOARD_PATH,
     }
+
+
+def configure_computer_surface(application: FastAPI, **kwargs: Any) -> dict[str, Any]:
+    """Keep the native workbench offline until its isolation is qualified.
+
+    This switch is evaluated before registering handoff, session, native socket
+    or dashboard routes. A deployment also expires the in-memory sessions.
+    Slack and the parent service's authenticated run API are independent.
+    """
+    if os.environ.get("HLT_COMPUTER_SURFACE_ENABLED", "0") != "1":
+        return {
+            "ready": False,
+            "targetKind": "hermes",
+            "reason": "security_quarantine",
+        }
+    return install_computer_surface(application, **kwargs)
