@@ -107,6 +107,26 @@ local development.
 
 ## Deploying
 
+### HLT model routing
+
+Vercel AI Gateway is the preferred HLT route; OpenRouter remains an explicit
+alternative. Configure chat models as `vercel:<provider>/<model>` in
+`FAST_LLM`, `SMART_LLM` and `STRATEGIC_LLM`, and choose a supported embedding
+model with the same syntax in `EMBEDDING`. Read exact IDs from Gateway's live
+`https://ai-gateway.vercel.sh/v1/models` catalog. Store the dedicated credential
+as `AI_GATEWAY_API_KEY` in the service's existing secret owner.
+
+The `vercel` adapter uses a fixed Gateway endpoint for chat and text embeddings.
+It does not consume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, accept injected SDK
+transports, or automatically fall back to another provider. Leave
+`SOURCE_JUDGE_PROVIDER` unset to inherit the smart route, or explicitly set it
+to `vercel` with the corresponding Gateway model. Remove deprecated
+`LLM_PROVIDER`/`EMBEDDING_PROVIDER` overrides before qualifying the new route.
+
+Adapter availability does not prove a hosted cutover. Verify chat, embeddings,
+the independent source judge, and saved-result readback after deployment.
+Preserve existing saved operations and do not retry an uncertain paid start.
+
 | Surface | Command | Notes |
 | --- | --- | --- |
 | Backend API (Render `hlt-research-api`) | merge to `main` (auto-deploy) | `render.yaml`; healthcheck `GET /health` |

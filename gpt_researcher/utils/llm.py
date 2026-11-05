@@ -100,10 +100,11 @@ async def create_chat_completion(
     if llm_kwargs:
         provider_kwargs.update(llm_kwargs)
 
-    if model in SUPPORT_REASONING_EFFORT_MODELS:
+    capability_model = model.split("/", 1)[-1] if llm_provider == "vercel" else model
+    if capability_model in SUPPORT_REASONING_EFFORT_MODELS:
         provider_kwargs['reasoning_effort'] = reasoning_effort
 
-    if model not in NO_SUPPORT_TEMPERATURE_MODELS:
+    if capability_model not in NO_SUPPORT_TEMPERATURE_MODELS:
         provider_kwargs['temperature'] = temperature
         provider_kwargs['max_tokens'] = max_tokens
     else:

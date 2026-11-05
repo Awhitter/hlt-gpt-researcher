@@ -20,6 +20,7 @@ Supported providers:
     - bedrock: AWS Bedrock embeddings
     - aimlapi: AIML API embeddings
     - custom: Custom OpenAI-compatible API
+    - vercel: Vercel AI Gateway embeddings
 """
 
 import os
@@ -49,6 +50,7 @@ _SUPPORTED_PROVIDERS = {
     "aimlapi",
     "netmind",
     "openrouter",
+    "vercel",
     "minimax",
 }
 
@@ -105,6 +107,15 @@ class Memory:
                     embedding_kwargs["openai_api_base"] = os.environ["OPENAI_BASE_URL"]
 
                 _embeddings = OpenAIEmbeddings(model=model, **embedding_kwargs)
+            case "vercel":
+                from langchain_openai import OpenAIEmbeddings
+                from gpt_researcher.llm_provider.vercel_gateway import gateway_client_kwargs
+
+                # Gateway accepts text, not the OpenAI client's token-array chunks.
+                options = {**embedding_kwargs, "check_embedding_ctx_length": False}
+                _embeddings = OpenAIEmbeddings(
+                    model=model, **gateway_client_kwargs(options)
+                )
             case "azure_openai":
                 from langchain_openai import AzureOpenAIEmbeddings
 

@@ -30,6 +30,7 @@ _SUPPORTED_PROVIDERS = {
     "litellm",
     "gigachat",
     "openrouter",
+    "vercel",
     "vllm_openai",
     "aimlapi",
     "netmind",
@@ -115,6 +116,12 @@ class GenericLLMProvider:
                 kwargs["openai_api_base"] = os.environ["OPENAI_BASE_URL"]
 
             llm = ChatOpenAI(**kwargs)
+        elif provider == "vercel":
+            check_pkg("langchain_openai")
+            from langchain_openai import ChatOpenAI
+            from gpt_researcher.llm_provider.vercel_gateway import gateway_client_kwargs
+
+            llm = ChatOpenAI(**gateway_client_kwargs(kwargs))
         elif provider == "anthropic":
             check_pkg("langchain_anthropic")
             from langchain_anthropic import ChatAnthropic

@@ -160,6 +160,19 @@ from inline K2 handoff with a typed locator. The facade may research and write
 the local report artifact; it does not call K2, publish, message, deliver, or
 write Airtable.
 
+Model routing: HLT prefers Vercel AI Gateway, with OpenRouter an allowed
+alternative. Use `vercel:<provider>/<model>` for `FAST_LLM`, `SMART_LLM`,
+`STRATEGIC_LLM` and `EMBEDDING`, with a dedicated `AI_GATEWAY_API_KEY`.
+The `vercel` provider pins `https://ai-gateway.vercel.sh/v1` and refuses
+credential/endpoint overrides; missing Gateway credentials fail closed.
+It does not read a direct OpenAI/Anthropic credential or silently switch to
+OpenRouter. An explicit `SOURCE_JUDGE_PROVIDER` must use `vercel` too, or be
+unset so the judge inherits the smart model route. Confirm the exact model IDs
+in Gateway's live catalog, qualify chat and embeddings, then deploy and read
+back a saved research result before claiming the hosted service has migrated.
+Upstream direct-provider adapters remain available for upstream compatibility;
+they are not approved HLT deployment routes.
+
 Scraping stack: `SCRAPER=firecrawl` (Firecrawl API) is the production scraper
 and `RETRIEVER=firecrawl,mcp` runs web search on the same Firecrawl plan via
 the HLT-added `firecrawl` retriever (`gpt_researcher/retrievers/firecrawl/`);
