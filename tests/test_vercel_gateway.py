@@ -116,7 +116,7 @@ def test_embeddings_send_text_through_gateway(gateway_env):
     }
 
 
-def test_real_sdk_clients_ignore_direct_provider_environment(gateway_env):
+def test_real_sdk_clients_use_gateway_key_and_base_url_over_environment(gateway_env):
     chat = GenericLLMProvider.from_provider("vercel", model="openai/example-model")
     embeddings = Memory("vercel", "openai/example-embedding").get_embeddings()
     assert str(chat.llm.root_client.base_url) == "https://ai-gateway.vercel.sh/v1/"

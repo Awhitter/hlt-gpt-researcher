@@ -165,6 +165,8 @@ alternative. Use `vercel:<provider>/<model>` for `FAST_LLM`, `SMART_LLM`,
 `STRATEGIC_LLM` and `EMBEDDING`, with a dedicated `AI_GATEWAY_API_KEY`.
 The `vercel` provider pins `https://ai-gateway.vercel.sh/v1` and refuses
 credential/endpoint overrides; missing Gateway credentials fail closed.
+Operator proxy and SDK organization/project settings remain separate; use the
+presence-only deployment preflight in `docs/usage/START-HERE.md`.
 It does not read a direct OpenAI/Anthropic credential or silently switch to
 OpenRouter. An explicit `SOURCE_JUDGE_PROVIDER` must use `vercel` too, or be
 unset so the judge inherits the smart model route. Confirm the exact model IDs

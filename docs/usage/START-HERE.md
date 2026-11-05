@@ -123,6 +123,14 @@ transports, or automatically fall back to another provider. Leave
 to `vercel` with the corresponding Gateway model. Remove deprecated
 `LLM_PROVIDER`/`EMBEDDING_PROVIDER` overrides before qualifying the new route.
 
+The fixed credential and endpoint do not disable operator-configured proxies
+or SDK organization/project headers. During cutover, inspect the presence of
+`OPENAI_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (including lowercase
+forms), `OPENAI_ORG_ID`, `OPENAI_ORGANIZATION` and `OPENAI_PROJECT_ID` without
+logging their values. Reconcile any intentional proxy and remove obsolete
+provider metadata in the owning deployment configuration; do not clear global
+environment variables inside the application.
+
 Adapter availability does not prove a hosted cutover. Verify chat, embeddings,
 the independent source judge, and saved-result readback after deployment.
 Preserve existing saved operations and do not retry an uncertain paid start.
