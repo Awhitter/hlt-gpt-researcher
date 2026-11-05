@@ -32,16 +32,66 @@ def test_gateway_missing_key_never_falls_back_to_openai(monkeypatch):
     "api_key", "openai_api_key", "base_url", "openai_api_base",
     "client", "async_client", "root_client", "root_async_client",
     "http_client", "http_async_client", "openai_proxy",
-    "default_headers", "default_query", "organization", "openai_organization",
+    "default_headers", "default_query", "extra_headers", "extra_query",
+    "organization", "openai_organization",
 ])
 def test_gateway_rejects_credential_and_endpoint_overrides(gateway_env, override):
     with pytest.raises(ValueError, match="cannot be overridden"):
         gateway_client_kwargs({override: "override-must-not-be-used"})
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_gateway_rejects_request_headers_in_model_defaults(gateway_env, nested):
+    options = {"extra_headers": {"Authorization": "Bearer wrong-fixture"}}
+    if nested:
+        options = {"model_kwargs": options}
+    with pytest.raises(ValueError, match="cannot be overridden"):
+        GenericLLMProvider.from_provider("vercel", model="openai/example-model", **options)
+
+
+@pytest.mark.parametrize("method", ["invoke", "stream", "stream_direct"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_gateway_rejects_per_call_transport_override_before_sdk(method, nested):
+    llm = SimpleNamespace(ainvoke=AsyncMock(), astream=AsyncMock())
+    provider = GenericLLMProvider(llm, provider="vercel")
+    options = {"extra_headers": {"Authorization": "Bearer wrong-fixture"}}
+    if nested:
+        options = {"model_kwargs": options}
+    call = (provider.stream_response([], **options) if method == "stream_direct"
+            else provider.get_chat_response([], method == "stream", **options))
+    with pytest.raises(ValueError, match="cannot be overridden"):
+        asyncio.run(call)
+    llm.ainvoke.assert_not_called()
+    llm.astream.assert_not_called()
+
+
 def test_gateway_config_keeps_complete_provider_model_id():
     assert Config.parse_llm("vercel:openai/example-model") == ("vercel", "openai/example-model")
     assert Config.parse_embedding("vercel:openai/example-embedding") == ("vercel", "openai/example-embedding")
+
+
+@pytest.mark.parametrize("vendor", ["openai", "anthropic"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("boundary", ["constructor", "invoke", "stream_direct"])
+def test_gateway_rejects_request_scoped_direct_provider_keys(gateway_env, vendor, nested, boundary):
+    options = {"extra_body": {"providerOptions": {"gateway": {
+        "byok": {vendor: [{"apiKey": "prohibited-fixture"}]},
+    }}}}
+    if nested:
+        options = {"model_kwargs": options}
+    with pytest.raises(ValueError, match="cannot be overridden"):
+        if boundary == "constructor":
+            gateway_client_kwargs(options)
+        else:
+            provider = GenericLLMProvider(SimpleNamespace(), provider="vercel")
+            call = (provider.stream_response([], **options) if boundary == "stream_direct"
+                    else provider.get_chat_response([], False, **options))
+            asyncio.run(call)
+
+
+def test_gateway_preserves_harmless_reporting_options(gateway_env):
+    options = {"extra_body": {"providerOptions": {"gateway": {"tags": ["research"]}}}}
+    assert gateway_client_kwargs(options)["extra_body"] == options["extra_body"]
 
 
 def test_chat_constructor_uses_gateway_key_and_fixed_endpoint(gateway_env):
@@ -75,7 +125,9 @@ def test_real_sdk_clients_ignore_direct_provider_environment(gateway_env):
     assert embeddings.client._client.api_key == "gateway-fixture"
 
 
-@pytest.mark.parametrize("model,reasoning", [("openai/gpt-5", False), ("openai/o3-mini", True)])
+@pytest.mark.parametrize("model,reasoning", [
+    ("openai/gpt-5", False), ("openai/o3-mini", True), ("deepseek/deepseek-reasoner", False),
+])
 def test_gateway_preserves_native_model_capabilities(model, reasoning):
     provider = SimpleNamespace(get_chat_response=AsyncMock(return_value="fixture response"))
     with (
