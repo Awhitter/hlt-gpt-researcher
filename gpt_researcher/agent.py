@@ -542,7 +542,10 @@ class GPTResearcher:
         Returns:
             List of search results or a synthesized summary string.
         """
-        search_results = await get_search_results(query, self.retrievers[0], query_domains=query_domains)
+        search_results = await get_search_results(
+            query, self.retrievers[0], query_domains=query_domains,
+            max_results=self.cfg.max_search_results_per_query,
+        )
 
         if not aggregated_summary:
             return search_results
@@ -550,7 +553,9 @@ class GPTResearcher:
         # Format results for summary
         context = ""
         for i, result in enumerate(search_results, 1):
-            context += f"[{i}] {result.get('title', '')}: {result.get('content', '')} ({result.get('url', '')})\n\n"
+            content = result.get('content') or result.get('body') or result.get('raw_content') or ''
+            url = result.get('url') or result.get('href') or ''
+            context += f"[{i}] {result.get('title', '')}: {content} ({url})\n\n"
 
         prompt = self.prompt_family.generate_quick_summary_prompt(query, context)
 
