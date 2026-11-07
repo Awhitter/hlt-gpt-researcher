@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 import gpt_researcher as gpt_researcher_package
 import gpt_researcher.source_policy as source_policy_module
 import gpt_researcher.scraper.scraper as scraper_module
+import mcp_server.tools as tools_module
 from gpt_researcher.scraper.firecrawl.firecrawl import FireCrawl
 from gpt_researcher.scraper.scraper import Scraper
 from gpt_researcher.skills.researcher import ResearchConductor
@@ -490,6 +492,68 @@ def test_judge_excerpt_finds_support_well_beyond_leading_boilerplate():
 
     assert any("ninety five percent threshold" in item["text"] for item in excerpts)
     assert any(item["char_start"] > 2_000 for item in excerpts)
+
+
+@pytest.mark.parametrize("lengths,complete", [
+    ((12_364, 28_244), (True, True)),
+    ((24_000, 24_000), (True, True)),
+    ((24_000, 24_001), (True, False)),
+    ((30_000, 30_000), (False, False)),
+    ((500, 50_000), (True, False)),
+])
+def test_judge_uses_complete_sources_when_they_fit_its_total_budget(monkeypatch, lengths, complete):
+    policy = SourcePolicy.from_value({
+        "enforcement": "strict", "required_sources": REQUIRED[:2],
+        "min_accepted_sources": 2, "min_content_chars": 500,
+    })
+    sources = [
+        {"url": required["url"], "title": "Synthetic evidence", "raw_content": "x" * length}
+        for required, length in zip(REQUIRED, lengths)
+    ]
+    manifest = build_source_manifest(policy, sources)
+    assert manifest["status"] == "passed"
+    captured = {}
+
+    async def judge(**kwargs):
+        captured.update(json.loads(kwargs["messages"][1]["content"]))
+        return json.dumps({
+            "verdict": "pass", "findings": [],
+            "claim_checks": [{
+                "claim": "Synthetic claim", "supported": True,
+                "source_urls": [REQUIRED[0]["url"]],
+            }],
+        })
+
+    monkeypatch.setattr(tools_module, "create_chat_completion", judge)
+    item = SimpleNamespace(
+        source_policy=policy, source_manifest=manifest, sources=sources,
+        researcher=SimpleNamespace(
+            cfg=SimpleNamespace(smart_llm_model="fixture", smart_llm_provider="vercel",
+                                smart_token_limit=3_000, llm_kwargs={}),
+            add_costs=lambda *_args: None,
+        ),
+    )
+    result = asyncio.run(tools_module._run_independent_source_judge(
+        item, "\n".join(f"[Evidence]({source['url']})" for source in sources),
+    ))
+    assert result["verdict"] == "pass"
+    assert len(captured["evidence"]) == 2
+    if all(complete):
+        assert sum(len(excerpt["text"]) for evidence in captured["evidence"]
+                   for excerpt in evidence["content_excerpts"]) == sum(lengths)
+    included = 0
+    for evidence, source, is_complete in zip(captured["evidence"], sources, complete):
+        content = source["raw_content"]
+        assert evidence["content_complete"] is is_complete
+        assert evidence["content_length"] == len(content)
+        for excerpt in evidence["content_excerpts"]:
+            assert excerpt["text"] == content[excerpt["char_start"]:excerpt["char_end"]]
+            included += len(excerpt["text"])
+        if is_complete:
+            assert evidence["content_excerpts"] == [{
+                "char_start": 0, "char_end": len(content), "text": content,
+            }]
+    assert included <= 48_000
 
 
 def test_strict_scraper_selects_firecrawl_and_rejects_local_backends(monkeypatch):
