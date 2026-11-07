@@ -208,7 +208,9 @@ amend with `scripts/katailyst_mcp.py` + `scripts/katailyst_capability.md`.
 
 Research services: `hlt-research-api` (starter) and `hlt-research-mcp`
 (standard) run on Render from the repo-root `Dockerfile` (`render.yaml`; moved
-from Railway on 19 Oct 2026). Research models are OpenRouter GPT-6.1 Sol.
+from Railway on 19 Oct 2026). Both research services use the explicit Vercel
+Gateway route for chat and embeddings; follow the model-routing instructions
+above and verify current hosted settings before changing them.
 
 Render sidecars: `hlt-codegraph` runs on the standard plan (gitnexus analyze
 OOMs on 512MB) with a 20GB disk at `/data`; boot reindex runs in the
