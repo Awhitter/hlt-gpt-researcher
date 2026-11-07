@@ -107,10 +107,38 @@ local development.
 
 ## Deploying
 
+### HLT model routing
+
+Vercel AI Gateway is the preferred HLT route; OpenRouter remains an explicit
+alternative. Configure chat models as `vercel:<provider>/<model>` in
+`FAST_LLM`, `SMART_LLM` and `STRATEGIC_LLM`, and choose a supported embedding
+model with the same syntax in `EMBEDDING`. Read exact IDs from Gateway's live
+`https://ai-gateway.vercel.sh/v1/models` catalog. Store the dedicated credential
+as `AI_GATEWAY_API_KEY` in the service's existing secret owner.
+
+The `vercel` adapter uses a fixed Gateway endpoint for chat and text embeddings.
+It does not consume `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, accept injected SDK
+transports, or automatically fall back to another provider. Leave
+`SOURCE_JUDGE_PROVIDER` unset to inherit the smart route, or explicitly set it
+to `vercel` with the corresponding Gateway model. Remove deprecated
+`LLM_PROVIDER`/`EMBEDDING_PROVIDER` overrides before qualifying the new route.
+
+The fixed credential and endpoint do not disable operator-configured proxies
+or SDK organization/project headers. During cutover, inspect the presence of
+`OPENAI_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (including lowercase
+forms), `OPENAI_ORG_ID`, `OPENAI_ORGANIZATION` and `OPENAI_PROJECT_ID` without
+logging their values. Reconcile any intentional proxy and remove obsolete
+provider metadata in the owning deployment configuration; do not clear global
+environment variables inside the application.
+
+Adapter availability does not prove a hosted cutover. Verify chat, embeddings,
+the independent source judge, and saved-result readback after deployment.
+Preserve existing saved operations and do not retry an uncertain paid start.
+
 | Surface | Command | Notes |
 | --- | --- | --- |
-| Backend API (Render `hlt-research-api`) | merge to `main` (auto-deploy) | `render.yaml`; healthcheck `GET /health` |
-| MCP server (Render `hlt-research-mcp`) | merge to `main` (auto-deploy) | same image; both redeploy on every merge, so `backend/server/*` changes reach the MCP's request prep too |
+| Backend API (Render `hlt-research-api`) | Deploy reviewed `main` through the existing service after recovery prerequisites pass | Auto-deploy is disabled during recovery; healthcheck `GET /health` |
+| MCP server (Render `hlt-research-mcp`) | Qualify and deploy the same reviewed revision separately | Auto-deploy is disabled during recovery; verify MCP request preparation and saved results after deployment |
 | Team UI (Vercel) | `cd frontend/nextjs && vercel --prod --scope alecs-projects-e88e78a8` | project `gpt-researcher-ui`; the CLI's default scope is the HLT team, so pass the scope explicitly |
 
 ## Is it working? (60 seconds)

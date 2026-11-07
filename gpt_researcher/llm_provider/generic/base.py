@@ -30,6 +30,7 @@ _SUPPORTED_PROVIDERS = {
     "litellm",
     "gigachat",
     "openrouter",
+    "vercel",
     "vllm_openai",
     "aimlapi",
     "netmind",
@@ -100,8 +101,9 @@ class ChatLogger:
 
 class GenericLLMProvider:
 
-    def __init__(self, llm, chat_log: str | None = None,  verbose: bool = True):
+    def __init__(self, llm, chat_log: str | None = None,  verbose: bool = True, *, provider: str | None = None):
         self.llm = llm
+        self.provider = provider
         self.chat_logger = ChatLogger(chat_log) if chat_log else None
         self.verbose = verbose
     @classmethod
@@ -115,6 +117,12 @@ class GenericLLMProvider:
                 kwargs["openai_api_base"] = os.environ["OPENAI_BASE_URL"]
 
             llm = ChatOpenAI(**kwargs)
+        elif provider == "vercel":
+            check_pkg("langchain_openai")
+            from langchain_openai import ChatOpenAI
+            from gpt_researcher.llm_provider.vercel_gateway import gateway_client_kwargs
+
+            llm = ChatOpenAI(**gateway_client_kwargs(kwargs))
         elif provider == "anthropic":
             check_pkg("langchain_anthropic")
             from langchain_anthropic import ChatAnthropic
@@ -287,10 +295,13 @@ class GenericLLMProvider:
             raise ValueError(
                 f"Unsupported {provider}.\n\nSupported model providers are: {supported}"
             )
-        return cls(llm, chat_log, verbose=verbose)
+        return cls(llm, chat_log, verbose=verbose, provider=provider)
 
 
     async def get_chat_response(self, messages, stream, websocket=None, **kwargs):
+        if self.provider == "vercel":
+            from gpt_researcher.llm_provider.vercel_gateway import validate_gateway_options
+            validate_gateway_options(kwargs)
         if not stream:
             # Getting output from the model chain using ainvoke for asynchronous invoking
             output = await self.llm.ainvoke(messages, **kwargs)
@@ -306,6 +317,9 @@ class GenericLLMProvider:
         return res
 
     async def stream_response(self, messages, websocket=None, **kwargs):
+        if self.provider == "vercel":
+            from gpt_researcher.llm_provider.vercel_gateway import validate_gateway_options
+            validate_gateway_options(kwargs)
         paragraph = ""
         response = ""
 
