@@ -17,6 +17,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import mistune
+
 
 SOURCE_POLICY_VERSION = "source_policy.v1"
 SOURCE_MANIFEST_VERSION = "source_manifest.v1"
@@ -683,13 +685,25 @@ def _generated_image_rejection_reasons(image: dict[str, Any]) -> list[str]:
 
 
 def extract_report_urls(report: str) -> list[str]:
+    """Read Markdown destinations without treating their formatting as URL bytes."""
+
     urls = []
     seen = set()
-    for match in _URL_RE.findall(report or ""):
-        canonical = canonicalize_url(match.rstrip(".,;:!?)"))
-        if canonical and canonical not in seen:
-            seen.add(canonical)
-            urls.append(canonical)
+    tokens = list(reversed(mistune.create_markdown(renderer="ast")(report or "")))
+    while tokens:
+        token = tokens.pop()
+        if token["type"] in {"link", "image"}:
+            # The actual destination counts, not a URL displayed in its label.
+            candidates = [token["attrs"]["url"]]
+        else:
+            # Keep bare URLs (including existing code/HTML treatment) supported.
+            candidates = [match.rstrip(".,;:!?)") for match in _URL_RE.findall(token.get("raw", ""))]
+            tokens.extend(reversed(token.get("children", [])))
+        for candidate in candidates:
+            canonical = canonicalize_url(candidate)
+            if canonical and canonical not in seen:
+                seen.add(canonical)
+                urls.append(canonical)
     return urls
 
 

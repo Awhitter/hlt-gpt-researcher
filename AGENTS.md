@@ -138,6 +138,9 @@ manifest and a separate evidence-judge call must pass; otherwise the draft is
 retained with `publishable=false` and a quality receipt. Strict runs require the
 remote Firecrawl scraper. A failed first report closes the run; a later rejected
 custom-prompt revision cannot replace an already accepted artifact.
+Markdown citations use the actual link destination, including reference links;
+formatting and URL-shaped link labels do not establish source identity. Bare
+URLs remain supported. Parsing a valid citation never overrides the evidence judge.
 
 Automation-compatible research uses the authenticated routes on the MCP host.
 `POST /automation/research/v1` remains the blocking compatibility call. New

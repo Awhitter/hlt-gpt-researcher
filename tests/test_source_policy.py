@@ -23,6 +23,7 @@ from gpt_researcher.source_policy import (
     build_report_quality,
     build_source_manifest,
     canonicalize_url,
+    extract_report_urls,
     merge_source_records,
     public_source_url_allowed,
     source_content,
@@ -176,6 +177,50 @@ def test_report_pass_requires_manifest_citations_and_independent_judge():
     assert quality["status"] == "passed"
     assert quality["publishable"] is True
     assert quality["missing_required_citations"] == []
+
+
+@pytest.mark.parametrize("report", [
+    "**[Render disks](https://render.com/docs/disks)**",
+    "_[Render disks](https://render.com/docs/disks)_",
+    "[Render disks](https://render.com/docs/disks \"Persistent disks\")",
+    "[Render disks][disk-doc]\n\n[disk-doc]: https://render.com/docs/disks",
+    "<https://render.com/docs/disks>",
+    "See https://render.com/docs/disks.",
+])
+def test_report_citations_follow_markdown_destinations(report):
+    assert extract_report_urls(report) == ["https://render.com/docs/disks"]
+
+
+def test_report_citations_keep_parentheses_and_punctuation_in_link_destination():
+    url = "https://example.com/article_(edition)?topic=why!"
+    assert extract_report_urls(f"**[Article]({url})**") == [
+        "https://example.com/article_(edition)?topic=why%21",
+    ]
+
+
+def test_report_citations_use_destination_instead_of_misleading_url_label():
+    report = "[https://render.com/docs/disks](https://unadmitted.example/claim)"
+    assert extract_report_urls(report) == ["https://unadmitted.example/claim"]
+
+
+def test_formatted_citations_do_not_override_manifest_or_judge_failure():
+    policy = strict_policy()
+    manifest = build_source_manifest(policy, [source(item) for item in REQUIRED])
+    report = "\n".join(f"**[Evidence]({item['url']})**" for item in REQUIRED)
+    rejected = build_report_quality(
+        policy, manifest, report, {"verdict": "repair_required", "findings": []},
+    )
+    assert rejected["unadmitted_citations"] == []
+    assert rejected["missing_required_citations"] == []
+    assert rejected["publishable"] is False
+    assert [item["code"] for item in rejected["findings"]] == ["independent_judge_failed"]
+
+    unadmitted = build_report_quality(
+        policy, manifest, report + "\n**[Extra](https://unadmitted.example/claim)**",
+        {"verdict": "pass", "findings": []},
+    )
+    assert unadmitted["publishable"] is False
+    assert unadmitted["unadmitted_citations"] == ["https://unadmitted.example/claim"]
 
 
 def test_report_fails_when_judge_says_pass_but_returns_blocking_finding():
