@@ -137,8 +137,8 @@ Preserve existing saved operations and do not retry an uncertain paid start.
 
 | Surface | Command | Notes |
 | --- | --- | --- |
-| Backend API (Render `hlt-research-api`) | merge to `main` (auto-deploy) | `render.yaml`; healthcheck `GET /health` |
-| MCP server (Render `hlt-research-mcp`) | merge to `main` (auto-deploy) | same image; both redeploy on every merge, so `backend/server/*` changes reach the MCP's request prep too |
+| Backend API (Render `hlt-research-api`) | Deploy reviewed `main` through the existing service after recovery prerequisites pass | Auto-deploy is disabled during recovery; healthcheck `GET /health` |
+| MCP server (Render `hlt-research-mcp`) | Qualify and deploy the same reviewed revision separately | Auto-deploy is disabled during recovery; verify MCP request preparation and saved results after deployment |
 | Team UI (Vercel) | `cd frontend/nextjs && vercel --prod --scope alecs-projects-e88e78a8` | project `gpt-researcher-ui`; the CLI's default scope is the HLT team, so pass the scope explicitly |
 
 ## Is it working? (60 seconds)
