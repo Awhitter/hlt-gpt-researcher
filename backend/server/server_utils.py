@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 from .multi_agent_runner import run_multi_agent_task
 from .hlt_extensions import prepare_research_request as prepare_hlt_research_request
+from .hlt_extensions import is_internal_only_research
 from .report_store import get_report_store
 from .hlt_grounding import (
     prepare_report_delivery,
@@ -313,12 +314,7 @@ async def handle_start_command(websocket, data: str, manager):
         research_scope=hlt_research_scope,
     )
     run_store = get_research_run_store()
-    active_hlt_sources = set(hlt_scope_metadata.get("active_sources") or [])
-    mcp_only = (
-        mcp_enabled
-        and "codebase" in active_hlt_sources
-        and not active_hlt_sources.intersection({"firecrawl", "audience"})
-    )
+    mcp_only = is_internal_only_research(mcp_enabled, hlt_scope_metadata)
     run_store.create_run(
         research_id,
         query=display_task,

@@ -962,6 +962,16 @@ async def _off_server_loop(run: Callable[[], Awaitable[Any]]) -> Any:
     return await asyncio.to_thread(lambda: asyncio.run(run()))
 
 
+def _internal_only(mcp_configs: list[dict[str, Any]], scope_metadata: dict[str, Any] | None) -> bool:
+    """Code-scoped research through MCP stays on connected sources, like the research UI."""
+
+    try:
+        from backend.server.hlt_extensions import is_internal_only_research
+    except Exception:  # noqa: BLE001 - degraded mode keeps the public-web pass
+        return False
+    return is_internal_only_research(bool(mcp_configs), scope_metadata)
+
+
 async def _conduct_research(
     query: str,
     *,
@@ -1014,6 +1024,9 @@ async def _conduct_research(
     researcher.cfg.max_search_results_per_query = _source_limit_for_depth(
         depth, max_sources_per_query
     )
+    # A code question reads HLT's code, not public pages about the words in it
+    # (8 Nov 2026: a Vault question scraped listmonk.app and spent Firecrawl credits).
+    researcher.mcp_only = _internal_only(mcp_configs, scope_metadata)
     if policy.is_strict:
         researcher.cfg.scraper = "firecrawl"
     if include_generated_images:
