@@ -50,6 +50,10 @@ def extract_numbered_questions(query: str, *, max_questions: int = 8) -> list[st
     return questions
 
 
+def _internal_mcp_reference(url: object) -> bool:
+    return isinstance(url, str) and url.startswith("mcp://")
+
+
 class ResearchConductor:
     """Manages and coordinates the research process.
 
@@ -501,6 +505,11 @@ class ResearchConductor:
                             allowed, rejection_reason = source_url_allowed(
                                 self.researcher.source_policy, url
                             )
+                            # Code search matches and the model's own analysis carry an
+                            # internal mcp:// reference, not a web address. The URL policy
+                            # governs public pages, so only a strict contract drops them.
+                            if _internal_mcp_reference(url) and not self.researcher.source_policy.is_strict:
+                                allowed = True
                             if url and not allowed:
                                 self.researcher.add_source_rejection(
                                     url,

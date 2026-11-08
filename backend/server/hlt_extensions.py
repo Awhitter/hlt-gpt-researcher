@@ -866,6 +866,17 @@ def resolve_research_scope(
     return expanded_configs, scraper_override, metadata
 
 
+def is_internal_only_research(mcp_enabled: bool, metadata: dict[str, Any] | None) -> bool:
+    """Code-scoped research reads connected sources only, never the public web.
+
+    The web app and the MCP server share this rule, so a code question asked through
+    Katailyst gets the same internal-only pass as one asked in the research UI.
+    """
+
+    active = set((metadata or {}).get("active_sources") or [])
+    return bool(mcp_enabled) and "codebase" in active and not active.intersection({"firecrawl", "audience"})
+
+
 def prepare_research_request(
     *,
     task: str,
