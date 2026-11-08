@@ -18,6 +18,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -949,6 +950,18 @@ async def _run_independent_source_judge(
     return judgment
 
 
+async def _off_server_loop(run: Callable[[], Awaitable[Any]]) -> Any:
+    """Run one research pass on its own event loop in a worker thread.
+
+    A pass does long stretches of blocking work (context compression over large
+    tool results, synchronous provider clients). On the server's loop that froze
+    /health: Render's 5-second health check failed and the instance restarted
+    mid-answer twice on 8 Nov 2026 (code-scope quick_search over codegraph).
+    Off the loop, /health and other requests keep answering while research runs.
+    """
+    return await asyncio.to_thread(lambda: asyncio.run(run()))
+
+
 async def _conduct_research(
     query: str,
     *,
@@ -1010,7 +1023,7 @@ async def _conduct_research(
         researcher.image_generator = ImageGenerator(researcher)
     if scraper_override:
         researcher.cfg.scraper = scraper_override
-    await researcher.conduct_research()
+    await _off_server_loop(researcher.conduct_research)
 
     raw_sources = _jsonable(researcher.get_research_sources())
     raw_images = _jsonable(researcher.get_all_research_images())
