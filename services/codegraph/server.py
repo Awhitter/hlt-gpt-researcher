@@ -20,6 +20,7 @@ from typing import Any
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -45,6 +46,9 @@ REPO_GITHUB = {
     "mmm2": "Awhitter/MMM2",
     "ebb": "Awhitter/evidence-based-business",
 }
+# Every tool only reads checkouts and graphs on this disk. Saying so lets Katailyst's
+# MCP door (tool:hlt-codegraph-mcp) run them on its read lane without an approval.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 INDEX_STALE_HOURS = int(os.getenv("CODEGRAPH_STALE_HOURS", "36"))
 
 
@@ -183,13 +187,13 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_repos() -> str:
     """List indexed estate repositories available for structural queries."""
     return _run_gitnexus(["list"])
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def query(q: str, repo: str | None = None) -> str:
     """Structural graph search; use search_source for exact source evidence."""
     args = ["query", q]
@@ -284,7 +288,7 @@ def _source_excerpt(text: str, terms: list[str], limit: int = 600) -> str:
     return excerpt
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def search_source(query_text: str, repo: str | None = None, limit: int = 20) -> str:
     """Find real tracked source lines and return current immutable permalinks.
 
@@ -371,7 +375,7 @@ def search_source(query_text: str, repo: str | None = None, limit: int = 20) -> 
     return json.dumps(payload)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def read_source(
     repo: str,
     path: str,
@@ -420,7 +424,7 @@ def read_source(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def context(symbol: str, repo: str | None = None) -> str:
     """360-degree view of a symbol: callers, callees, cluster participation."""
     args = ["context", symbol]
@@ -429,7 +433,7 @@ def context(symbol: str, repo: str | None = None) -> str:
     return _run_gitnexus(args)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def impact(symbol: str, repo: str | None = None) -> str:
     """Blast-radius analysis for a symbol or file."""
     args = ["impact", symbol]
@@ -438,7 +442,7 @@ def impact(symbol: str, repo: str | None = None) -> str:
     return _run_gitnexus(args)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def trace(from_symbol: str, to_symbol: str, repo: str | None = None) -> str:
     """Shortest path between two symbols in the call graph."""
     args = ["trace", from_symbol, to_symbol]
@@ -447,7 +451,7 @@ def trace(from_symbol: str, to_symbol: str, repo: str | None = None) -> str:
     return _run_gitnexus(args)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def repo_overview(repo: str) -> str:
     """Plain-English overview: path on disk plus gitnexus status for one repo."""
     path = os.path.join(REPOS_DIR, repo)
@@ -465,7 +469,7 @@ def repo_overview(repo: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> str:
     """Verify that a source path exists at an exact commit and return its permalink."""
     repo_key = _repo_key(repo)
@@ -494,7 +498,7 @@ def verify_source_ref(repo: str, path: str, commit_sha: str | None = None) -> st
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def recent_changes(
     repo: str, days: int = 14, limit: int = 12, dates: str = ""
 ) -> str:
