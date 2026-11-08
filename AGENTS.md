@@ -31,8 +31,9 @@ capability questions across the estate.
 — one screen: what it is, four doors, Auto scope, module map, smoke.
 
 PRD: `docs/prd/mastery-brain.md`. UI tabs: Ask / Audience / Codebase /
-Library / Vision / Changelog / Roadmap. Code scope prefers `CODEGRAPH_MCP_*`
-(GitNexus on Render) with GitHub MCP as fallback. Sidecars:
+Library / Vision / Changelog / Roadmap. Code scope reads `CODEGRAPH_MCP_*`
+(hlt-codegraph on Render: current code of six repos, refreshed daily); the
+GitHub MCP fallback was removed on 8 Nov 2026 because its token was dead. Sidecars:
 `services/codegraph/`, `services/agent/` (`render.yaml`). Tracked corpora
 under `my-docs/`: `vision/`, `audience/` (voice-of-nurse quote bank + briefs),
 `recruiting/` (generated nursingmastery.com content inventory —

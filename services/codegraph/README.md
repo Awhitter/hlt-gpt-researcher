@@ -1,10 +1,15 @@
 # HLT Codegraph MCP (GitNexus)
 
-Maintains seven current estate checkouts and exposes source tools over
-streamable HTTP for GPT Researcher and agent consumers. Five repositories have
-GitNexus structural indexes; `HLT-Master/hlt-web-service` and Mastery Research
-itself are deliberately source-only so account and provider answers can inspect
-current code without risking another memory-heavy graph rebuild.
+Keeps six estate checkouts current (Mastery Research, katailyst2, the Vault,
+nursing-mastery, MMM2, Evidence-Based-Business) and serves their code over
+streamable HTTP to Mastery Research's code scope and to Katailyst agents. Every
+repo refreshes its code daily as source only: GitNexus graph rebuilds of the large
+repos ran the 2 GB plan out of memory, which had left five of them frozen at
+Aug-Sep copies until 8 Nov 2026. Older graphs stay on disk and still answer the
+structural tools; `/readiness` shows their date as `structuralIndexedAt`.
+`HLT-Master/hlt-web-service` left the default list on 8 Nov 2026 because the
+GitHub account can no longer read it; add it back through `CODEGRAPH_REPOS` with
+a token that can.
 
 The image uses Node 24 LTS (pinned by digest), npm 12.0.2, and GitNexus 1.6.11.
 The Python facade uses stable Python 3.14 on a pinned Bookworm image; Node and
@@ -52,11 +57,12 @@ service **fails closed**: every path except `/health` returns 503.
 
 | Var | Purpose |
 |-----|---------|
-| `GITHUB_TOKEN` | Clone private/public repos |
+| `GITHUB_TOKEN` | Read-only key for the private repos (fine-grained, Contents: read). Git gets it from the environment on every run; it is never written into a checkout's `.git/config`, and older clones that had it in origin's URL are cleaned on their next refresh |
 | `CODEGRAPH_MCP_TOKEN` | Bearer auth for `/mcp` and `/readiness`; unset ⇒ 503 |
 | `CODEGRAPH_REPOS` | Optional `slug\|org/repo,...` override |
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
-| `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools but not GitNexus (default `hlt-web-service,hlt-gpt-researcher`) |
+| `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools but not GitNexus (default: all six). Remove a slug to rebuild its graph again, only on a plan that can hold the rebuild |
+| `CODEGRAPH_SKIP_REPOS` | CSV repos left completely untouched (code and graph frozen). Empty by default; use only to protect a checkout during recovery |
 | `CODEGRAPH_SKIP_INDEX_ON_BOOT` | `1` to skip boot reindex |
 | `CODEGRAPH_MIN_FREE_MB` | Free-space reserve (default 1024). Refresh prunes unused cached Git objects; if the reserve is still unmet, it preserves the checkout/index and reports failure. Unknown disk readings never trigger destructive recovery. `/health` uses the same threshold |
 | `PORT` | Bind port (Render sets this) |

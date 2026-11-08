@@ -17,7 +17,7 @@ import os
 import sys
 import urllib.request
 
-URL = os.getenv("KATAILYST2_MCP_URL", "https://katailyst2.vercel.app/mcp")
+URL = os.getenv("KATAILYST2_MCP_URL", "https://katailyst.com/mcp")
 TOKEN = os.getenv("KATAILYST2_MCP_TOKEN") or os.getenv("KATAILYST_MCP_TOKEN")
 
 _session_id: str | None = None

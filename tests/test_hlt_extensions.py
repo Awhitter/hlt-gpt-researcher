@@ -202,7 +202,7 @@ def test_katailyst_preset_defaults_to_katailyst2_url(monkeypatch):
         research_scope={"codebase": True, "depth": "balanced"},
     )
 
-    assert configs[0]["connection_url"] == "https://katailyst2.vercel.app/mcp"
+    assert configs[0]["connection_url"] == "https://katailyst.com/mcp"
 
 
 def test_katailyst2_env_preferred_over_legacy(monkeypatch):

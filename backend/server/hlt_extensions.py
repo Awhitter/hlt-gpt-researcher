@@ -106,18 +106,20 @@ _PUBLIC_PREFIXES: tuple[str, ...] = (
 
 # The canonical HLT estate repositories for codebase-scoped research. Override
 # with a comma-separated HLT_CODEBASE_REPOS env when the estate map changes.
+# HLT-Master/hlt-web-service (the HLT account API) left this list on 8 Nov 2026: the
+# code graph's account can no longer read it. Add it back with HLT_CODEBASE_REPOS once
+# codegraph has a token for HLT-Master, or code answers will cite a repo nobody can read.
 _DEFAULT_CODEBASE_REPOS = (
     "Awhitter/hlt-gpt-researcher (Mastery Research reusable core and source integrations)",
     "Awhitter/nursing-mastery (one nurse-facing consumer — the career home)",
     "Awhitter/ScraperVault (capture pipeline, jobs, applications, recruiting operations and receipts)",
-    "HLT-Master/hlt-web-service (HLT account API — signed-in identity, career preferences, and consent state)",
     "Awhitter/katailyst2 (AI primitives, registry, orchestration, and product/facilitator agents)",
     "Awhitter/MMM2 (multimedia engine)",
     "Awhitter/evidence-based-business (EBB — metrics and analytics layer)",
 )
 
 # Katailyst2 is the current generation; v1 is the read-only legacy at katailyst-1.vercel.app.
-_DEFAULT_KATAILYST_MCP_URL = "https://katailyst2.vercel.app/mcp"
+_DEFAULT_KATAILYST_MCP_URL = "https://katailyst.com/mcp"
 
 _SCOPE_INSTRUCTIONS = {
     "codebase": (
