@@ -840,3 +840,13 @@ def test_specific_dates_can_be_fetched_after_scanning_the_index(tmp_path, monkey
     assert "the auth change" in payload["entries"][0]["body"]
     # and the index still shows both, so nothing is hidden by asking narrowly
     assert len(payload["index"]) == 2
+
+
+def test_every_codegraph_tool_says_it_only_reads():
+    """Katailyst's door runs only tools whose live definition attests readOnlyHint."""
+    tools = asyncio.run(server.mcp.list_tools())
+    assert tools
+    for tool in tools:
+        hints = tool.annotations
+        assert hints is not None, tool.name
+        assert hints.readOnlyHint is True and hints.destructiveHint is False, tool.name
