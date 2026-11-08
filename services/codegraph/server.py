@@ -41,7 +41,6 @@ REPO_GITHUB = {
     "hlt-gpt-researcher": "Awhitter/hlt-gpt-researcher",
     "nursing-mastery": "Awhitter/nursing-mastery",
     "scrapervault": "Awhitter/ScraperVault",
-    "hlt-web-service": "HLT-Master/hlt-web-service",
     "katailyst2": "Awhitter/katailyst2",
     "mmm2": "Awhitter/MMM2",
     "ebb": "Awhitter/evidence-based-business",
@@ -137,7 +136,14 @@ def _repo_readiness(repo: str) -> dict[str, Any]:
         result["error"] = error_file.read_text(encoding="utf-8").strip()[:500]
         result["status"] = "unavailable"
         return result
-    if source_ready_file.exists() and not indexed_file.exists():
+    # A repo whose graph is frozen but whose code refreshes is a source repo:
+    # report the newer source time, and keep the graph's date visible.
+    if source_ready_file.exists() and (
+        not indexed_file.exists()
+        or source_ready_file.stat().st_mtime >= indexed_file.stat().st_mtime
+    ):
+        if indexed_file.exists():
+            result["structuralIndexedAt"] = indexed_file.read_text(encoding="utf-8").strip() or None
         indexed_file = source_ready_file
         result["mode"] = "source"
     if not indexed_file.exists() or not result["commitSha"]:
@@ -163,9 +169,10 @@ mcp = FastMCP(
     name="HLT Codegraph",
     instructions=(
         "Source and structural code intelligence for HLT estate repos (Mastery "
-        "Research, mmm2, katailyst2, ebb, scrapervault, nursing-mastery, "
-        "hlt-web-service). The HLT web service and Mastery Research are "
-        "source-search only to avoid unsafe index rebuilds. "
+        "Research, mmm2, katailyst2, ebb, scrapervault, nursing-mastery). Each "
+        "repo's code refreshes daily; graph rebuilds are off by default because "
+        "they exceed this service's memory, so structural answers can be older "
+        "than the code (see /readiness structuralIndexedAt). "
         "For implementation questions, "
         "use search_source to find real files, read_source to inspect the exact "
         "current lines, and cite the returned immutable URLs. Use query/context/"

@@ -13,10 +13,23 @@ DEFAULT_REPOS=(
   "ebb|Awhitter/evidence-based-business"
   "scrapervault|Awhitter/ScraperVault"
   "nursing-mastery|Awhitter/nursing-mastery"
-  "hlt-web-service|HLT-Master/hlt-web-service"
 )
+# HLT-Master/hlt-web-service left the list on 8 Nov 2026: the Awhitter account can no
+# longer see it ("Repository not found"), so every run failed and /health stayed
+# degraded. Add it back through CODEGRAPH_REPOS with a token that can read HLT-Master.
 
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+# Git authenticates through the environment, never through the remote URL, so no
+# checkout on the disk keeps a copy of the key. Until 8 Nov 2026 the key was baked
+# into each clone's origin URL: replacing GITHUB_TOKEN changed nothing for existing
+# checkouts, and a copy of the key sat in every .git/config on the disk.
+export GIT_TERMINAL_PROMPT=0
+if [[ -n "$TOKEN" ]]; then
+  _git_cfg_n="${GIT_CONFIG_COUNT:-0}"
+  export "GIT_CONFIG_KEY_${_git_cfg_n}=http.https://github.com/.extraheader"
+  export "GIT_CONFIG_VALUE_${_git_cfg_n}=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+  export GIT_CONFIG_COUNT=$((_git_cfg_n + 1))
+fi
 REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 
 # NOTE: do NOT add a --max-old-space-size cap here expecting it to prevent the
@@ -43,7 +56,11 @@ REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 # disk and served, at the cost of that index going stale — a stale answer beats
 # a daily outage. Remove the entry once the plan can hold the rebuild.
 SKIP_REPOS="${CODEGRAPH_SKIP_REPOS:-}"
-SOURCE_ONLY_REPOS="${CODEGRAPH_SOURCE_ONLY_REPOS:-hlt-web-service,hlt-gpt-researcher}"
+# Every default repo refreshes as source only. GitNexus rebuilds of the five large
+# repos ran the 2 GB container out of memory, so they had sat on CODEGRAPH_SKIP_REPOS
+# with their code frozen at Aug-Sep copies. Source tools need current code more than
+# a graph; remove a slug from this list to rebuild its graph again.
+SOURCE_ONLY_REPOS="${CODEGRAPH_SOURCE_ONLY_REPOS:-hlt-gpt-researcher,katailyst2,nursing-mastery,scrapervault,mmm2,ebb}"
 
 is_skipped() {
   local slug="$1"
@@ -146,6 +163,16 @@ reclaim_git_space() {
     gc --prune=2.weeks.ago --quiet >/dev/null 2>&1 || true
 }
 
+# Older clones kept the key inside origin's URL. Drop the credentials from the URL and
+# keep everything else, so local or mirrored remotes still work.
+scrub_remote_credentials() {
+  local dest="$1" current
+  current="$(git -C "$dest" remote get-url origin 2>/dev/null)" || return 0
+  if [[ "$current" =~ ^https://[^/@]+@github\.com/(.*)$ ]]; then
+    git -C "$dest" remote set-url origin "https://github.com/${BASH_REMATCH[1]}" || true
+  fi
+}
+
 # A run that dies part way stays "running"; /health treats an old one as failed.
 write_status running
 
@@ -173,15 +200,11 @@ clone_or_update() {
   local slug="$1"
   local full="$2"
   local dest="$REPOS_DIR/$slug"
-  local url
-  if [[ -n "$TOKEN" ]]; then
-    url="https://x-access-token:${TOKEN}@github.com/${full}.git"
-  else
-    url="https://github.com/${full}.git"
-  fi
+  local url="https://github.com/${full}.git"
 
   if [[ -d "$dest/.git" ]]; then
     echo "[codegraph] updating $slug"
+    scrub_remote_credentials "$dest"
     reclaim_git_space "$dest"
     if disk_low; then
       echo "[codegraph] still low on disk after git cleanup; retaining $slug's checkout and index" >&2

@@ -38,16 +38,17 @@ services:
         value: /var/data/outputs
       - key: REPORT_STORE_PATH
         value: /var/data/reports.json
-      # Research only, on OpenRouter (Alec, 15 Oct: small paid use is fine).
+      # Models run on the Vercel AI Gateway with a dedicated AI_GATEWAY_API_KEY
+      # (switched 7 Nov 2026; AGENTS.md "Hosted model route").
       - key: FAST_LLM
-        value: openrouter:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.1-sol
       - key: SMART_LLM
-        value: openrouter:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.1-sol
       - key: STRATEGIC_LLM
-        value: openrouter:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.1-sol
       - key: EMBEDDING
-        value: openrouter:openai/text-embedding-3-small
-      # Firecrawl is the production search and scraper; Tavily is a fallback.
+        value: vercel:openai/text-embedding-3-small
+      # Firecrawl is the production search and scraper.
       - key: RETRIEVER
         value: firecrawl,mcp
       - key: SCRAPER
@@ -57,30 +58,24 @@ services:
       - key: SCRAPER_RATE_LIMIT_DELAY
         value: "0.5"
       - key: KATAILYST2_MCP_URL
-        value: https://katailyst2.vercel.app/mcp
-      # Code scope falls back to GitHub's read-only MCP when the codegraph
-      # sidecar is not configured on this service.
-      - key: GITHUB_MCP_URL
-        value: https://api.githubcopilot.com/mcp/readonly
+        value: https://katailyst.com/mcp
+      # Code scope reads the hlt-codegraph sidecar (current code of six repos).
+      # The GitHub MCP fallback was removed on 8 Nov 2026: its token was dead.
+      - key: CODEGRAPH_MCP_URL
+        value: https://hlt-codegraph.onrender.com/mcp
       - key: CORS_ALLOW_ORIGINS
         value: https://gpt-researcher-ui.vercel.app
       # X-API-Key for every route but /health. K2 sends it as
       # KATAILYST_RESEARCH_SOURCE_API_KEY; the UI as API_AUTH_KEY.
       - key: API_AUTH_KEY
         sync: false
-      - key: OPENROUTER_API_KEY
+      - key: AI_GATEWAY_API_KEY
         sync: false
       - key: FIRECRAWL_API_KEY
-        sync: false
-      - key: TAVILY_API_KEY
         sync: false
       - key: KATAILYST2_MCP_TOKEN
         sync: false
       - key: APIFY_TOKEN
-        sync: false
-      - key: GITHUB_MCP_TOKEN
-        sync: false
-      - key: CODEGRAPH_MCP_URL
         sync: false
       - key: CODEGRAPH_MCP_TOKEN
         sync: false
@@ -128,13 +123,13 @@ services:
       - key: REPORT_STORE_PATH
         value: /var/data/reports.json
       - key: FAST_LLM
-        value: openrouter:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.1-sol
       - key: SMART_LLM
-        value: openrouter:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.1-sol
       - key: STRATEGIC_LLM
-        value: openrouter:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.1-sol
       - key: EMBEDDING
-        value: openrouter:openai/text-embedding-3-small
+        value: vercel:openai/text-embedding-3-small
       - key: RETRIEVER
         value: firecrawl,mcp
       - key: SCRAPER
@@ -144,27 +139,21 @@ services:
       - key: SCRAPER_RATE_LIMIT_DELAY
         value: "0.5"
       - key: KATAILYST2_MCP_URL
-        value: https://katailyst2.vercel.app/mcp
-      - key: GITHUB_MCP_URL
-        value: https://api.githubcopilot.com/mcp/readonly
+        value: https://katailyst.com/mcp
+      - key: CODEGRAPH_MCP_URL
+        value: https://hlt-codegraph.onrender.com/mcp
       # Bearer for /mcp and /automation/*; the same value as K2 vault
       # gptr_mcp_token and Cleo's GPTR_MCP_TOKEN. The service refuses to start
       # on Render without it.
       - key: MCP_AUTH_TOKEN
         sync: false
-      - key: OPENROUTER_API_KEY
+      - key: AI_GATEWAY_API_KEY
         sync: false
       - key: FIRECRAWL_API_KEY
-        sync: false
-      - key: TAVILY_API_KEY
         sync: false
       - key: KATAILYST2_MCP_TOKEN
         sync: false
       - key: APIFY_TOKEN
-        sync: false
-      - key: GITHUB_MCP_TOKEN
-        sync: false
-      - key: CODEGRAPH_MCP_URL
         sync: false
       - key: CODEGRAPH_MCP_TOKEN
         sync: false
@@ -199,6 +188,11 @@ services:
         value: "1"
       - key: CODEGRAPH_REINDEX_HOURS
         value: "24"
+      # Every repo refreshes its code daily. GitNexus graph rebuilds are off: they
+      # ran this 2 GB plan out of memory, which had left five repos frozen at
+      # Aug-Sep copies under CODEGRAPH_SKIP_REPOS (cleared 8 Nov 2026).
+      - key: CODEGRAPH_SOURCE_ONLY_REPOS
+        value: hlt-gpt-researcher,katailyst2,nursing-mastery,scrapervault,mmm2,ebb
       # Cap parser memory: worker pool defaults to host cores (up to 16) and
       # NODE_OPTIONS applies to every node process (main + each worker), so
       # keep 1 worker with small heaps or analyze OOMs the 2GB container.
@@ -250,8 +244,6 @@ services:
       - key: GPTR_MCP_URL
         sync: false
       - key: GPTR_MCP_TOKEN
-        sync: false
-      - key: CODEGRAPH_MCP_URL
         sync: false
       - key: CODEGRAPH_MCP_TOKEN
         sync: false
