@@ -1,5 +1,5 @@
 // <hlt-app-switcher> is Katailyst's cross-app switcher, a web component loaded by app/layout.tsx
-// from https://katailyst2.vercel.app/hlt-switcher.js. Its attributes are plain strings.
+// from https://katailyst.com/hlt-switcher.js. Its attributes are plain strings.
 import "react";
 
 declare module "react" {
