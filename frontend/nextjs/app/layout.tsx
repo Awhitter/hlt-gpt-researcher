@@ -80,7 +80,7 @@ export default function RootLayout({
         </ResearchHistoryProvider>
         {/* The HLT app switcher, read from Katailyst's registry; Header places <hlt-app-switcher>. */}
         {hltBranding.enabled && (
-          <Script src="https://katailyst2.vercel.app/hlt-switcher.js" strategy="afterInteractive" />
+          <Script src="https://katailyst.com/hlt-switcher.js" strategy="afterInteractive" />
         )}
       </body>
     </html>
