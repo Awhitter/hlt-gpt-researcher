@@ -454,6 +454,50 @@ def test_refresh_drops_a_key_baked_into_origin_and_authenticates_from_the_enviro
     assert "stolen-old-key" not in config and "fresh-key" not in config
 
 
+def test_skipped_and_retired_checkouts_drop_legacy_credentials_before_refresh(tmp_path):
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    for slug in ("frozen", "retired"):
+        checkout = repos / slug
+        _create_source_repo(checkout)
+        subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
+                        f"https://x-access-token:fixture-only@github.com/example/{slug}.git"], check=True)
+    result = _run_reindex(repos, tmp_path, CODEGRAPH_REPOS="frozen|example/frozen", CODEGRAPH_SKIP_REPOS="frozen")
+    assert result.returncode == 0, result.stderr
+    for checkout in repos.iterdir():
+        if checkout.is_dir():
+            assert subprocess.check_output(["git", "-C", str(checkout), "config", "--local",
+                                            "remote.origin.url"], text=True).strip() == f"https://github.com/example/{checkout.name}.git"
+    assert "fixture-only" not in result.stdout + result.stderr
+
+
+def test_selected_symlink_is_refused_without_touching_target(tmp_path):
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    target = tmp_path / "unmanaged"
+    _create_source_repo(target)
+    (repos / "demo").symlink_to(target, target_is_directory=True)
+    result = _run_reindex(repos, tmp_path, CODEGRAPH_REPOS="demo|example/demo")
+    assert result.returncode == 1
+    assert "unsafe checkout path" in result.stderr
+    assert not (target / ".hlt-index-error").exists()
+
+
+def test_origin_cleanup_failure_stops_refresh_without_printing_credentials(tmp_path):
+    repos = tmp_path / "repos"
+    checkout = repos / "retired"
+    repos.mkdir()
+    _create_source_repo(checkout)
+    subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
+                    "https://fixture-only@github.com/example/retired.git"], check=True)
+    (checkout / ".git" / "config.lock").touch()
+    result = _run_reindex(repos, tmp_path, CODEGRAPH_REPOS="missing|example/missing")
+    assert result.returncode == 1
+    assert "fixture-only" not in result.stdout + result.stderr
+    assert (repos / ".hlt-reindex-status").read_text().startswith("failed ")
+    assert not (repos / "missing").exists()
+
+
 def test_a_frozen_graph_with_fresh_code_reports_the_code_as_ready(tmp_path, monkeypatch):
     """Five repos sat frozen for months; once their code refreshes, say so and keep the graph's date."""
     _create_source_repo(tmp_path / "katailyst2")

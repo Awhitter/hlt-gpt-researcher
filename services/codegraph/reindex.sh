@@ -163,18 +163,35 @@ reclaim_git_space() {
     gc --prune=2.weeks.ago --quiet >/dev/null 2>&1 || true
 }
 
-# Older clones kept the key inside origin's URL. Drop the credentials from the URL and
-# keep everything else, so local or mirrored remotes still work.
+# Clean the saved origin before selection or freshness can skip a checkout.
+# Read the raw local setting, without applying includes or URL rewrite rules.
 scrub_remote_credentials() {
-  local dest="$1" current
-  current="$(git -C "$dest" remote get-url origin 2>/dev/null)" || return 0
-  if [[ "$current" =~ ^https://[^/@]+@github\.com/(.*)$ ]]; then
-    git -C "$dest" remote set-url origin "https://github.com/${BASH_REMATCH[1]}" || true
+  local config="$1" urls
+  [[ -f "$config" && -r "$config" && ! -L "$config" ]] || return 1
+  if urls="$(git config --file "$config" --get-all remote.origin.url 2>/dev/null)"; then
+    if [[ "$urls" =~ https://[^/@[:space:]]+@github\.com/ ]]; then
+      # Legacy clones have exactly one origin. Never guess which entry to replace.
+      [[ "$urls" =~ ^https://[^/@[:space:]]+@github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)$ ]] || return 1
+      git config --file "$config" remote.origin.url "https://github.com/${BASH_REMATCH[1]}" 2>/dev/null || return 1
+    fi
+  else
+    # An absent origin is fine. A malformed configuration must be investigated.
+    [[ $? == 1 ]] || return 1
   fi
 }
 
-# A run that dies part way stays "running"; /health treats an old one as failed.
 write_status running
+checked_origins=0
+for checkout in "$REPOS_DIR"/*; do
+  [[ -d "$checkout/.git" && ! -L "$checkout" && ! -L "$checkout/.git" ]] || continue
+  if ! scrub_remote_credentials "$checkout/.git/config"; then
+    write_status failed "could not clean a saved Git origin"
+    echo "[codegraph] could not clean a saved Git origin; refresh stopped" >&2
+    exit 1
+  fi
+  checked_origins=$((checked_origins + 1))
+done
+echo "[codegraph] checked saved Git origins in $checked_origins retained checkouts"
 
 echo "[codegraph] free space before reindex: $(free_mb) MB"
 
@@ -204,7 +221,6 @@ clone_or_update() {
 
   if [[ -d "$dest/.git" ]]; then
     echo "[codegraph] updating $slug"
-    scrub_remote_credentials "$dest"
     reclaim_git_space "$dest"
     if disk_low; then
       echo "[codegraph] still low on disk after git cleanup; retaining $slug's checkout and index" >&2
@@ -250,6 +266,12 @@ PAUSED_SINCE=""
 index_repo() {
   local slug="$1"
   local full="$2"
+  # The locked cleanup pass covers only real, immediate child checkouts.
+  if [[ ! "$slug" =~ ^[[:alnum:]_][[:alnum:]_.-]*$ || -L "$REPOS_DIR/$slug" || -L "$REPOS_DIR/$slug/.git" ]]; then
+    write_status failed "unsafe checkout path"
+    echo "[codegraph] unsafe checkout path; refresh stopped" >&2
+    exit 1
+  fi
   if is_skipped "$slug"; then
     local stamp
     stamp="$(freshness_stamp "$slug")"
