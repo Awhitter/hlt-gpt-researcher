@@ -58,6 +58,8 @@ _VALIDATION_ERROR_WORDS = (
 )
 _TURN_STARTS: dict[str, float] = {}
 _TURN_USAGE: dict[str, dict[str, Any]] = {}
+# Turns that made at least one call outside a plan sign-in (an ordered set).
+_TURN_METERED: dict[str, bool] = {}
 _TURN_STARTS_LOCK = threading.Lock()
 
 
@@ -70,24 +72,13 @@ def note_turn_started(turn_id: str, *, now: float | None = None) -> None:
             _TURN_STARTS.pop(next(iter(_TURN_STARTS)))
         _TURN_STARTS[turn_id] = time.monotonic() if now is None else now
         _TURN_USAGE.pop(turn_id, None)
+        _TURN_METERED.pop(turn_id, None)
 
 
 def _token_count(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value) if value >= 0 else None
-
-
-def _turn_totals(turn_id: str) -> dict[str, Any]:
-    """This turn's running usage; the caller holds _TURN_STARTS_LOCK."""
-    totals = _TURN_USAGE.get(turn_id)
-    if totals is None:
-        if len(_TURN_USAGE) >= _MAX_OPEN_TURNS:
-            _TURN_USAGE.pop(next(iter(_TURN_USAGE)))
-        totals = _TURN_USAGE[turn_id] = {
-            "input": 0, "output": 0, "model": "", "plan_only": True,
-        }
-    return totals
 
 
 def note_api_usage(
@@ -105,7 +96,9 @@ def note_api_usage(
     # that reported no token counts.
     if str(provider or "").strip().lower() not in SUBSCRIPTION_PROVIDERS:
         with _TURN_STARTS_LOCK:
-            _turn_totals(turn_id)["plan_only"] = False
+            if len(_TURN_METERED) >= _MAX_OPEN_TURNS:
+                _TURN_METERED.pop(next(iter(_TURN_METERED)))
+            _TURN_METERED[turn_id] = True
     if not isinstance(usage, Mapping):
         return
     # Hermes splits cached input out of input_tokens; prompt_tokens is the
@@ -118,7 +111,11 @@ def note_api_usage(
         return
     answered_by = str(response_model or model or "")
     with _TURN_STARTS_LOCK:
-        totals = _turn_totals(turn_id)
+        totals = _TURN_USAGE.get(turn_id)
+        if totals is None:
+            if len(_TURN_USAGE) >= _MAX_OPEN_TURNS:
+                _TURN_USAGE.pop(next(iter(_TURN_USAGE)))
+            totals = _TURN_USAGE[turn_id] = {"input": 0, "output": 0, "model": ""}
         totals["input"] += input_tokens or 0
         totals["output"] += output_tokens or 0
         if answered_by:
@@ -133,9 +130,10 @@ def _turn_seconds(turn_id: str, now: float | None) -> int | None:
     return max(0, round((time.monotonic() if now is None else now) - started))
 
 
-def _take_turn_usage(turn_id: str) -> dict[str, Any] | None:
+def _take_turn_usage(turn_id: str) -> tuple[dict[str, Any] | None, bool]:
+    """The turn's usage totals, and whether any call in it was outside a plan."""
     with _TURN_STARTS_LOCK:
-        return _TURN_USAGE.pop(turn_id, None)
+        return _TURN_USAGE.pop(turn_id, None), _TURN_METERED.pop(turn_id, False)
 
 
 def redact_error(value: Any) -> str:
@@ -162,7 +160,7 @@ def reply_outcome_record(
     # Pop the start time first, so turns that are never reported (cron, an
     # interrupt) do not linger in _TURN_STARTS.
     seconds = _turn_seconds(turn_id, monotonic_now)
-    usage = _take_turn_usage(turn_id)
+    usage, metered = _take_turn_usage(turn_id)
     where = REPORTED_PLATFORMS.get(str(platform or "").strip().lower())
     if not agent_ref or not turn_id or not where or interrupted:
         return None
@@ -203,7 +201,7 @@ def reply_outcome_record(
         record["outputTokens"] = usage["output"]
         if usage["model"] or model:
             record["model"] = str(usage["model"] or model)[:200]
-        record["costBasis"] = "subscription" if usage.get("plan_only") else "unknown"
+        record["costBasis"] = "unknown" if metered else "subscription"
     return record
 
 
@@ -293,3 +291,4 @@ def _reset_for_tests() -> None:
     with _TURN_STARTS_LOCK:
         _TURN_STARTS.clear()
         _TURN_USAGE.clear()
+        _TURN_METERED.clear()
