@@ -14,8 +14,12 @@ user interrupted (a new message, /stop) did not finish either way.
 
 Usage: Hermes' ``post_api_request`` hook reports normalized token counts for
 each provider call, never a price. Those counts are summed per turn and sent as
-``inputTokens``/``outputTokens``/``model`` with ``costBasis: "unknown"``; no
-``costUsd`` is sent, because no measured dollar amount exists here.
+``inputTokens``/``outputTokens``/``model``; no ``costUsd`` is sent, because no
+measured dollar amount exists here. When every call in the turn went through a
+plan sign-in (the ChatGPT plan's Codex pool or the Grok plan's xAI sign-in), the
+turn is sent with ``costBasis: "subscription"`` and K2 books it at $0 on a plan,
+as openclaw-hq already does for its agents. Any other call, or a call whose
+provider Hermes did not name, keeps the whole turn ``"unknown"``.
 """
 
 from __future__ import annotations
@@ -43,6 +47,10 @@ _SECRET_SHAPED = re.compile(
     r"\b(?:sk|pk|rk|xox[abpr])[-_][A-Za-z0-9_-]{8,}|\bBearer\s+\S+|\b[A-Za-z0-9_-]{40,}\b"
 )
 USAGE_FIELDS = ("inputTokens", "outputTokens", "model", "costBasis", "costUsd")
+# Hermes provider ids that draw on a flat-rate plan sign-in, never per-call
+# billing: the ChatGPT plan through the managed Codex pool, and Grok's sign-in.
+# OpenRouter and every API-key provider stay metered.
+SUBSCRIPTION_PROVIDERS = frozenset({"openai-codex", "xai-oauth"})
 # Wording K2 and MCP servers use when a tool's arguments fail its schema.
 _VALIDATION_ERROR_WORDS = (
     "invalid", "validation", "unrecognized", "unexpected", "additional propert",
@@ -50,6 +58,8 @@ _VALIDATION_ERROR_WORDS = (
 )
 _TURN_STARTS: dict[str, float] = {}
 _TURN_USAGE: dict[str, dict[str, Any]] = {}
+# Turns that made at least one call outside a plan sign-in (an ordered set).
+_TURN_METERED: dict[str, bool] = {}
 _TURN_STARTS_LOCK = threading.Lock()
 
 
@@ -62,6 +72,7 @@ def note_turn_started(turn_id: str, *, now: float | None = None) -> None:
             _TURN_STARTS.pop(next(iter(_TURN_STARTS)))
         _TURN_STARTS[turn_id] = time.monotonic() if now is None else now
         _TURN_USAGE.pop(turn_id, None)
+        _TURN_METERED.pop(turn_id, None)
 
 
 def _token_count(value: Any) -> int | None:
@@ -71,10 +82,24 @@ def _token_count(value: Any) -> int | None:
 
 
 def note_api_usage(
-    turn_id: str, usage: Any, *, model: Any = "", response_model: Any = ""
+    turn_id: str,
+    usage: Any,
+    *,
+    model: Any = "",
+    response_model: Any = "",
+    provider: Any = "",
 ) -> None:
     """Add one provider call's token counts (Hermes ``post_api_request``) to its turn."""
-    if not turn_id or not isinstance(usage, Mapping):
+    if not turn_id:
+        return
+    # One metered or unnamed call makes the whole turn's cost unknown, even one
+    # that reported no token counts.
+    if str(provider or "").strip().lower() not in SUBSCRIPTION_PROVIDERS:
+        with _TURN_STARTS_LOCK:
+            if len(_TURN_METERED) >= _MAX_OPEN_TURNS:
+                _TURN_METERED.pop(next(iter(_TURN_METERED)))
+            _TURN_METERED[turn_id] = True
+    if not isinstance(usage, Mapping):
         return
     # Hermes splits cached input out of input_tokens; prompt_tokens is the
     # whole input the provider processed.
@@ -105,9 +130,10 @@ def _turn_seconds(turn_id: str, now: float | None) -> int | None:
     return max(0, round((time.monotonic() if now is None else now) - started))
 
 
-def _take_turn_usage(turn_id: str) -> dict[str, Any] | None:
+def _take_turn_usage(turn_id: str) -> tuple[dict[str, Any] | None, bool]:
+    """The turn's usage totals, and whether any call in it was outside a plan."""
     with _TURN_STARTS_LOCK:
-        return _TURN_USAGE.pop(turn_id, None)
+        return _TURN_USAGE.pop(turn_id, None), _TURN_METERED.pop(turn_id, False)
 
 
 def redact_error(value: Any) -> str:
@@ -134,7 +160,7 @@ def reply_outcome_record(
     # Pop the start time first, so turns that are never reported (cron, an
     # interrupt) do not linger in _TURN_STARTS.
     seconds = _turn_seconds(turn_id, monotonic_now)
-    usage = _take_turn_usage(turn_id)
+    usage, metered = _take_turn_usage(turn_id)
     where = REPORTED_PLATFORMS.get(str(platform or "").strip().lower())
     if not agent_ref or not turn_id or not where or interrupted:
         return None
@@ -175,7 +201,7 @@ def reply_outcome_record(
         record["outputTokens"] = usage["output"]
         if usage["model"] or model:
             record["model"] = str(usage["model"] or model)[:200]
-        record["costBasis"] = "unknown"
+        record["costBasis"] = "unknown" if metered else "subscription"
     return record
 
 
@@ -265,3 +291,4 @@ def _reset_for_tests() -> None:
     with _TURN_STARTS_LOCK:
         _TURN_STARTS.clear()
         _TURN_USAGE.clear()
+        _TURN_METERED.clear()
