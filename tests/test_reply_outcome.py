@@ -215,6 +215,44 @@ def test_usage_from_two_provider_calls_is_sent_once_with_the_turn(plugin, outcom
     assert not set(outcome.USAGE_FIELDS) & set(again)
 
 
+def test_a_turn_wholly_on_a_plan_sign_in_is_booked_as_subscription(plugin, outcome):
+    # ChatGPT plan (managed Codex pool), then the Grok sign-in fallback: no dollars change hands.
+    plugin._post_api_request(
+        turn_id="turn-p", provider="openai-codex", model="gpt-5.6-sol",
+        usage={"prompt_tokens": 1000, "output_tokens": 40},
+    )
+    plugin._post_api_request(
+        turn_id="turn-p", provider="xai-oauth", model="grok-4.6",
+        usage={"prompt_tokens": 500, "output_tokens": 10},
+    )
+
+    record = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="turn-p", completed=True, platform="slack", now=NOW,
+    )
+
+    assert record["costBasis"] == "subscription"
+    assert record["inputTokens"] == 1500
+    assert "costUsd" not in record
+
+
+@pytest.mark.parametrize("second_provider", ["openrouter", "", None])
+def test_one_metered_or_unnamed_call_keeps_the_turn_unknown(plugin, outcome, second_provider):
+    plugin._post_api_request(
+        turn_id="turn-m", provider="openai-codex", model="gpt-5.6-sol",
+        usage={"prompt_tokens": 1000, "output_tokens": 40},
+    )
+    plugin._post_api_request(
+        turn_id="turn-m", provider=second_provider, model="openai/gpt-6.1-sol",
+        usage={"prompt_tokens": 500, "output_tokens": 10},
+    )
+
+    record = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="turn-m", completed=True, platform="slack", now=NOW,
+    )
+
+    assert record["costBasis"] == "unknown"
+
+
 def test_a_turn_without_reported_usage_sends_no_usage_fields(plugin, outcome):
     plugin._post_api_request(turn_id="turn-n", usage=None, model="m")
     plugin._post_api_request(turn_id="turn-n", usage={"prompt_tokens": None}, model="m")

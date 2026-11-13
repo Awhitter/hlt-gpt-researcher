@@ -923,11 +923,16 @@ def _post_api_request(
     usage: Any = None,
     model: str = "",
     response_model: str = "",
+    provider: str = "",
     **_: Any,
 ) -> None:
     """Count each provider call's tokens toward its turn's run record."""
     note_api_usage(
-        str(turn_id or ""), usage, model=model, response_model=response_model
+        str(turn_id or ""),
+        usage,
+        model=model,
+        response_model=response_model,
+        provider=provider,
     )
 
 

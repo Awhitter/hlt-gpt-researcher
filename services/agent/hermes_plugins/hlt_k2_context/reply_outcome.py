@@ -14,8 +14,12 @@ user interrupted (a new message, /stop) did not finish either way.
 
 Usage: Hermes' ``post_api_request`` hook reports normalized token counts for
 each provider call, never a price. Those counts are summed per turn and sent as
-``inputTokens``/``outputTokens``/``model`` with ``costBasis: "unknown"``; no
-``costUsd`` is sent, because no measured dollar amount exists here.
+``inputTokens``/``outputTokens``/``model``; no ``costUsd`` is sent, because no
+measured dollar amount exists here. When every call in the turn went through a
+plan sign-in (the ChatGPT plan's Codex pool or the Grok plan's xAI sign-in), the
+turn is sent with ``costBasis: "subscription"`` and K2 books it at $0 on a plan,
+as openclaw-hq already does for its agents. Any other call, or a call whose
+provider Hermes did not name, keeps the whole turn ``"unknown"``.
 """
 
 from __future__ import annotations
@@ -43,6 +47,10 @@ _SECRET_SHAPED = re.compile(
     r"\b(?:sk|pk|rk|xox[abpr])[-_][A-Za-z0-9_-]{8,}|\bBearer\s+\S+|\b[A-Za-z0-9_-]{40,}\b"
 )
 USAGE_FIELDS = ("inputTokens", "outputTokens", "model", "costBasis", "costUsd")
+# Hermes provider ids that draw on a flat-rate plan sign-in, never per-call
+# billing: the ChatGPT plan through the managed Codex pool, and Grok's sign-in.
+# OpenRouter and every API-key provider stay metered.
+SUBSCRIPTION_PROVIDERS = frozenset({"openai-codex", "xai-oauth"})
 # Wording K2 and MCP servers use when a tool's arguments fail its schema.
 _VALIDATION_ERROR_WORDS = (
     "invalid", "validation", "unrecognized", "unexpected", "additional propert",
@@ -71,7 +79,12 @@ def _token_count(value: Any) -> int | None:
 
 
 def note_api_usage(
-    turn_id: str, usage: Any, *, model: Any = "", response_model: Any = ""
+    turn_id: str,
+    usage: Any,
+    *,
+    model: Any = "",
+    response_model: Any = "",
+    provider: Any = "",
 ) -> None:
     """Add one provider call's token counts (Hermes ``post_api_request``) to its turn."""
     if not turn_id or not isinstance(usage, Mapping):
@@ -90,8 +103,13 @@ def note_api_usage(
         if totals is None:
             if len(_TURN_USAGE) >= _MAX_OPEN_TURNS:
                 _TURN_USAGE.pop(next(iter(_TURN_USAGE)))
-            totals = _TURN_USAGE[turn_id] = {"input": 0, "output": 0, "model": ""}
+            totals = _TURN_USAGE[turn_id] = {
+                "input": 0, "output": 0, "model": "", "plan_only": True,
+            }
         totals["input"] += input_tokens or 0
+        # One metered or unnamed call makes the whole turn's cost unknown.
+        if str(provider or "").strip().lower() not in SUBSCRIPTION_PROVIDERS:
+            totals["plan_only"] = False
         totals["output"] += output_tokens or 0
         if answered_by:
             totals["model"] = answered_by
@@ -175,7 +193,7 @@ def reply_outcome_record(
         record["outputTokens"] = usage["output"]
         if usage["model"] or model:
             record["model"] = str(usage["model"] or model)[:200]
-        record["costBasis"] = "unknown"
+        record["costBasis"] = "subscription" if usage.get("plan_only") else "unknown"
     return record
 
 
