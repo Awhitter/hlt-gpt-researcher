@@ -78,6 +78,18 @@ def _token_count(value: Any) -> int | None:
     return int(value) if value >= 0 else None
 
 
+def _turn_totals(turn_id: str) -> dict[str, Any]:
+    """This turn's running usage; the caller holds _TURN_STARTS_LOCK."""
+    totals = _TURN_USAGE.get(turn_id)
+    if totals is None:
+        if len(_TURN_USAGE) >= _MAX_OPEN_TURNS:
+            _TURN_USAGE.pop(next(iter(_TURN_USAGE)))
+        totals = _TURN_USAGE[turn_id] = {
+            "input": 0, "output": 0, "model": "", "plan_only": True,
+        }
+    return totals
+
+
 def note_api_usage(
     turn_id: str,
     usage: Any,
@@ -87,7 +99,14 @@ def note_api_usage(
     provider: Any = "",
 ) -> None:
     """Add one provider call's token counts (Hermes ``post_api_request``) to its turn."""
-    if not turn_id or not isinstance(usage, Mapping):
+    if not turn_id:
+        return
+    # One metered or unnamed call makes the whole turn's cost unknown, even one
+    # that reported no token counts.
+    if str(provider or "").strip().lower() not in SUBSCRIPTION_PROVIDERS:
+        with _TURN_STARTS_LOCK:
+            _turn_totals(turn_id)["plan_only"] = False
+    if not isinstance(usage, Mapping):
         return
     # Hermes splits cached input out of input_tokens; prompt_tokens is the
     # whole input the provider processed.
@@ -99,17 +118,8 @@ def note_api_usage(
         return
     answered_by = str(response_model or model or "")
     with _TURN_STARTS_LOCK:
-        totals = _TURN_USAGE.get(turn_id)
-        if totals is None:
-            if len(_TURN_USAGE) >= _MAX_OPEN_TURNS:
-                _TURN_USAGE.pop(next(iter(_TURN_USAGE)))
-            totals = _TURN_USAGE[turn_id] = {
-                "input": 0, "output": 0, "model": "", "plan_only": True,
-            }
+        totals = _turn_totals(turn_id)
         totals["input"] += input_tokens or 0
-        # One metered or unnamed call makes the whole turn's cost unknown.
-        if str(provider or "").strip().lower() not in SUBSCRIPTION_PROVIDERS:
-            totals["plan_only"] = False
         totals["output"] += output_tokens or 0
         if answered_by:
             totals["model"] = answered_by

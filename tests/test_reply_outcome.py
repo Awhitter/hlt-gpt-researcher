@@ -235,6 +235,19 @@ def test_a_turn_wholly_on_a_plan_sign_in_is_booked_as_subscription(plugin, outco
     assert "costUsd" not in record
 
 
+def test_a_metered_call_without_token_counts_still_keeps_the_turn_unknown(plugin, outcome):
+    plugin._post_api_request(
+        turn_id="turn-q", provider="openai-codex", usage={"prompt_tokens": 1000, "output_tokens": 40},
+    )
+    plugin._post_api_request(turn_id="turn-q", provider="openrouter", usage=None)
+
+    record = outcome.reply_outcome_record(
+        "agent:cleo", turn_id="turn-q", completed=True, platform="slack", now=NOW,
+    )
+
+    assert record["costBasis"] == "unknown"
+
+
 @pytest.mark.parametrize("second_provider", ["openrouter", "", None])
 def test_one_metered_or_unnamed_call_keeps_the_turn_unknown(plugin, outcome, second_provider):
     plugin._post_api_request(
