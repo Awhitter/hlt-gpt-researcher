@@ -23,16 +23,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Merge upstream/master
+      - name: Merge upstream/main
         id: merge
         run: |
-          set -uo pipefail
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/assafelovic/gpt-researcher.git
-          git fetch upstream master
+          git fetch upstream main
 
-          BEHIND=$(git rev-list --count HEAD..upstream/master)
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
           echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
           if [ "$BEHIND" = "0" ]; then
             echo "Already up to date with upstream."
@@ -43,7 +43,7 @@ jobs:
           git checkout -b "$BRANCH"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
-          if git merge --no-edit upstream/master; then
+          if git merge --no-edit upstream/main; then
             echo "conflicts=" >> "$GITHUB_OUTPUT"
           else
             CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
