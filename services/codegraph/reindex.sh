@@ -31,13 +31,29 @@ DEFAULT_REPOS=(
 # Until 8 Nov 2026 the key was baked into each clone's origin URL.
 GITHUB_PAT="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 export GIT_TERMINAL_PROMPT=0
+# The Katailyst key can mint tokens, so no child of this run may inherit it. It is
+# read once into a shell variable that is never exported (unset first: a variable
+# that arrived through the environment stays exported), and both environment names
+# are dropped before anything else starts. Only the mint helper gets it, in that
+# one command's environment.
+unset KATAILYST_KEY
+KATAILYST_KEY="${KATAILYST2_MCP_TOKEN:-${KATAILYST_MCP_TOKEN:-}}"
+unset KATAILYST2_MCP_TOKEN KATAILYST_MCP_TOKEN
 MINT_HELPER="${CODEGRAPH_MINT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mint_github_token.py}"
-MINT_STATE=""      # ok | unset | failed | unused, once the first refresh needs GitHub
-MINTED_TOKEN=""
-MINTED_REPOS=" "   # " awhitter/katailyst2 awhitter/mmm2 ", lower case
+MINT_STATE=""      # ok | partial | unset | failed | unused, once the first refresh needs GitHub
+# What the mint helper said for each repository it was asked about, index by index.
+MINT_NAMES=()      # "awhitter/katailyst2", lower case
+MINT_TOKENS=()     # the token Katailyst minted for it, or ""
+MINT_WHYS=()       # "minted", or why it has no token (the reasons listed at AUTH_WHY)
+MINT_DEFAULT_WHY="refused" # for a repository the helper said nothing about
 AUTH_TOKEN=""      # the key for the repository being refreshed
 AUTH_SOURCE=""     # katailyst | github-token | none
+# Why that key: minted, or why not (not-covered | scope | unset | key-refused |
+# no-answer | refused | outside-app). server.py's /health turns each into words.
+AUTH_WHY=""
+AUTH_REPO_REFUSED="" # 1 once GitHub refused the key for the repository being refreshed
 AUTH_REFUSED=""    # credential sources GitHub refused this run, comma-separated
+AUTH_RECORDS=""    # "slug:source:why:ok|refused|failed,..." for the status line
 # What Git prints when GitHub turns a key down (8 Nov 2026: "could not read Username").
 AUTH_ERROR_PATTERN='could not read Username|Authentication failed|Invalid username or password|returned error: 40[13]|terminal prompts disabled'
 REPOS_SPEC="${CODEGRAPH_REPOS:-}"
@@ -248,11 +264,15 @@ else
   done
 fi
 
-# Ask Katailyst once per run, the first time a refresh needs GitHub, for a token
-# covering every configured Awhitter repository. Never prints either key.
+# Ask Katailyst once per run, the first time a refresh needs GitHub, for tokens
+# covering every configured Awhitter repository. The helper asks for all of them
+# in one request and, when Katailyst refuses that, once per repository, so one
+# uncovered repository cannot turn the minted token off for the rest. It answers
+# one line per repository: "minted<TAB>name<TAB>token" or
+# "fallback<TAB>name<TAB>why". Never prints either key.
 prepare_github_auth() {
   [[ -n "$MINT_STATE" ]] && return 0
-  local names=() i owner name minted rc=0
+  local names=() i owner name out="" rc=0 kind value minted=0
   MINT_STATE=unused
   [[ ${#REPO_FULLS[@]} -gt 0 ]] || return 0
   for i in "${!REPO_FULLS[@]}"; do
@@ -260,44 +280,114 @@ prepare_github_auth() {
     owner="${REPO_FULLS[$i]%%/*}"
     name="${REPO_FULLS[$i]#*/}"
     name="${name%.git}"
-    [[ "$(lower "$owner")" == "awhitter" ]] && names+=("$name")
+    [[ "$(lower "$owner")" == "awhitter" ]] || continue
+    # A name GitHub could not hold is not sent: it is not covered, whatever else is.
+    if [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      names+=("$name")
+    else
+      MINT_NAMES+=("awhitter/$(lower "$name")")
+      MINT_TOKENS+=("")
+      MINT_WHYS+=("not-covered")
+    fi
   done
   local fallback="using GITHUB_TOKEN"
   [[ -n "$GITHUB_PAT" ]] || fallback="and GITHUB_TOKEN is not set either"
   [[ ${#names[@]} -gt 0 ]] || return 0
-  minted="$(python3 "$MINT_HELPER" "${names[@]}")" || rc=$?
-  if [[ "$rc" == 0 && -n "$minted" ]]; then
-    MINT_STATE=ok
-    MINTED_TOKEN="$minted"
-    for name in "${names[@]}"; do
-      MINTED_REPOS+="awhitter/$(lower "$name") "
-    done
-  elif [[ "$rc" == 3 ]]; then
-    MINT_STATE=unset
-    echo "[codegraph] no Katailyst credential set: $fallback" >&2
-  else
-    MINT_STATE=failed
-    echo "[codegraph] Katailyst did not mint a GitHub token: $fallback" >&2
-  fi
-  minted=""
+  out="$(KATAILYST2_MCP_TOKEN="$KATAILYST_KEY" python3 "$MINT_HELPER" "${names[@]}")" || rc=$?
+  KATAILYST_KEY=""
+  # Read through a pipe: a here-string would put the tokens in a temporary file.
+  while IFS=$'\t' read -r kind name value; do
+    [[ -n "$name" && -n "$value" ]] || continue
+    case "$kind" in
+      minted)
+        MINT_NAMES+=("awhitter/$(lower "$name")")
+        MINT_TOKENS+=("$value")
+        MINT_WHYS+=("minted")
+        minted=$((minted + 1))
+        ;;
+      fallback)
+        [[ "$value" =~ ^[a-z-]+$ ]] || value=refused
+        MINT_NAMES+=("awhitter/$(lower "$name")")
+        MINT_TOKENS+=("")
+        MINT_WHYS+=("$value")
+        ;;
+    esac
+  done < <(printf '%s\n' "$out")
+  out=""
+  value=""
+  case "$rc" in
+    0) MINT_STATE=ok ;;
+    2)
+      MINT_STATE=partial
+      echo "[codegraph] Katailyst minted a GitHub token for $minted of ${#names[@]} repositories; for the rest: $fallback" >&2
+      ;;
+    3)
+      MINT_STATE="unset"
+      MINT_DEFAULT_WHY="unset"
+      echo "[codegraph] no Katailyst credential set: $fallback" >&2
+      ;;
+    *)
+      MINT_STATE=failed
+      echo "[codegraph] Katailyst did not mint a GitHub token: $fallback" >&2
+      ;;
+  esac
 }
 
-# Pick the key for one repository: Katailyst's token when it covers the
+# Pick the key for one repository: Katailyst's token when it minted one for the
 # repository, else GITHUB_TOKEN, else none (a public repository still clones).
+# AUTH_WHY keeps the reason, for the log line and the status line.
 select_github_auth() {
-  local full
+  local full i
   full="$(lower "${1%.git}")"
   prepare_github_auth
-  if [[ -n "$MINTED_TOKEN" && "$MINTED_REPOS" == *" $full "* ]]; then
-    AUTH_TOKEN="$MINTED_TOKEN"
+  AUTH_TOKEN=""
+  AUTH_WHY="$MINT_DEFAULT_WHY"
+  AUTH_REPO_REFUSED=""
+  [[ "$full" == awhitter/* ]] || AUTH_WHY=outside-app
+  for ((i = 0; i < ${#MINT_NAMES[@]}; i++)); do
+    [[ "${MINT_NAMES[$i]}" == "$full" ]] || continue
+    AUTH_TOKEN="${MINT_TOKENS[$i]}"
+    AUTH_WHY="${MINT_WHYS[$i]}"
+    break
+  done
+  if [[ -n "$AUTH_TOKEN" ]]; then
     AUTH_SOURCE=katailyst
   elif [[ -n "$GITHUB_PAT" ]]; then
     AUTH_TOKEN="$GITHUB_PAT"
     AUTH_SOURCE=github-token
   else
-    AUTH_TOKEN=""
     AUTH_SOURCE=none
   fi
+}
+
+# One log line per repository: which key its refresh uses and why. Settings and
+# repository names only, never a value.
+say_github_auth() {
+  local slug="$1" why
+  case "$AUTH_WHY" in
+    minted)
+      echo "[codegraph] $slug: GitHub key is the token Katailyst minted"
+      return 0
+      ;;
+    not-covered) why="Katailyst refused this repository: not covered by the GitHub App" ;;
+    scope) why="the key in KATAILYST2_MCP_TOKEN lacks the github.token scope" ;;
+    unset) why="no Katailyst credential is set" ;;
+    key-refused) why="Katailyst refused the key in KATAILYST2_MCP_TOKEN" ;;
+    no-answer) why="Katailyst did not answer the token request" ;;
+    outside-app) why="its owner is outside Katailyst's GitHub App" ;;
+    *) why="Katailyst did not mint a token for it" ;;
+  esac
+  if [[ "$AUTH_SOURCE" == github-token ]]; then
+    echo "[codegraph] $slug: GitHub key is GITHUB_TOKEN, the fallback ($why)" >&2
+  else
+    echo "[codegraph] $slug: no GitHub key ($why, and GITHUB_TOKEN is not set)" >&2
+  fi
+}
+
+# Keep one repository's key source, reason and result for the status line.
+note_github_auth() {
+  [[ -n "$AUTH_SOURCE" ]] || return 0
+  AUTH_RECORDS="${AUTH_RECORDS:+$AUTH_RECORDS,}$1:$AUTH_SOURCE:$AUTH_WHY:$2"
 }
 
 # git with the selected key in that one command's environment only: never in a
@@ -323,6 +413,7 @@ git_net() {
   git_auth "$@" 2>"$errfile" || rc=$?
   cat "$errfile" >&2 || true
   if [[ "$rc" != 0 ]] && grep -qiE "$AUTH_ERROR_PATTERN" "$errfile" 2>/dev/null; then
+    AUTH_REPO_REFUSED=1
     [[ ",$AUTH_REFUSED," == *",$AUTH_SOURCE,"* ]] || AUTH_REFUSED="${AUTH_REFUSED:+$AUTH_REFUSED,}$AUTH_SOURCE"
     case "$AUTH_SOURCE" in
       katailyst) echo "[codegraph] GitHub refused the token Katailyst minted" >&2 ;;
@@ -340,6 +431,7 @@ clone_or_update() {
   local dest="$REPOS_DIR/$slug"
   local url="https://github.com/${full}.git"
   select_github_auth "$full"
+  say_github_auth "$slug"
 
   if [[ -d "$dest/.git" ]]; then
     echo "[codegraph] updating $slug"
@@ -417,11 +509,20 @@ index_repo() {
     echo "[codegraph] $slug refreshed $(cat "$(freshness_stamp "$slug")") — still fresh, skipping"
     return
   fi
+  AUTH_SOURCE=""
+  AUTH_WHY=""
+  AUTH_REPO_REFUSED=""
   if clone_or_update "$slug" "$full" &&
      { date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(freshness_stamp "$slug")"; } 2>/dev/null; then
+    note_github_auth "$slug" ok
     rm -f "$REPOS_DIR/$slug/.hlt-index-error"
     echo "[codegraph] indexed $slug"
   else
+    if [[ -n "$AUTH_REPO_REFUSED" ]]; then
+      note_github_auth "$slug" refused
+    else
+      note_github_auth "$slug" failed
+    fi
     { date -u +"%Y-%m-%dT%H:%M:%SZ indexing failed" > "$REPOS_DIR/$slug/.hlt-index-error"; } 2>/dev/null || true
     echo "[codegraph] FAILED to index $slug ($full); continuing" >&2
     FAILED_REPOS+=("$slug")
@@ -433,23 +534,30 @@ if [[ ${#REPO_SLUGS[@]} -gt 0 ]]; then
     index_repo "${REPO_SLUGS[$i]}" "${REPO_FULLS[$i]}"
   done
 fi
-MINTED_TOKEN=""
+MINT_TOKENS=()
 AUTH_TOKEN=""
+KATAILYST_KEY=""
+
+# Which key each refreshed repository used and why, for the status line. /health
+# turns it into a plain reason: settings and counts, never a value or a name.
+AUTH_DETAIL=""
+if [[ -n "$AUTH_RECORDS" ]]; then
+  AUTH_DETAIL="github-auth mint=${MINT_STATE:-unused}${AUTH_REFUSED:+ refused=$AUTH_REFUSED} repos=$AUTH_RECORDS"
+fi
 
 if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished with failures: ${FAILED_REPOS[*]}" >&2
   if [[ -n "$AUTH_REFUSED" ]]; then
-    # /health turns this into a plain reason, naming settings, never values.
-    write_status failed "github-auth mint=${MINT_STATE:-unused} refused=$AUTH_REFUSED"
+    write_status failed "$AUTH_DETAIL"
   else
     write_status failed "${#FAILED_REPOS[@]} of the checkouts did not refresh"
   fi
   exit 1
 elif [[ ${#PAUSED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished; paused: ${PAUSED_REPOS[*]}"
-  write_status paused "${#PAUSED_REPOS[@]} $PAUSED_SINCE"
+  write_status paused "${#PAUSED_REPOS[@]} $PAUSED_SINCE${AUTH_DETAIL:+ $AUTH_DETAIL}"
 else
-  write_status ok
+  write_status ok "$AUTH_DETAIL"
 fi
 echo "[codegraph] free space after reindex: $(free_mb) MB"
 
