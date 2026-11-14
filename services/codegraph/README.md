@@ -42,7 +42,7 @@ file before making a behavior claim.
 
 | Path | Auth | Returns |
 |------|------|---------|
-| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh is running/failed/stalled, or its status is missing/stale/unreadable; no repository identities |
+| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh is running/failed/stalled, or its status is missing/stale/unreadable; when GitHub refused a key it names the setting (`KATAILYST2_MCP_TOKEN`, `GITHUB_TOKEN`) and the cause, never a value: no Katailyst key is set, the key lacks the `github.token` scope, Katailyst refused the key, Katailyst did not answer, or Katailyst refused a repository (not covered by its GitHub App), given as a count; no repository identities |
 | `/readiness` | bearer | per-repo index status, branch, commit SHA, `gitnexus_home` |
 | `/verify-source` | bearer | validates one repo/path/full-commit tuple in the private checkout |
 | `/mcp` | bearer | the tool surface |
@@ -57,7 +57,10 @@ service **fails closed**: every path except `/health` returns 503.
 
 | Var | Purpose |
 |-----|---------|
-| `GITHUB_TOKEN` | Read-only key for the private repos (fine-grained, Contents: read). Git gets it from the environment on every run; it is never written into a checkout's `.git/config`, and older clones that had it in origin's URL are cleaned on their next refresh |
+| `KATAILYST2_MCP_TOKEN` | Katailyst key (`kata_...`) whose grant includes the `github.token` scope, for an HLT member or agent. Each run, `mint_github_token.py` asks Katailyst's GitHub App (`github.token.mint`) for a one-hour token with Contents: read on every configured Awhitter repository: one request for all of them (at most eight names a request), and one request per repository when Katailyst refuses that, because it refuses a whole request for one repository its App does not cover. Only that repository then falls back. Unset ⇒ the log says "no Katailyst credential set: using GITHUB_TOKEN". `reindex.sh` drops the variable from its environment at once, so only the mint helper is started with it, never `git` or `gitnexus` |
+| `KATAILYST2_MCP_URL` | Katailyst MCP address (default `https://katailyst.com/mcp`). Must be `https`; plain `http` is accepted only for `localhost`, `127.0.0.1` and `[::1]`. A redirect is refused, so the key goes to that one origin only |
+| `CODEGRAPH_MINT_TIMEOUT_S` | Wall-clock seconds one mint may take, the first one with the handshake before it (default 45). Katailyst's 15-second keepalives do not extend it. Past it the mint stops and the run falls back |
+| `GITHUB_TOKEN` | Fallback read-only key (fine-grained, Contents: read), used when the mint fails, for a repository Katailyst's App does not cover, or for one outside the App (another owner). Neither key is printed, written into a checkout's `.git/config` or put in a URL: Git gets it from the environment of each command, and older clones that had a key in origin's URL are cleaned on their next refresh |
 | `CODEGRAPH_MCP_TOKEN` | Bearer auth for `/mcp` and `/readiness`; unset ⇒ 503 |
 | `CODEGRAPH_REPOS` | Optional `slug\|org/repo,...` override |
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
@@ -90,10 +93,21 @@ and a completed scheduled refresh with no errors. Public `/health` must remain
 HTTP 200 without exposing repository names; its `ok` status is not sufficient
 proof. Authenticated `/readiness` must show the expected repository SHAs and fresh
 timestamps, and a source read must resolve an immutable link at that SHA. Frozen
-repositories remain explicitly stale. No endpoint or credential setting needs to
-change for this repair.
+repositories remain explicitly stale.
 
-The regression suite uses disposable local Git repositories and a stub graph CLI:
+`python3 mint_github_token.py --dry-run katailyst2` prints the token request it
+would send and whether a Katailyst credential is set, without calling anything.
+
+Each run logs one line per repository saying which key its refresh used and why,
+for example `the-vault: GitHub key is GITHUB_TOKEN, the fallback (Katailyst refused
+this repository: not covered by the GitHub App)`. The same record is on the status
+line in `$REPOS_DIR/.hlt-reindex-status` as `repos=slug:source:why:result,...`,
+where the source is `katailyst`, `github-token` or `none`, and the reason is
+`minted`, `not-covered`, `scope`, `unset`, `key-refused`, `no-answer`, `refused` or
+`outside-app`. Public `/health` reads that line and reports causes and counts only.
+
+The regression suite uses disposable local Git repositories, a stand-in Katailyst
+and a git shim that records which key each fetch carried, plus a stub graph CLI:
 `python -m pytest tests/test_codegraph_auth.py`. It does not rebuild production
 indexes or prove that the production disk has recovered.
 
@@ -102,6 +116,7 @@ indexes or prove that the production disk has recovered.
 ```bash
 docker build -t hlt-codegraph .
 docker run --rm -p 8080:8080 \
+  -e KATAILYST2_MCP_TOKEN \
   -e GITHUB_TOKEN \
   -e CODEGRAPH_MCP_TOKEN=dev \
   -v codegraph-data:/data \

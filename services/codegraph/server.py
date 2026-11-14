@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -652,6 +653,8 @@ def _index_problem() -> str | None:
     except (OSError, ValueError):
         return "Index health could not be checked; answers may be stale."
     if state == "failed":
+        if detail and detail[0] == "github-auth":
+            return _github_auth_reason(detail[1:])
         return "The last re-index did not finish; answers may be stale."
     try:
         started = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -669,6 +672,47 @@ def _index_problem() -> str | None:
     if state not in {"running", "ok"}:
         return "Index health could not be checked; answers may be stale."
     return None
+
+
+# Why a repository had no Katailyst token, as reindex.sh records it per repository.
+_NO_MINT_REASONS = {
+    "unset": "no Katailyst credential is set (KATAILYST2_MCP_TOKEN)",
+    "scope": "the Katailyst key lacks the github.token scope (KATAILYST2_MCP_TOKEN)",
+    "key-refused": "Katailyst refused the key (KATAILYST2_MCP_TOKEN)",
+    "no-answer": "Katailyst did not answer the token request",
+    "refused": "Katailyst did not mint a GitHub token",
+}
+
+
+def _github_auth_reason(detail: list[str]) -> str:
+    """Why GitHub turned the refresh away. Settings and counts only: /health is public, so no repository names."""
+    fields = dict(word.split("=", 1) for word in detail if "=" in word)
+    refused = set(fields.get("refused", "").split(","))
+    causes = []
+    if "katailyst" in refused:
+        causes.append("GitHub refused the token Katailyst minted")
+    if "github-token" in refused:
+        causes.append("GitHub refused GITHUB_TOKEN")
+    if "none" in refused:
+        causes.append("no GitHub key is set")
+    # For each repository GitHub turned away ("slug:source:why:refused"), why it had no Katailyst token.
+    whys: Counter[str] = Counter()
+    for entry in fields.get("repos", "").split(","):
+        parts = entry.split(":")
+        if len(parts) == 4 and parts[3] == "refused":
+            whys[parts[2]] += 1
+
+    def repositories(count: int) -> str:
+        return f"{count} {'repository' if count == 1 else 'repositories'}"
+
+    if whys["not-covered"]:
+        causes.append(f"Katailyst refused {repositories(whys['not-covered'])} (not covered by the GitHub App)")
+    if whys["outside-app"]:
+        causes.append(f"{repositories(whys['outside-app'])} outside Katailyst's GitHub App (another owner)")
+    causes.extend(text for why, text in _NO_MINT_REASONS.items() if whys[why])
+    if not causes:
+        causes.append("GitHub refused the key")
+    return f"The last re-index did not finish: {'; '.join(causes)}. Answers may be stale."
 
 
 def _paused_reason(ran: datetime, detail: list[str]) -> str:
