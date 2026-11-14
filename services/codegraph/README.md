@@ -42,7 +42,7 @@ file before making a behavior claim.
 
 | Path | Auth | Returns |
 |------|------|---------|
-| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh is running/failed/stalled, or its status is missing/stale/unreadable; no repository identities |
+| `/health` | public | HTTP 200 liveness with a generic index warning: `status` is `degraded` when disk space is low, refresh is running/failed/stalled, or its status is missing/stale/unreadable; when GitHub refused the key it names which setting (`KATAILYST2_MCP_TOKEN`, `GITHUB_TOKEN`), never a value; no repository identities |
 | `/readiness` | bearer | per-repo index status, branch, commit SHA, `gitnexus_home` |
 | `/verify-source` | bearer | validates one repo/path/full-commit tuple in the private checkout |
 | `/mcp` | bearer | the tool surface |
@@ -57,7 +57,9 @@ service **fails closed**: every path except `/health` returns 503.
 
 | Var | Purpose |
 |-----|---------|
-| `GITHUB_TOKEN` | Read-only key for the private repos (fine-grained, Contents: read). Git gets it from the environment on every run; it is never written into a checkout's `.git/config`, and older clones that had it in origin's URL are cleaned on their next refresh |
+| `KATAILYST2_MCP_TOKEN` | Katailyst key (`kata_...`) whose grant includes the `github.token` scope, for an HLT member or agent. Each run, `mint_github_token.py` asks Katailyst's GitHub App (`github.token.mint`) for a one-hour token with Contents: read on every configured Awhitter repository. Unset ⇒ the log says "no Katailyst credential set: using GITHUB_TOKEN" |
+| `KATAILYST2_MCP_URL` | Katailyst MCP address (default `https://katailyst.com/mcp`) |
+| `GITHUB_TOKEN` | Fallback read-only key (fine-grained, Contents: read), used when the mint fails or for a repository outside the App (another owner). Neither key is printed, written into a checkout's `.git/config` or put in a URL: Git gets it from the environment of each command, and older clones that had a key in origin's URL are cleaned on their next refresh |
 | `CODEGRAPH_MCP_TOKEN` | Bearer auth for `/mcp` and `/readiness`; unset ⇒ 503 |
 | `CODEGRAPH_REPOS` | Optional `slug\|org/repo,...` override |
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
@@ -90,10 +92,13 @@ and a completed scheduled refresh with no errors. Public `/health` must remain
 HTTP 200 without exposing repository names; its `ok` status is not sufficient
 proof. Authenticated `/readiness` must show the expected repository SHAs and fresh
 timestamps, and a source read must resolve an immutable link at that SHA. Frozen
-repositories remain explicitly stale. No endpoint or credential setting needs to
-change for this repair.
+repositories remain explicitly stale.
 
-The regression suite uses disposable local Git repositories and a stub graph CLI:
+`python3 mint_github_token.py --dry-run katailyst2` prints the token request it
+would send and whether a Katailyst credential is set, without calling anything.
+
+The regression suite uses disposable local Git repositories, a stand-in Katailyst
+and a git shim that records which key each fetch carried, plus a stub graph CLI:
 `python -m pytest tests/test_codegraph_auth.py`. It does not rebuild production
 indexes or prove that the production disk has recovered.
 
@@ -102,6 +107,7 @@ indexes or prove that the production disk has recovered.
 ```bash
 docker build -t hlt-codegraph .
 docker run --rm -p 8080:8080 \
+  -e KATAILYST2_MCP_TOKEN \
   -e GITHUB_TOKEN \
   -e CODEGRAPH_MCP_TOKEN=dev \
   -v codegraph-data:/data \

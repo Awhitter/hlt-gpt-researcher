@@ -164,6 +164,10 @@ def _run_reindex(repos: Path, tmp_path: Path, **env: str) -> subprocess.Complete
             "CODEGRAPH_FORCE_REINDEX": "1",
             "GITHUB_TOKEN": "",
             "GH_TOKEN": "",
+            # Never reach the real Katailyst from a test.
+            "KATAILYST2_MCP_TOKEN": "",
+            "KATAILYST_MCP_TOKEN": "",
+            "KATAILYST2_MCP_URL": "http://127.0.0.1:9/mcp",
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
             "GITNEXUS_TEST_CALLS": str(tmp_path / "gitnexus-calls"),
             **env,
@@ -894,3 +898,258 @@ def test_every_codegraph_tool_says_it_only_reads():
         hints = tool.annotations
         assert hints is not None, tool.name
         assert hints.readOnlyHint is True and hints.destructiveHint is False, tool.name
+
+
+# --- GitHub credentials: Katailyst-minted token first, GITHUB_TOKEN as fallback ---
+#
+# Since the 8 Nov 2026 key rotation GitHub refused GITHUB_TOKEN and every refresh
+# failed. reindex.sh now asks Katailyst's GitHub App (github.token.mint) for a
+# one-hour read token. These proofs use a local stand-in for Katailyst and a git
+# shim that records which key each network step carried, then runs the real git.
+
+MINTED = "minted-fixture-key"
+PAT = "pat-fixture-key"
+KATAILYST_KEY = "kata-fixture-key"
+
+
+class _FakeKatailyst:
+    """A minimal streamable-HTTP MCP stand-in that answers github_token_mint."""
+
+    def __init__(self, mint_ok: bool = True):
+        import http.server
+        import threading
+
+        self.calls: list[dict] = []
+        self.authorization: list[str] = []
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):  # noqa: ANN002
+                pass
+
+            def do_POST(self):  # noqa: N802
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                fake.authorization.append(self.headers.get("Authorization", ""))
+                if "id" not in body:
+                    self.send_response(202)
+                    self.end_headers()
+                    return
+                if body["method"] == "initialize":
+                    result = {"protocolVersion": "2025-03-26", "capabilities": {}, "serverInfo": {"name": "fake"}}
+                else:
+                    fake.calls.append(body["params"])
+                    if mint_ok:
+                        data = {"token": MINTED, "expiresAt": "2026-11-14T06:00:00Z",
+                                "repositories": body["params"]["arguments"]["repositories"],
+                                "permissions": {"contents": "read"}, "reused": False}
+                        result = {"structuredContent": data, "content": [{"type": "text", "text": json.dumps(data)}]}
+                    else:
+                        result = {"isError": True, "content": [{"type": "text", "text": json.dumps(
+                            {"message": "This key cannot get GitHub tokens."})}]}
+                payload = f"event: message\ndata: {json.dumps({'jsonrpc': '2.0', 'id': body['id'], 'result': result})}\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Mcp-Session-Id", "fixture-session")
+                self.end_headers()
+                self.wfile.write(payload.encode())
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/mcp"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+def _git_shim(tmp_path: Path) -> Path:
+    """A git that logs the key on each fetch/clone, refuses listed keys like GitHub, then runs real git."""
+    import sys
+
+    real_git = shutil.which("git")
+    tools = tmp_path / "bin"
+    tools.mkdir(exist_ok=True)
+    shim = tools / "git"
+    shim.write_text(
+        f"#!{sys.executable}\n"
+        "import base64, os, sys\n"
+        "key = ''\n"
+        "for i in range(int(os.environ.get('GIT_CONFIG_COUNT') or 0)):\n"
+        "    if os.environ.get(f'GIT_CONFIG_KEY_{i}') == 'http.https://github.com/.extraheader':\n"
+        "        key = base64.b64decode(os.environ[f'GIT_CONFIG_VALUE_{i}'].split()[-1]).decode().split(':', 1)[1]\n"
+        "if {'fetch', 'clone'} & set(sys.argv[1:]):\n"
+        "    with open(os.environ['GIT_AUTH_LOG'], 'a') as log:\n"
+        "        log.write((key or '-') + '\\n')\n"
+        "    if key and key in os.environ.get('GIT_REFUSE_KEYS', '').split(','):\n"
+        "        sys.stderr.write(\"fatal: could not read Username for 'https://github.com': terminal prompts disabled\\n\")\n"
+        "        sys.exit(128)\n"
+        f"os.execv({real_git!r}, [{real_git!r}] + sys.argv[1:])\n"
+    )
+    shim.chmod(0o755)
+    return tmp_path / "git-auth-log"
+
+
+def _serve_from(*pairs: tuple[Path, str]) -> dict[str, str]:
+    """GIT_CONFIG entries that serve each github.com URL from a local upstream."""
+    env = {"GIT_CONFIG_COUNT": str(len(pairs))}
+    for i, (upstream, url) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{i}"] = f"url.{upstream.as_uri()}.insteadOf"
+        env[f"GIT_CONFIG_VALUE_{i}"] = url
+    return env
+
+
+def _keys_used(log: Path) -> list[str]:
+    return log.read_text().split() if log.exists() else []
+
+
+def test_refresh_uses_the_katailyst_minted_token_and_never_prints_a_key(tmp_path):
+    covered, outside = tmp_path / "covered", tmp_path / "outside"
+    _create_source_repo(covered)
+    _create_source_repo(outside)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    log = _git_shim(tmp_path)
+    katailyst = _FakeKatailyst()
+    try:
+        result = _run_reindex(
+            repos, tmp_path,
+            CODEGRAPH_REPOS="demo|Awhitter/demo,other|HLT-Master/other",
+            CODEGRAPH_SOURCE_ONLY_REPOS="demo,other",
+            CODEGRAPH_MIN_FREE_MB="0",
+            GITHUB_TOKEN=PAT,
+            KATAILYST2_MCP_TOKEN=KATAILYST_KEY,
+            KATAILYST2_MCP_URL=katailyst.url,
+            GIT_AUTH_LOG=str(log),
+            **_serve_from((covered, "https://github.com/Awhitter/demo.git"),
+                          (outside, "https://github.com/HLT-Master/other.git")),
+        )
+    finally:
+        katailyst.close()
+
+    assert result.returncode == 0, result.stderr
+    # The App covers Awhitter repositories; anything else keeps GITHUB_TOKEN.
+    assert _keys_used(log) == [MINTED, PAT]
+    assert len(katailyst.calls) == 1
+    call = katailyst.calls[0]
+    assert call["name"] == "github_token_mint"
+    assert call["arguments"]["repositories"] == ["demo"]
+    assert call["arguments"]["permissions"] == {"contents": "read", "metadata": "read"}
+    assert set(katailyst.authorization) == {f"Bearer {KATAILYST_KEY}"}
+    printed = result.stdout + result.stderr
+    for secret in (MINTED, PAT, KATAILYST_KEY):
+        assert secret not in printed
+        for checkout in ("demo", "other"):
+            assert secret not in (repos / checkout / ".git" / "config").read_text()
+    assert "Katailyst minted a read-only GitHub token for demo" in result.stderr
+    assert (repos / ".hlt-reindex-status").read_text().startswith("ok ")
+
+
+def test_a_failed_mint_falls_back_to_github_token_and_says_so(tmp_path):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    log = _git_shim(tmp_path)
+    katailyst = _FakeKatailyst(mint_ok=False)
+    try:
+        result = _run_reindex(
+            repos, tmp_path,
+            CODEGRAPH_REPOS="demo|Awhitter/demo",
+            CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+            CODEGRAPH_MIN_FREE_MB="0",
+            GITHUB_TOKEN=PAT,
+            KATAILYST2_MCP_TOKEN=KATAILYST_KEY,
+            KATAILYST2_MCP_URL=katailyst.url,
+            GIT_AUTH_LOG=str(log),
+            **_serve_from((upstream, "https://github.com/Awhitter/demo.git")),
+        )
+    finally:
+        katailyst.close()
+
+    assert result.returncode == 0, result.stderr
+    assert _keys_used(log) == [PAT]
+    assert "Katailyst did not mint a GitHub token: using GITHUB_TOKEN" in result.stderr
+    assert "This key cannot get GitHub tokens." in result.stderr
+    for secret in (PAT, KATAILYST_KEY):
+        assert secret not in result.stdout + result.stderr
+
+
+def test_without_a_katailyst_credential_the_refresh_uses_github_token(tmp_path):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    log = _git_shim(tmp_path)
+    result = _run_reindex(
+        repos, tmp_path,
+        CODEGRAPH_REPOS="demo|Awhitter/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+        CODEGRAPH_MIN_FREE_MB="0",
+        GITHUB_TOKEN=PAT,
+        GIT_AUTH_LOG=str(log),
+        **_serve_from((upstream, "https://github.com/Awhitter/demo.git")),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _keys_used(log) == [PAT]
+    assert "no Katailyst credential set: using GITHUB_TOKEN" in result.stderr
+    assert PAT not in result.stdout + result.stderr
+
+
+def test_a_refused_key_is_named_on_public_health_without_its_value(tmp_path, monkeypatch):
+    """8 Nov 2026: /health said only "did not finish" while GitHub refused the key for days."""
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    log = _git_shim(tmp_path)
+    result = _run_reindex(
+        repos, tmp_path,
+        CODEGRAPH_REPOS="demo|Awhitter/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+        CODEGRAPH_MIN_FREE_MB="0",
+        GITHUB_TOKEN=PAT,
+        GIT_REFUSE_KEYS=PAT,
+        GIT_AUTH_LOG=str(log),
+        **_serve_from((upstream, "https://github.com/Awhitter/demo.git")),
+    )
+    assert result.returncode == 1
+    assert "GitHub refused GITHUB_TOKEN" in result.stderr
+    status = (repos / ".hlt-reindex-status").read_text()
+    assert status.startswith("failed ") and "github-auth mint=unset refused=github-token" in status
+
+    monkeypatch.setattr(server, "REPOS_DIR", str(repos))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    payload = json.loads(asyncio.run(server.health_check(None)).body)
+    assert payload["status"] == "degraded"
+    assert payload["reason"] == (
+        "The last re-index did not finish: GitHub refused GITHUB_TOKEN; "
+        "no Katailyst credential is set (KATAILYST2_MCP_TOKEN). Answers may be stale."
+    )
+    flat = json.dumps(payload)
+    assert PAT not in flat and "demo" not in flat
+
+
+def test_public_health_names_a_refused_minted_token_or_a_failed_mint(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "REPOS_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    status = tmp_path / ".hlt-reindex-status"
+    status.write_text("failed 2026-11-14T04:48:00Z github-auth mint=ok refused=katailyst\n")
+    reason = json.loads(asyncio.run(server.health_check(None)).body)["reason"]
+    assert reason == "The last re-index did not finish: GitHub refused the token Katailyst minted. Answers may be stale."
+    status.write_text("failed 2026-11-14T04:48:00Z github-auth mint=failed refused=none\n")
+    reason = json.loads(asyncio.run(server.health_check(None)).body)["reason"]
+    assert "no GitHub key is set" in reason and "github.token scope" in reason
+
+
+def test_mint_dry_run_shows_the_request_and_calls_nothing(tmp_path):
+    result = subprocess.run(
+        ["python3", str(SERVICE_DIR / "mint_github_token.py"), "--dry-run", "katailyst2", "the-vault"],
+        env={**os.environ, "KATAILYST2_MCP_TOKEN": KATAILYST_KEY, "KATAILYST2_MCP_URL": "http://127.0.0.1:9/mcp"},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    request = json.loads(result.stdout)
+    assert request["katailystCredential"] == "set"
+    assert request["tool"] == "github_token_mint"
+    assert request["arguments"]["repositories"] == ["katailyst2", "the-vault"]
+    assert request["arguments"]["permissions"] == {"contents": "read", "metadata": "read"}
+    assert KATAILYST_KEY not in result.stdout + result.stderr

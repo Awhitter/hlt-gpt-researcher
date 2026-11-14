@@ -652,6 +652,8 @@ def _index_problem() -> str | None:
     except (OSError, ValueError):
         return "Index health could not be checked; answers may be stale."
     if state == "failed":
+        if detail and detail[0] == "github-auth":
+            return _github_auth_reason(detail[1:])
         return "The last re-index did not finish; answers may be stale."
     try:
         started = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -669,6 +671,27 @@ def _index_problem() -> str | None:
     if state not in {"running", "ok"}:
         return "Index health could not be checked; answers may be stale."
     return None
+
+
+def _github_auth_reason(detail: list[str]) -> str:
+    """Why GitHub turned the refresh away, naming settings only: /health is public."""
+    fields = dict(word.split("=", 1) for word in detail if "=" in word)
+    refused = set(fields.get("refused", "").split(","))
+    causes = []
+    if "katailyst" in refused:
+        causes.append("GitHub refused the token Katailyst minted")
+    if "github-token" in refused:
+        causes.append("GitHub refused GITHUB_TOKEN")
+    if "none" in refused:
+        causes.append("no GitHub key is set")
+    mint = fields.get("mint")
+    if mint == "unset":
+        causes.append("no Katailyst credential is set (KATAILYST2_MCP_TOKEN)")
+    elif mint == "failed":
+        causes.append("Katailyst did not mint a GitHub token (KATAILYST2_MCP_TOKEN needs the github.token scope)")
+    if not causes:
+        causes.append("GitHub refused the key")
+    return f"The last re-index did not finish: {'; '.join(causes)}. Answers may be stale."
 
 
 def _paused_reason(ran: datetime, detail: list[str]) -> str:

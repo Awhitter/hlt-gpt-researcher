@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# This script holds GitHub credentials in memory; a trace would print them.
+{ set +x; } 2>/dev/null
 
 REPOS_DIR="${REPOS_DIR:-/data/repos}"
 GITNEXUS_HOME="${GITNEXUS_HOME:-/data/gitnexus}"
@@ -11,25 +13,33 @@ DEFAULT_REPOS=(
   "mmm2|Awhitter/MMM2"
   "katailyst2|Awhitter/katailyst2"
   "ebb|Awhitter/evidence-based-business"
-  "scrapervault|Awhitter/ScraperVault"
+  # ScraperVault was renamed the-vault; GitHub redirects the old name, but Katailyst's
+  # GitHub App knows only the current one.
+  "scrapervault|Awhitter/the-vault"
   "nursing-mastery|Awhitter/nursing-mastery"
 )
 # HLT-Master/hlt-web-service left the list on 8 Nov 2026: the Awhitter account can no
 # longer see it ("Repository not found"), so every run failed and /health stayed
 # degraded. Add it back through CODEGRAPH_REPOS with a token that can read HLT-Master.
 
-TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-# Git authenticates through the environment, never through the remote URL, so no
-# checkout on the disk keeps a copy of the key. Until 8 Nov 2026 the key was baked
-# into each clone's origin URL: replacing GITHUB_TOKEN changed nothing for existing
-# checkouts, and a copy of the key sat in every .git/config on the disk.
+# GitHub credentials. Since the 8 Nov 2026 key rotation GitHub refused GITHUB_TOKEN
+# and every refresh failed. Each run now asks Katailyst's GitHub App for a one-hour,
+# read-only token (github.token.mint, through mint_github_token.py) for the Awhitter
+# repositories it refreshes; GITHUB_TOKEN is only the fallback, for a failed mint or
+# a repository the App does not cover. Git gets the key from the environment of each
+# git command, never from the remote URL, so no checkout on the disk keeps a copy.
+# Until 8 Nov 2026 the key was baked into each clone's origin URL.
+GITHUB_PAT="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 export GIT_TERMINAL_PROMPT=0
-if [[ -n "$TOKEN" ]]; then
-  _git_cfg_n="${GIT_CONFIG_COUNT:-0}"
-  export "GIT_CONFIG_KEY_${_git_cfg_n}=http.https://github.com/.extraheader"
-  export "GIT_CONFIG_VALUE_${_git_cfg_n}=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
-  export GIT_CONFIG_COUNT=$((_git_cfg_n + 1))
-fi
+MINT_HELPER="${CODEGRAPH_MINT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mint_github_token.py}"
+MINT_STATE=""      # ok | unset | failed | unused, once the first refresh needs GitHub
+MINTED_TOKEN=""
+MINTED_REPOS=" "   # " awhitter/katailyst2 awhitter/mmm2 ", lower case
+AUTH_TOKEN=""      # the key for the repository being refreshed
+AUTH_SOURCE=""     # katailyst | github-token | none
+AUTH_REFUSED=""    # credential sources GitHub refused this run, comma-separated
+# What Git prints when GitHub turns a key down (8 Nov 2026: "could not read Username").
+AUTH_ERROR_PATTERN='could not read Username|Authentication failed|Invalid username or password|returned error: 40[13]|terminal prompts disabled'
 REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 
 # NOTE: do NOT add a --max-old-space-size cap here expecting it to prevent the
@@ -213,11 +223,123 @@ is_fresh() {
   (( age_s < FRESH_HOURS * 3600 ))
 }
 
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# The configured repositories, read once: the token request needs all of them.
+REPO_SLUGS=()
+REPO_FULLS=()
+if [[ -n "$REPOS_SPEC" ]]; then
+  IFS=',' read -ra ENTRIES <<< "$REPOS_SPEC"
+  for entry in "${ENTRIES[@]}"; do
+    entry="$(echo "$entry" | xargs)"
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" == *"|"* ]]; then
+      REPO_SLUGS+=("${entry%%|*}")
+      REPO_FULLS+=("${entry#*|}")
+    else
+      REPO_SLUGS+=("$(basename "$entry")")
+      REPO_FULLS+=("$entry")
+    fi
+  done
+else
+  for entry in "${DEFAULT_REPOS[@]}"; do
+    REPO_SLUGS+=("${entry%%|*}")
+    REPO_FULLS+=("${entry#*|}")
+  done
+fi
+
+# Ask Katailyst once per run, the first time a refresh needs GitHub, for a token
+# covering every configured Awhitter repository. Never prints either key.
+prepare_github_auth() {
+  [[ -n "$MINT_STATE" ]] && return 0
+  local names=() i owner name minted rc=0
+  MINT_STATE=unused
+  [[ ${#REPO_FULLS[@]} -gt 0 ]] || return 0
+  for i in "${!REPO_FULLS[@]}"; do
+    is_skipped "${REPO_SLUGS[$i]}" && continue
+    owner="${REPO_FULLS[$i]%%/*}"
+    name="${REPO_FULLS[$i]#*/}"
+    name="${name%.git}"
+    [[ "$(lower "$owner")" == "awhitter" ]] && names+=("$name")
+  done
+  local fallback="using GITHUB_TOKEN"
+  [[ -n "$GITHUB_PAT" ]] || fallback="and GITHUB_TOKEN is not set either"
+  [[ ${#names[@]} -gt 0 ]] || return 0
+  minted="$(python3 "$MINT_HELPER" "${names[@]}")" || rc=$?
+  if [[ "$rc" == 0 && -n "$minted" ]]; then
+    MINT_STATE=ok
+    MINTED_TOKEN="$minted"
+    for name in "${names[@]}"; do
+      MINTED_REPOS+="awhitter/$(lower "$name") "
+    done
+  elif [[ "$rc" == 3 ]]; then
+    MINT_STATE=unset
+    echo "[codegraph] no Katailyst credential set: $fallback" >&2
+  else
+    MINT_STATE=failed
+    echo "[codegraph] Katailyst did not mint a GitHub token: $fallback" >&2
+  fi
+  minted=""
+}
+
+# Pick the key for one repository: Katailyst's token when it covers the
+# repository, else GITHUB_TOKEN, else none (a public repository still clones).
+select_github_auth() {
+  local full
+  full="$(lower "${1%.git}")"
+  prepare_github_auth
+  if [[ -n "$MINTED_TOKEN" && "$MINTED_REPOS" == *" $full "* ]]; then
+    AUTH_TOKEN="$MINTED_TOKEN"
+    AUTH_SOURCE=katailyst
+  elif [[ -n "$GITHUB_PAT" ]]; then
+    AUTH_TOKEN="$GITHUB_PAT"
+    AUTH_SOURCE=github-token
+  else
+    AUTH_TOKEN=""
+    AUTH_SOURCE=none
+  fi
+}
+
+# git with the selected key in that one command's environment only: never in a
+# URL, a .git/config, a command line or the log.
+git_auth() {
+  if [[ -z "$AUTH_TOKEN" ]]; then
+    git "$@"
+    return
+  fi
+  (
+    n="${GIT_CONFIG_COUNT:-0}"
+    export "GIT_CONFIG_KEY_${n}=http.https://github.com/.extraheader"
+    export "GIT_CONFIG_VALUE_${n}=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$AUTH_TOKEN" | base64 | tr -d '\n')"
+    export GIT_CONFIG_COUNT=$((n + 1))
+    exec git "$@"
+  )
+}
+
+# A network git step: as git_auth, and notes when GitHub refused the key.
+git_net() {
+  local errfile rc=0
+  errfile="$(mktemp "${TMPDIR:-/tmp}/codegraph-git.XXXXXX" 2>/dev/null)" || { git_auth "$@"; return; }
+  git_auth "$@" 2>"$errfile" || rc=$?
+  cat "$errfile" >&2 || true
+  if [[ "$rc" != 0 ]] && grep -qiE "$AUTH_ERROR_PATTERN" "$errfile" 2>/dev/null; then
+    [[ ",$AUTH_REFUSED," == *",$AUTH_SOURCE,"* ]] || AUTH_REFUSED="${AUTH_REFUSED:+$AUTH_REFUSED,}$AUTH_SOURCE"
+    case "$AUTH_SOURCE" in
+      katailyst) echo "[codegraph] GitHub refused the token Katailyst minted" >&2 ;;
+      github-token) echo "[codegraph] GitHub refused GITHUB_TOKEN" >&2 ;;
+      *) echo "[codegraph] GitHub asked for a key and none is set (KATAILYST2_MCP_TOKEN, GITHUB_TOKEN)" >&2 ;;
+    esac
+  fi
+  rm -f "$errfile"
+  return "$rc"
+}
+
 clone_or_update() {
   local slug="$1"
   local full="$2"
   local dest="$REPOS_DIR/$slug"
   local url="https://github.com/${full}.git"
+  select_github_auth "$full"
 
   if [[ -d "$dest/.git" ]]; then
     echo "[codegraph] updating $slug"
@@ -229,7 +351,7 @@ clone_or_update() {
     # set -e does not apply inside a function called from `if`, so each step
     # fails the repo explicitly (on 2026-10-14 a failed fetch still logged
     # "checkout ready").
-    git -C "$dest" fetch --depth=1 origin HEAD || return 1
+    git_net -C "$dest" fetch --depth=1 origin HEAD || return 1
     git -C "$dest" reset --hard FETCH_HEAD || return 1
     reclaim_git_space "$dest"
   else
@@ -242,7 +364,7 @@ clone_or_update() {
       echo "[codegraph] $slug has an incomplete checkout; retaining it for recovery" >&2
       return 1
     fi
-    git clone --depth=1 "$url" "$dest" || return 1
+    git_net clone --depth=1 "$url" "$dest" || return 1
   fi
 
   if is_source_only "$slug"; then
@@ -306,31 +428,22 @@ index_repo() {
   fi
 }
 
-if [[ -n "$REPOS_SPEC" ]]; then
-  IFS=',' read -ra ENTRIES <<< "$REPOS_SPEC"
-  for entry in "${ENTRIES[@]}"; do
-    entry="$(echo "$entry" | xargs)"
-    [[ -z "$entry" ]] && continue
-    if [[ "$entry" == *"|"* ]]; then
-      slug="${entry%%|*}"
-      full="${entry#*|}"
-    else
-      full="$entry"
-      slug="$(basename "$entry")"
-    fi
-    index_repo "$slug" "$full"
-  done
-else
-  for entry in "${DEFAULT_REPOS[@]}"; do
-    slug="${entry%%|*}"
-    full="${entry#*|}"
-    index_repo "$slug" "$full"
+if [[ ${#REPO_SLUGS[@]} -gt 0 ]]; then
+  for i in "${!REPO_SLUGS[@]}"; do
+    index_repo "${REPO_SLUGS[$i]}" "${REPO_FULLS[$i]}"
   done
 fi
+MINTED_TOKEN=""
+AUTH_TOKEN=""
 
 if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished with failures: ${FAILED_REPOS[*]}" >&2
-  write_status failed "${#FAILED_REPOS[@]} of the checkouts did not refresh"
+  if [[ -n "$AUTH_REFUSED" ]]; then
+    # /health turns this into a plain reason, naming settings, never values.
+    write_status failed "github-auth mint=${MINT_STATE:-unused} refused=$AUTH_REFUSED"
+  else
+    write_status failed "${#FAILED_REPOS[@]} of the checkouts did not refresh"
+  fi
   exit 1
 elif [[ ${#PAUSED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished; paused: ${PAUSED_REPOS[*]}"
