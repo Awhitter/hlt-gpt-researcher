@@ -7024,10 +7024,106 @@ def test_k2_route_serves_on_its_last_working_fallback():
 
     assert gate["contractReady"] is True
     assert gate["primaryReady"] is False
-    assert gate["primaryRedundancyRequired"] is True
+    # OpenRouter's prepaid balance is the backup, so no three-profile pool.
+    assert gate["primaryRedundancyRequired"] is False
     assert gate["fallbackReady"] is False
     assert gate["ready"] is False
     assert gate["servingReady"] is True
+
+
+PLAN_THEN_PREPAID = {
+    "primary": "openai/gpt-5.6-sol",
+    "fallbacks": ["vercel/openai/gpt-6.1-sol", "openrouter/openai/gpt-6.1-sol"],
+}
+
+
+def test_plan_first_route_falls_back_to_vercel_then_openrouter():
+    selection = render_config.resolve_model_route(PLAN_THEN_PREPAID)
+
+    assert selection["source"] == "katailyst2"
+    assert (selection["provider"], selection["model"]) == ("openai-codex", "gpt-5.6-sol")
+    assert selection["fallbacks"] == [
+        {"provider": "ai-gateway", "model": "openai/gpt-6.1-sol"},
+        {"provider": "openrouter", "model": "openai/gpt-6.1-sol"},
+    ]
+
+
+def test_no_route_reaches_openai_with_a_metered_key():
+    hermes = {
+        render_config._hermes_route(ref)["provider"]
+        for ref in render_config.APPROVED_K2_MODEL_ROUTES
+    }
+
+    assert hermes <= {"openai-codex", "xai-oauth"} | render_config.PREPAID_PROVIDERS
+
+
+def test_one_signed_in_plan_is_ready_when_prepaid_fallbacks_work():
+    hg = _load_health_gateway()
+    selection = render_config.resolve_model_route(PLAN_THEN_PREPAID)
+    routes = render_config.expected_model_route(
+        {"source": "katailyst2", "k2Route": selection["k2Route"]}
+    )
+    one_profile = {
+        "credential_pool": {
+            "profile_count": 1,
+            "selectable_count": 1,
+            "minimum_required": 3,
+            "minimum_ready": False,
+        }
+    }
+    readiness = [
+        {**routes[0], "available": True, "detail": one_profile},
+        {**routes[1], "available": True},
+        {**routes[2], "available": True},
+    ]
+    hg.BOOT.clear()
+    hg.BOOT.update({
+        "configured_model_route": routes,
+        "model_route_selection": {"source": "katailyst2", "k2Route": selection["k2Route"]},
+        "reasoning_effort": "high",
+        "model_route_readiness": readiness,
+    })
+
+    gate = hg.authenticated_model_route_gate(readiness)
+
+    assert gate["primaryRedundancyRequired"] is False
+    assert gate["ready"] is True
+
+
+def test_plan_with_only_another_plan_behind_it_still_needs_the_pool():
+    hg = _load_health_gateway()
+    selection = render_config.resolve_model_route(
+        {"primary": "openai/gpt-5.6-sol", "fallbacks": ["xai/grok-4.6"]}
+    )
+    routes = render_config.expected_model_route(
+        {"source": "katailyst2", "k2Route": selection["k2Route"]}
+    )
+    readiness = [{**route, "available": True} for route in routes]
+    hg.BOOT.clear()
+    hg.BOOT.update({
+        "configured_model_route": routes,
+        "model_route_selection": {"source": "katailyst2", "k2Route": selection["k2Route"]},
+        "reasoning_effort": "high",
+        "model_route_readiness": readiness,
+    })
+
+    gate = hg.authenticated_model_route_gate(readiness)
+
+    assert gate["primaryRedundancyRequired"] is True
+    assert gate["ready"] is False
+
+
+@pytest.mark.parametrize(("key", "available"), [("vck_test", True), ("  ", False)])
+def test_vercel_gateway_route_is_ready_only_with_its_key(key, available):
+    hg = _load_health_gateway()
+
+    ready = hg.model_route_readiness(
+        [{"provider": "ai-gateway", "model": "openai/gpt-6.1-sol", "role": "fallback-1"}],
+        {"AI_GATEWAY_API_KEY": key},
+    )
+
+    assert ready[0]["available"] is available
+    assert ready[0]["credential"] == "api_key"
 
 
 def test_k2_route_with_no_working_route_does_not_serve():

@@ -2061,6 +2061,15 @@ def model_route_readiness(
                 "credential": "api_key",
                 "detail": {"kind": kind},
             }
+        elif provider == "ai-gateway":
+            # Presence only: the Gateway has no free key-kind probe, and the
+            # first real call is the authority on balance.
+            present = bool((env.get("AI_GATEWAY_API_KEY") or "").strip())
+            provider_state[provider] = {
+                "available": present,
+                "credential": "api_key",
+                "detail": {"kind": "present" if present else "missing"},
+            }
         else:
             provider_state[provider] = {
                 "available": None,
@@ -2211,7 +2220,11 @@ def authenticated_model_route_gate(
         and isinstance(primary_detail.get("credential_pool"), Mapping)
         else {}
     )
-    redundancy_required = expected_primary["provider"] == "openai-codex"
+    # Three signed-in profiles were the only backup when a plan was the whole
+    # route. A prepaid fallback is that backup, so one plan per agent is enough.
+    redundancy_required = expected_primary["provider"] == "openai-codex" and not any(
+        expected["provider"] in render_config.PREPAID_PROVIDERS for expected in expected_fallbacks
+    )
     redundancy_ready = (
         redundancy_required and credential_pool.get("minimum_ready") is True
     )

@@ -86,16 +86,24 @@ DEFAULT_FALLBACK_PROVIDERS: tuple[dict[str, str], ...] = ()
 #
 # K2 names routes by the OpenClaw host's provider prefix; Hermes names the same
 # credentials differently. ChatGPT and Grok are the owner's subscriptions
-# (Hermes' managed Codex pool and xAI OAuth); OpenRouter is paid API inference.
+# (Hermes' managed Codex pool and xAI OAuth). The Vercel AI Gateway and
+# OpenRouter are prepaid balances that count down and stop at zero. No route
+# reaches OpenAI's metered API with a key (owner, 14 Nov 2026: plan sign-in
+# first, then Vercel, then OpenRouter; never open-ended billing).
 K2_ROUTE_PROVIDERS: dict[str, str] = {
     "openai": "openai-codex",
     "xai": "xai-oauth",
+    "vercel": "ai-gateway",
     "openrouter": "openrouter",
 }
+# Hermes provider ids that draw down a prepaid balance.
+PREPAID_PROVIDERS: frozenset[str] = frozenset({"ai-gateway", "openrouter"})
 APPROVED_K2_MODEL_ROUTES: frozenset[str] = frozenset(
     {
         "openai/gpt-5.6-sol",
         "xai/grok-4.6",
+        # Owner, 14 Nov 2026: the first prepaid step after a plan sign-in.
+        "vercel/openai/gpt-6.1-sol",
         # Owner, 15 Oct 2026: the paid last resort after both subscriptions.
         "openrouter/openai/gpt-6.1-sol",
         # The reviewed default above, so K2 can also name it explicitly.
