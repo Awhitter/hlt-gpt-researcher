@@ -140,10 +140,13 @@ so a live agent can be tied to the exact merged build.
 
 Cleo's model order is a setting on her Katailyst2 record
 (`policies.routing.modelRoute`, e.g. `openai/gpt-5.6-sol`, then
-`xai/grok-4.6`, then `openrouter/openai/gpt-6.1-sol`). The boot reads it once
+`xai/grok-4.6`, then `openrouter/openai/gpt-6.1-sol`; or the plan-first order
+`openai/gpt-5.6-sol`, then `vercel/openai/gpt-6.1-sol`, then
+`openrouter/openai/gpt-6.1-sol`). The boot reads it once
 from the runtime pack before writing `config.yaml`, maps each route onto the
 Hermes provider that holds that credential (`openai/` → the managed Codex pool,
-`xai/` → xAI OAuth, `openrouter/` → the API key), and checks every entry against
+`xai/` → xAI OAuth, `vercel/` → the Vercel AI Gateway key, `openrouter/` → the
+API key), and checks every entry against
 `APPROVED_K2_MODEL_ROUTES` in `render_config.py`. A change in K2 takes one
 restart (`/health.config.model_route_restart_needed` turns true when K2 names
 a different route than the one running). When K2 names no route, is unreachable, or names a route outside that
@@ -686,8 +689,11 @@ The readiness receipt names each non-model check under
 `readiness.runtimeProof`. The compatibility check `primary_model_profile_ready`
 means the configured primary credential can serve. Pool and fallback checks
 are satisfied when the current policy does not require them. If a reviewed
-Codex route is configured in the future, its three selectable profiles remain
-a separate redundancy requirement; a stale login flag cannot satisfy it. `k2_activation_ready` also remains
+Codex route is configured with no OpenRouter fallback behind it, its three selectable profiles remain a separate
+redundancy requirement; a stale login flag cannot satisfy it. With OpenRouter
+in the fallbacks, one signed-in plan is enough. The `vercel/` step needs
+`AI_GATEWAY_API_KEY` set on the service in the Render dashboard, like
+`OPENROUTER_API_KEY`. No route uses an OpenAI API key. `k2_activation_ready` also remains
 false while the reviewed preactivation brain is serving Slack, so liveness and
 useful degraded service never masquerade as completed K2 activation.
 
