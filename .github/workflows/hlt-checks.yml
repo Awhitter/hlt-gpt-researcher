@@ -103,6 +103,7 @@ jobs:
             tests/test_websocket_manager.py \
             tests/test_firecrawl_retriever.py \
             tests/test_source_policy.py \
+            tests/test_agent_visited_urls.py \
             tests/test_vercel_gateway.py \
             tests/test_research_images.py \
             tests/test_report_artifacts.py \
