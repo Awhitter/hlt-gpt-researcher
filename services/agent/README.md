@@ -689,10 +689,11 @@ The readiness receipt names each non-model check under
 `readiness.runtimeProof`. The compatibility check `primary_model_profile_ready`
 means the configured primary credential can serve. Pool and fallback checks
 are satisfied when the current policy does not require them. If a reviewed
-Codex route is configured with no prepaid fallback (Vercel AI Gateway or
-OpenRouter) behind it, its three selectable profiles remain a separate
-redundancy requirement; a stale login flag cannot satisfy it. With a prepaid
-fallback, one signed-in plan is enough. No route uses an OpenAI API key. `k2_activation_ready` also remains
+Codex route is configured with no OpenRouter fallback behind it, its three selectable profiles remain a separate
+redundancy requirement; a stale login flag cannot satisfy it. With OpenRouter
+in the fallbacks, one signed-in plan is enough. The `vercel/` step needs
+`AI_GATEWAY_API_KEY` set on the service in the Render dashboard, like
+`OPENROUTER_API_KEY`. No route uses an OpenAI API key. `k2_activation_ready` also remains
 false while the reviewed preactivation brain is serving Slack, so liveness and
 useful degraded service never masquerade as completed K2 activation.
 

@@ -7113,6 +7113,29 @@ def test_plan_with_only_another_plan_behind_it_still_needs_the_pool():
     assert gate["ready"] is False
 
 
+def test_vercel_alone_behind_a_plan_does_not_lift_the_pool_rule():
+    hg = _load_health_gateway()
+    selection = render_config.resolve_model_route(
+        {"primary": "openai/gpt-5.6-sol", "fallbacks": ["vercel/openai/gpt-6.1-sol"]}
+    )
+    routes = render_config.expected_model_route(
+        {"source": "katailyst2", "k2Route": selection["k2Route"]}
+    )
+    readiness = [{**route, "available": True} for route in routes]
+    hg.BOOT.clear()
+    hg.BOOT.update({
+        "configured_model_route": routes,
+        "model_route_selection": {"source": "katailyst2", "k2Route": selection["k2Route"]},
+        "reasoning_effort": "high",
+        "model_route_readiness": readiness,
+    })
+
+    gate = hg.authenticated_model_route_gate(readiness)
+
+    assert gate["primaryRedundancyRequired"] is True
+    assert gate["ready"] is False
+
+
 @pytest.mark.parametrize(("key", "available"), [("vck_test", True), ("  ", False)])
 def test_vercel_gateway_route_is_ready_only_with_its_key(key, available):
     hg = _load_health_gateway()

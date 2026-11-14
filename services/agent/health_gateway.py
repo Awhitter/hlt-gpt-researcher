@@ -2221,9 +2221,11 @@ def authenticated_model_route_gate(
         else {}
     )
     # Three signed-in profiles were the only backup when a plan was the whole
-    # route. A prepaid fallback is that backup, so one plan per agent is enough.
+    # route. OpenRouter behind it is that backup, so one plan per agent is
+    # enough. Only OpenRouter counts: its key is probed for real, while the
+    # Vercel key is checked for presence alone.
     redundancy_required = expected_primary["provider"] == "openai-codex" and not any(
-        expected["provider"] in render_config.PREPAID_PROVIDERS for expected in expected_fallbacks
+        expected["provider"] == "openrouter" for expected in expected_fallbacks
     )
     redundancy_ready = (
         redundancy_required and credential_pool.get("minimum_ready") is True
