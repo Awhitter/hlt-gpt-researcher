@@ -127,6 +127,7 @@ leave your file alone and say so in `/health`.
 | `HLT_AGENT_REF` | Canonical unversioned identity; `agent:cleo` |
 | `HLT_AGENT_PUBLIC_ORIGIN` | Exact HTTPS origin used by K2's one-click computer handoff |
 | `OPENCLAW_HQ_HOOK_TOKEN` | Shared strong bearer for K2's hosted-agent hook and Hermes' loopback run API |
+| `HLT_PLAN_DOOR_TOKEN` | Bearer for the plan door (below). Unset, the door answers 503 and Katailyst uses its Gateway |
 | `K2_ACTIVATION_POLL_SECONDS` | Optional offline-to-active polling interval, bounded to 5–300 seconds (default 10) |
 | `AGENT_SOCKET_FAILURE_TOLERANCE` | Consecutive Socket Mode connect failures before the observed state reads disconnected (default 5) |
 | `AGENT_SOCKET_DEAD_RESTART_SECONDS` | Watchdog: bounce the gateway child after this long of observed socket outage so a live process with a dead transport cannot stay deaf for days (default 900; `0` disables) |
@@ -261,6 +262,41 @@ app, bot and bot-user IDs plus scope checks. K2 uses this when the Slack token
 already lives on the hosted body, so owner verification never requires copying
 that token into a second vault. The endpoint sends no message and exposes no
 credential.
+
+## The plan door: every Katailyst agent on the ChatGPT plans
+
+Alec chose on 15 Nov 2026 that every Katailyst agent asks his ChatGPT plans first, then the Vercel
+AI Gateway, then OpenRouter. This server holds the plan sign-ins (`hermes auth add openai-codex`,
+one per account), so it also answers model calls for Katailyst's own runner (`plan_door.py`):
+
+| Route | What it does |
+|---|---|
+| `POST /plan/v1/chat/completions` | One OpenAI chat-completions call (tools, JSON schema, reasoning effort) answered on a plan |
+| `GET /plan/v1/models` | The models the signed-in plan offers, from Codex's own list (kept ten minutes) |
+| `GET /plan/v1/accounts` | How many plan accounts are signed in, how many can answer now, and each one's state and sign-in expiry (by position, never by email) |
+
+Each route needs `Authorization: Bearer $HLT_PLAN_DOOR_TOKEN`. The door asks the Codex Responses
+endpoint with the credential pool's current account. An account that answers 402 or 429, reports a
+usage limit mid-answer, or is refused by name with a 403, rests until the reset time the plan gives
+and the next account is asked, so the plans are used one after another (Hermes' fill-first order).
+A 401 first refreshes that account's sign-in and asks it once more. A 403 page from the edge rests
+nobody: it is about this server's address, not an account. At most eight plan calls run at once,
+in their own lane so `/health` never waits behind them; a ninth is answered 503 and goes to the
+Gateway, without resting the plans.
+
+The sign-ins live in `$HERMES_HOME/auth.json` on the `/data` disk, so a deploy or restart keeps
+them. Hermes refreshes an account only when it is about to use one, and fill-first leaves the later
+accounts idle for days, so a keeper thread checks every six hours and refreshes any sign-in that
+runs out within three days; one that cannot be refreshed shows as `signed_out` on
+`/plan/v1/accounts` and in the log. Another account is added with `hermes auth add openai-codex`
+in the server's shell and joins the rotation on the next call, with no deploy. Any status other than 200 tells Katailyst to
+use its Gateway for that call: 404 for a model the plan does not offer, 429 when every account is
+resting, 502 when the plan errs. A stream request is answered once the plan has finished, so a
+failure is always a status code and never a cut stream. Temperature, top-p and token limits are
+dropped because the plan refuses them. Message text never reaches a log.
+
+The door spends no money: the plans are flat monthly plans, capped at their price while each
+account's "let apps use credits" and automatic credit purchases stay off (ChatGPT Settings, Usage).
 
 ## K2 hosted-agent contract
 

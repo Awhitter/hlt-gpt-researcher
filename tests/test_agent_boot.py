@@ -773,7 +773,7 @@ def _load_health_gateway(*, legacy_subscription_policy=False):
 
     saved = {
         name: sys.modules.get(name)
-        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger", "fleet_run_budget")
+        for name in ("grounding", "render_config", "cron_seed", "agent_run_ledger", "fleet_run_budget", "plan_door")
     }
     sys.modules["grounding"] = grounding
     route_config = render_config
@@ -790,6 +790,7 @@ def _load_health_gateway(*, legacy_subscription_policy=False):
     sys.modules["cron_seed"] = _cron_seed()
     sys.modules["agent_run_ledger"] = agent_run_ledger
     sys.modules["fleet_run_budget"] = _load("fleet_run_budget", SERVICE_DIR / "fleet_run_budget.py")
+    sys.modules["plan_door"] = _load("plan_door", SERVICE_DIR / "plan_door.py")
     try:
         return _load("hlt_agent_health_gateway", SERVICE_DIR / "health_gateway.py")
     finally:

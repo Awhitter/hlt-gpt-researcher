@@ -38,6 +38,7 @@ import agent_run_ledger
 import cron_seed
 import fleet_run_budget
 import grounding
+import plan_door
 import render_config
 import uvicorn
 from fastapi import FastAPI, Header
@@ -164,6 +165,8 @@ def gateway_command(verbosity: str = GATEWAY_VERBOSITY) -> list[str]:
 
 
 app = FastAPI(title="HLT agent")
+# Katailyst's agents ask the ChatGPT plans signed in here first (plan_door.py).
+plan_door.install(app)
 
 
 class GatewaySupervisor:
