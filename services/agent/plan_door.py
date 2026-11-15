@@ -15,6 +15,7 @@ the message text never reaches a log. A stream request is answered when the plan
 stream of chunks, so a failure is always a status code Katailyst can fall back on, never a cut stream.
 """
 
+import base64
 import hmac
 import json
 import logging
@@ -34,13 +35,15 @@ PROVIDER = "openai-codex"
 # Katailyst names OpenAI models the Gateway way; the plan knows the bare slug.
 MODEL_PREFIX = "openai/"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
-# Each signed-in account is asked at most once per call.
-MAX_ACCOUNTS = 8
 CALL_TIMEOUT_SECONDS = 300.0
 MODELS_CACHE_SECONDS = 600.0
-# Rate limits and an exhausted plan rotate to the next account; a refused sign-in does too.
-ROTATE_STATUSES = frozenset({401, 402, 403, 429})
-EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+# Plan calls in flight at once. Each holds a worker thread for up to minutes, so they get their own
+# lane and never queue the server's health check behind them; a call beyond it goes to the Gateway.
+CONCURRENT_CALLS = 8
+# A limit or an exhausted plan rests that account and the next one is asked.
+REST_STATUSES = frozenset({402, 429})
+# A sign-in whose access token runs out within this long is refreshed by the keeper (``keep_signed_in``).
+REFRESH_AHEAD_SECONDS = 3 * 24 * 60 * 60
 
 
 class PlanDoorError(Exception):
@@ -104,9 +107,7 @@ def _effort(body: Mapping[str, Any]) -> str | None:
     if not isinstance(raw, str):
         return None
     value = raw.strip().lower()
-    if value == "max":
-        value = "xhigh"
-    return value if value in EFFORTS else None
+    return value or None
 
 
 def _tool_choice(choice: Any) -> Any:
@@ -383,22 +384,34 @@ class PlanDoor:
         requested = str(body.get("model"))
         pool = self._pool_loader()
         tried: set[str] = set()
+        refreshed: set[str] = set()
+        again: str | None = None
         with self._client_factory() as client:
-            for _ in range(MAX_ACCOUNTS):
+            while True:
                 entry = pool.select() if pool is not None else None
-                if entry is None or entry.id in tried:
+                if entry is None or (entry.id in tried and entry.id != again):
                     break
+                again = None
                 tried.add(entry.id)
-                token = str(getattr(entry, "runtime_api_key", "") or getattr(entry, "access_token", "") or "")
-                with client.stream("POST", f"{CODEX_BASE_URL}/responses", headers=self._headers_for(token), json=request) as answer:
-                    if answer.status_code in ROTATE_STATUSES:
+                with client.stream("POST", f"{CODEX_BASE_URL}/responses", headers=self._headers_for(entry.runtime_api_key), json=request) as answer:
+                    if answer.status_code == 401:
                         answer.read()
+                        # A stale access token: refresh it once and ask the same account again.
+                        if entry.id not in refreshed and pool.try_refresh_matching(credential_id=entry.id) is not None:
+                            logger.info("plan door: account %s's sign-in was refreshed", len(tried))
+                            refreshed.add(entry.id)
+                            again = entry.id
+                            continue
+                        pool.mark_exhausted_and_rotate(status_code=401, credential_id=entry.id, error_context=_error_context(answer))
+                        continue
+                    if answer.status_code in REST_STATUSES or (answer.status_code == 403 and _account_refusal(answer)):
                         logger.info("plan door: account %s answered %s, trying the next one", len(tried), answer.status_code)
-                        pool.mark_exhausted_and_rotate(status_code=answer.status_code, credential_id=entry.id)
+                        pool.mark_exhausted_and_rotate(status_code=answer.status_code, credential_id=entry.id, error_context=_error_context(answer))
                         continue
                     if answer.status_code == 404 or (answer.status_code == 400 and self._model_refused(answer)):
                         raise PlanDoorError(404, "model_not_on_plan", f"{request['model']} is not on the plan")
                     if answer.status_code != 200:
+                        # A refusal not about one account (an edge challenge, a server fault) rests nobody.
                         answer.read()
                         raise PlanDoorError(502, "plan_error", f"the plan answered {answer.status_code}")
                     try:
@@ -407,7 +420,7 @@ class PlanDoor:
                         if error.status != 429:
                             raise
                         logger.info("plan door: account %s ran out mid-call, trying the next one", len(tried))
-                        pool.mark_exhausted_and_rotate(status_code=429, credential_id=entry.id)
+                        pool.mark_exhausted_and_rotate(status_code=429, credential_id=entry.id, error_context={"reason": error.kind, "message": error.message})
                         continue
                 return chat_completion(finished, requested)
         raise PlanDoorError(429, "plans_busy", "every signed-in plan is resting; use the Gateway")
@@ -426,9 +439,8 @@ class PlanDoor:
         entry = pool.select() if pool is not None else None
         if entry is None:
             raise PlanDoorError(429, "plans_busy", "no signed-in plan is available")
-        token = str(getattr(entry, "runtime_api_key", "") or getattr(entry, "access_token", "") or "")
         with self._client_factory() as client:
-            answer = client.get(f"{CODEX_BASE_URL}/models", params={"client_version": "1.0.0"}, headers=self._headers_for(token))
+            answer = client.get(f"{CODEX_BASE_URL}/models", params={"client_version": "1.0.0"}, headers=self._headers_for(entry.runtime_api_key))
         if answer.status_code != 200:
             raise PlanDoorError(502, "plan_error", f"the plan's model list answered {answer.status_code}")
         data = answer.json()
@@ -440,25 +452,159 @@ class PlanDoor:
         self._models = (now, slugs)
         return slugs
 
-    def accounts(self) -> dict[str, int]:
+    def accounts(self) -> dict[str, Any]:
+        """How many plans are signed in, how many can take a call now, and each one's state.
+
+        Accounts are listed by position only: a sign-in's label can be an email address.
+        """
         pool = self._pool_loader()
-        counts = getattr(pool, "readiness_counts", None) if pool is not None else None
-        if not callable(counts):
-            return {"signedIn": 0, "available": 0}
+        entries = pool.entries() if pool is not None else []
+        now = time.time()
+        listed = []
+        for index, entry in enumerate(entries, start=1):
+            expires = _token_expiry(entry.access_token)
+            listed.append({
+                "account": index,
+                "state": _state(entry, now),
+                "signInExpiresInHours": None if expires is None else round((expires - now) / 3600, 1),
+            })
+        return {
+            "signedIn": len(entries),
+            "available": sum(1 for item in listed if item["state"] == "ready"),
+            "accounts": listed,
+        }
+
+    def keep_signed_in(self) -> dict[str, int]:
+        """Refresh each sign-in whose access token runs out soon, so an account Alec does not use for a
+        while is still signed in when its turn comes. Fill-first use leaves the later accounts idle
+        for days, and Hermes only refreshes an account when it is about to use it."""
+        pool = self._pool_loader()
+        entries = pool.entries() if pool is not None else []
+        now = time.time()
+        counts = {"checked": len(entries), "refreshed": 0, "failed": 0}
+        for index, entry in enumerate(entries, start=1):
+            if _state(entry, now) == "signed_out":
+                counts["failed"] += 1
+                continue
+            expires = _token_expiry(entry.access_token)
+            if expires is None or expires - now > REFRESH_AHEAD_SECONDS:
+                continue
+            try:
+                fresh = pool.try_refresh_matching(credential_id=entry.id)
+            except Exception as error:  # noqa: BLE001 — one account's failure must not stop the others
+                logger.warning("plan door: account %s could not be refreshed (%s)", index, type(error).__name__)
+                fresh = None
+            if fresh is None:
+                counts["failed"] += 1
+                logger.warning("plan door: account %s's sign-in could not be refreshed; it needs signing in again", index)
+            else:
+                counts["refreshed"] += 1
+        return counts
+
+
+def _state(entry: Any, now: float) -> str:
+    status = getattr(entry, "last_status", None)
+    if status == "dead":
+        return "signed_out"
+    if status == "exhausted":
+        reset = getattr(entry, "last_error_reset_at", None)
+        if not isinstance(reset, (int, float)) or reset > now:
+            return "resting"
+    return "ready"
+
+
+def _token_expiry(token: Any) -> float | None:
+    """The ``exp`` of a JWT access token, read without verifying it (it is our own sign-in)."""
+    if not isinstance(token, str) or token.count(".") != 2:
+        return None
+    try:
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    return float(exp) if isinstance(exp, (int, float)) else None
+
+
+def _error_body(answer: httpx.Response) -> Any:
+    try:
+        return json.loads(answer.read() or b"null")
+    except (ValueError, httpx.HTTPError):
+        return None
+
+
+def _account_refusal(answer: httpx.Response) -> bool:
+    """A 403 rests the account only when the plan says, in its own JSON, why this account was refused.
+
+    An edge challenge or a throttle on this server's address comes back as a page, not as the plan's
+    error object, and resting every account for it would take the plans away from everyone for an hour.
+    """
+    body = _error_body(answer)
+    error = body.get("error") if isinstance(body, dict) else None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return isinstance(error, dict) or isinstance(detail, (dict, str))
+
+
+def _error_context(answer: httpx.Response) -> dict[str, Any]:
+    """What Hermes' pool needs to rest an account until its plan resets, not for a flat hour."""
+    body = _error_body(answer)
+    payload = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else body
+    context: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        reason = payload.get("code") or payload.get("type")
+        if isinstance(reason, str) and reason.strip():
+            context["reason"] = reason.strip()
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            context["message"] = message.strip()
+        if payload.get("resets_at") not in (None, ""):
+            context["resets_at"] = payload["resets_at"]
+        elif isinstance(payload.get("resets_in_seconds"), (int, float)):
+            context["resets_at"] = time.time() + float(payload["resets_in_seconds"])
+    retry_after = answer.headers.get("retry-after")
+    if retry_after and "resets_at" not in context:
         try:
-            read = counts() or {}
-            return {"signedIn": int(read.get("profile_count") or 0), "available": int(read.get("selectable_count") or 0)}
-        except Exception:
-            return {"signedIn": 0, "available": 0}
+            context["resets_at"] = time.time() + float(retry_after)
+        except ValueError:
+            pass
+    return context
 
 
-def install(app: Any, door: PlanDoor | None = None) -> PlanDoor:
-    """Add the door's three routes to the server's FastAPI app."""
+KEEPER_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+def _start_keeper(door: PlanDoor) -> None:
+    """Every six hours, refresh the sign-ins that run out soon (``PlanDoor.keep_signed_in``)."""
+    import threading
+
+    def run() -> None:
+        while True:
+            try:
+                counts = door.keep_signed_in()
+                logger.info("plan door keeper: %s", counts)
+            except Exception as error:  # noqa: BLE001 — the keeper never takes the server down
+                logger.warning("plan door keeper: skipped this round (%s)", type(error).__name__)
+            time.sleep(KEEPER_INTERVAL_SECONDS)
+
+    threading.Thread(target=run, name="plan-door-keeper", daemon=True).start()
+
+
+def install(app: Any, door: PlanDoor | None = None, *, keeper: bool | None = None) -> PlanDoor:
+    """Add the door's three routes to the server's FastAPI app, and start the sign-in keeper.
+
+    The keeper runs only where the door is switched on (its key is set) unless told otherwise.
+    """
+    if keeper is None:
+        keeper = bool(door_token())
+    import anyio
     from fastapi import Header, Request
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import JSONResponse, StreamingResponse
 
     door = door or PlanDoor()
+    lane = anyio.CapacityLimiter(CONCURRENT_CALLS)
+    if keeper:
+        _start_keeper(door)
 
     def refusal(error: PlanDoorError) -> JSONResponse:
         return JSONResponse(error.body(), status_code=error.status)
@@ -480,9 +626,11 @@ def install(app: Any, door: PlanDoor | None = None) -> PlanDoor:
             return refusal(PlanDoorError(400, "invalid_request", "the body is not JSON"))
         if not isinstance(body, dict):
             return refusal(PlanDoorError(400, "invalid_request", "the body must be an object"))
+        if lane.available_tokens < 1:
+            return refusal(PlanDoorError(429, "plans_busy", "the plans are answering as many calls as they take at once"))
         started = time.monotonic()
         try:
-            completion = await run_in_threadpool(door.complete, body)
+            completion = await anyio.to_thread.run_sync(door.complete, body, limiter=lane)
         except PlanDoorError as error:
             logger.info("plan door: %s (%s) after %.1fs", error.kind, error.status, time.monotonic() - started)
             return refusal(error)
