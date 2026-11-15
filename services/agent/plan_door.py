@@ -627,7 +627,8 @@ def install(app: Any, door: PlanDoor | None = None, *, keeper: bool | None = Non
         if not isinstance(body, dict):
             return refusal(PlanDoorError(400, "invalid_request", "the body must be an object"))
         if lane.available_tokens < 1:
-            return refusal(PlanDoorError(429, "plans_busy", "the plans are answering as many calls as they take at once"))
+            # 503, not 429: the plans are not resting, the door is full, so Katailyst keeps asking it.
+            return refusal(PlanDoorError(503, "door_full", "the door is answering as many calls as it takes at once"))
         started = time.monotonic()
         try:
             completion = await anyio.to_thread.run_sync(door.complete, body, limiter=lane)

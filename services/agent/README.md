@@ -281,7 +281,8 @@ usage limit mid-answer, or is refused by name with a 403, rests until the reset 
 and the next account is asked, so the plans are used one after another (Hermes' fill-first order).
 A 401 first refreshes that account's sign-in and asks it once more. A 403 page from the edge rests
 nobody: it is about this server's address, not an account. At most eight plan calls run at once,
-in their own lane so `/health` never waits behind them; a ninth goes to the Gateway.
+in their own lane so `/health` never waits behind them; a ninth is answered 503 and goes to the
+Gateway, without resting the plans.
 
 The sign-ins live in `$HERMES_HOME/auth.json` on the `/data` disk, so a deploy or restart keeps
 them. Hermes refreshes an account only when it is about to use one, and fill-first leaves the later
