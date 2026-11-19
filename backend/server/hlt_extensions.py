@@ -228,9 +228,9 @@ _DEFAULT_APIFY_MCP_URL = "https://mcp.apify.com"
 
 
 def _on_host() -> bool:
-    """Render and Railway set these on every service; a laptop does not."""
+    """Render and Railway set these on every service; a laptop does not. Same list as mcp_server/auth.py."""
 
-    return bool(os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT"))
+    return bool(os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
 
 
 def api_key_is_valid(provided: str | None) -> bool:
@@ -1062,12 +1062,12 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, api_key: str | None, public_exact: set[str], public_prefixes: tuple[str, ...]):
         super().__init__(app)
         self._api_key = api_key
-        self._refuse_all = api_key is None and _on_host()
+        self._open = api_key is None and not _on_host()
         self._public_exact = public_exact
         self._public_prefixes = public_prefixes
 
     async def dispatch(self, request: Request, call_next):
-        if self._api_key is None and not self._refuse_all:
+        if self._open:
             return await call_next(request)
 
         path = request.url.path
@@ -1078,7 +1078,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if self._refuse_all:
+        if self._api_key is None:
             return JSONResponse(
                 status_code=503,
                 content={"detail": "API_AUTH_KEY is not set on this host, so requests are refused"},

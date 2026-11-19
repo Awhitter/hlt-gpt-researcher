@@ -1233,7 +1233,7 @@ def test_missing_api_key_refuses_requests_on_a_host(monkeypatch):
 
 def test_missing_api_key_leaves_a_laptop_open(monkeypatch):
     clear_hlt_env(monkeypatch)
-    for key in ("API_AUTH_KEY", "RENDER", "RAILWAY_ENVIRONMENT"):
+    for key in ("API_AUTH_KEY", "RENDER", "RAILWAY_ENVIRONMENT", "RAILWAY_SERVICE_ID"):
         monkeypatch.delenv(key, raising=False)
 
     assert hlt_extensions.api_key_is_valid(None) is True
