@@ -227,15 +227,22 @@ _MCP_PRESETS = ("katailyst", "codegraph", "github", "metabase", "apify", "qbank"
 _DEFAULT_APIFY_MCP_URL = "https://mcp.apify.com"
 
 
+def _on_host() -> bool:
+    """Render and Railway set these on every service; a laptop does not."""
+
+    return bool(os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT"))
+
+
 def api_key_is_valid(provided: str | None) -> bool:
     """Return whether `provided` matches API_AUTH_KEY.
 
-    When API_AUTH_KEY is unset, auth is intentionally disabled for local dev.
+    When API_AUTH_KEY is unset, auth is off on a laptop for local dev; on a host
+    every request is refused, so a missing key never opens paid research to anyone.
     """
 
     expected = os.getenv("API_AUTH_KEY") or None
     if expected is None:
-        return True
+        return not _on_host()
     return bool(provided and hmac.compare_digest(provided, expected))
 
 
@@ -258,7 +265,7 @@ def websocket_token_is_valid(token: str | None) -> bool:
 
     api_key = os.getenv("API_AUTH_KEY") or None
     if api_key is None:
-        return True
+        return not _on_host()
     if not token:
         return False
 
@@ -1048,17 +1055,19 @@ def prepare_research_request(
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """Reject requests missing a valid `X-API-Key` header.
 
-    No-op when `API_AUTH_KEY` env is unset (local dev / upstream default).
+    No-op when `API_AUTH_KEY` env is unset on a laptop (local dev / upstream default).
+    On a host without the key, every non-public request is refused instead.
     """
 
     def __init__(self, app, api_key: str | None, public_exact: set[str], public_prefixes: tuple[str, ...]):
         super().__init__(app)
         self._api_key = api_key
+        self._refuse_all = api_key is None and _on_host()
         self._public_exact = public_exact
         self._public_prefixes = public_prefixes
 
     async def dispatch(self, request: Request, call_next):
-        if self._api_key is None:
+        if self._api_key is None and not self._refuse_all:
             return await call_next(request)
 
         path = request.url.path
@@ -1068,6 +1077,12 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         # CORS preflight must pass; CORSMiddleware handles the actual check.
         if request.method == "OPTIONS":
             return await call_next(request)
+
+        if self._refuse_all:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "API_AUTH_KEY is not set on this host, so requests are refused"},
+            )
 
         provided = request.headers.get("x-api-key", "")
         if not provided:
@@ -1259,5 +1274,7 @@ def install(
 
     if api_key:
         logger.info("HLT extensions: /health + X-API-Key middleware installed (auth enabled)")
+    elif _on_host():
+        logger.error("HLT extensions: API_AUTH_KEY unset on a host; refusing every non-public request")
     else:
         logger.info("HLT extensions: /health installed; auth disabled (API_AUTH_KEY unset)")

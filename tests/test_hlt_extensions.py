@@ -1215,3 +1215,26 @@ def test_run_completion_upsert_reaches_library(monkeypatch, tmp_path):
     library = hlt_extensions.get_brain_library()
     assert library["total"] == 1
     assert library["reports"][0]["id"] == "research_abc"
+
+
+def test_missing_api_key_refuses_requests_on_a_host(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    monkeypatch.delenv("API_AUTH_KEY", raising=False)
+    monkeypatch.setenv("RENDER", "true")
+    app = FastAPI()
+    hlt_extensions.install(app)
+    client = TestClient(app)
+
+    assert client.get("/health").status_code == 200
+    assert client.get("/api/hlt/readiness").status_code == 503
+    assert hlt_extensions.api_key_is_valid(None) is False
+    assert hlt_extensions.websocket_token_is_valid(hlt_extensions.create_websocket_token()) is False
+
+
+def test_missing_api_key_leaves_a_laptop_open(monkeypatch):
+    clear_hlt_env(monkeypatch)
+    for key in ("API_AUTH_KEY", "RENDER", "RAILWAY_ENVIRONMENT"):
+        monkeypatch.delenv(key, raising=False)
+
+    assert hlt_extensions.api_key_is_valid(None) is True
+    assert hlt_extensions.websocket_token_is_valid(None) is True
