@@ -20,9 +20,11 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -37,6 +39,8 @@ MODEL_PREFIX = "openai/"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 CALL_TIMEOUT_SECONDS = 300.0
 MODELS_CACHE_SECONDS = 600.0
+# Tight per-account budget so a multi-account union finishes well inside Katailyst's 3s /models read timeout.
+MODELS_ACCOUNT_TIMEOUT = httpx.Timeout(2.0, connect=1.5)
 # Plan calls in flight at once. Each holds a worker thread for up to minutes, so they get their own
 # lane and never queue the server's health check behind them; a call beyond it goes to the Gateway.
 CONCURRENT_CALLS = 8
@@ -377,39 +381,110 @@ class PlanDoor:
         self._to_input = to_input
         self._clamp_effort = clamp_effort
         self._clock = clock
-        self._models: tuple[float, list[str]] | None = None
+        self._cache_lock = threading.Lock()
+        self._models_refresh_lock = threading.Lock()
+        # Bundled (fetched_at, union_slugs, per_account_slugs) so per-account capability expires with the union.
+        self._models_cache: tuple[float, list[str], dict[str, frozenset[str]]] | None = None
+
+    def _known_models(self, entry_id: str) -> frozenset[str] | None:
+        now = self._clock()
+        with self._cache_lock:
+            cache = self._models_cache
+            if cache is None or now - cache[0] >= MODELS_CACHE_SECONDS:
+                return None
+            return cache[2].get(entry_id)
+
+    def _forget_account_model(self, entry_id: str, model_slug: str) -> None:
+        with self._cache_lock:
+            cache = self._models_cache
+            if cache is None:
+                return
+            known = cache[2].get(entry_id)
+            if known is None or model_slug not in known:
+                return
+            updated = dict(cache[2])
+            updated[entry_id] = known - {model_slug}
+            self._models_cache = (cache[0], cache[1], updated)
+
+    @staticmethod
+    def _ready_entries(pool: Any) -> list[Any]:
+        """Ready accounts in pool preference order starting at ``pool.select()``, wrapping around."""
+        if pool is None:
+            return []
+        selected = pool.select()
+        if selected is None:
+            return []
+        entries = list(pool.entries())
+        start = next((i for i, item in enumerate(entries) if item.id == selected.id), None)
+        ordered = entries[start:] + entries[:start] if start is not None else [selected, *entries]
+        wall_now = time.time()
+        return [
+            item for item in ordered
+            if item.id == selected.id
+            or (_state(item, wall_now) == "ready" and bool(str(getattr(item, "runtime_api_key", "") or "").strip()))
+        ]
+
+    @staticmethod
+    def _entry_still_alive(pool: Any, entry_id: str) -> bool:
+        """True unless the entry was removed or already marked ``dead`` (e.g. terminal refresh revocation)."""
+        current = next((item for item in pool.entries() if item.id == entry_id), None)
+        return current is not None and getattr(current, "last_status", None) != "dead"
 
     def complete(self, body: Mapping[str, Any]) -> dict[str, Any]:
         request = responses_request(body, to_input=self._to_input, clamp_effort=self._clamp_effort)
         requested = str(body.get("model"))
+        model_slug = str(request["model"])
         pool = self._pool_loader()
         tried: set[str] = set()
         refreshed: set[str] = set()
-        again: str | None = None
+        retry_entry: Any = None
+        model_refused = False
+        skipped_for_model = False
         with self._client_factory() as client:
             while True:
-                entry = pool.select() if pool is not None else None
-                if entry is None or (entry.id in tried and entry.id != again):
+                entry = None
+                if retry_entry is not None:
+                    entry = retry_entry
+                    retry_entry = None
+                else:
+                    for candidate in self._ready_entries(pool):
+                        if candidate.id in tried:
+                            continue
+                        known = self._known_models(candidate.id)
+                        if known is not None and model_slug not in known:
+                            skipped_for_model = True
+                            continue
+                        entry = candidate
+                        break
+                if entry is None:
                     break
-                again = None
                 tried.add(entry.id)
                 with client.stream("POST", f"{CODEX_BASE_URL}/responses", headers=self._headers_for(entry.runtime_api_key), json=request) as answer:
                     if answer.status_code == 401:
                         answer.read()
                         # A stale access token: refresh it once and ask the same account again.
-                        if entry.id not in refreshed and pool.try_refresh_matching(credential_id=entry.id) is not None:
-                            logger.info("plan door: account %s's sign-in was refreshed", len(tried))
-                            refreshed.add(entry.id)
-                            again = entry.id
-                            continue
-                        pool.mark_exhausted_and_rotate(status_code=401, credential_id=entry.id, error_context=_error_context(answer))
+                        if entry.id not in refreshed:
+                            fresh = pool.try_refresh_matching(credential_id=entry.id)
+                            if fresh is not None:
+                                logger.info("plan door: account %s's sign-in was refreshed", len(tried))
+                                refreshed.add(entry.id)
+                                retry_entry = fresh
+                                continue
+                        # Preserve terminal STATUS_DEAD if refresh already revoked the entry.
+                        if self._entry_still_alive(pool, entry.id):
+                            pool.mark_exhausted_and_rotate(status_code=401, credential_id=entry.id, error_context=_error_context(answer))
                         continue
                     if answer.status_code in REST_STATUSES or (answer.status_code == 403 and _account_refusal(answer)):
                         logger.info("plan door: account %s answered %s, trying the next one", len(tried), answer.status_code)
                         pool.mark_exhausted_and_rotate(status_code=answer.status_code, credential_id=entry.id, error_context=_error_context(answer))
                         continue
                     if answer.status_code == 404 or (answer.status_code == 400 and self._model_refused(answer)):
-                        raise PlanDoorError(404, "model_not_on_plan", f"{request['model']} is not on the plan")
+                        # Mixed-tier pool: this account lacks the model (do not rest it; it can still serve
+                        # models on its own tier), so try the next ready account in the pool.
+                        model_refused = True
+                        self._forget_account_model(entry.id, model_slug)
+                        logger.info("plan door: account %s does not offer %s, trying the next one", len(tried), model_slug)
+                        continue
                     if answer.status_code != 200:
                         # A refusal not about one account (an edge challenge, a server fault) rests nobody.
                         answer.read()
@@ -423,6 +498,8 @@ class PlanDoor:
                         pool.mark_exhausted_and_rotate(status_code=429, credential_id=entry.id, error_context={"reason": error.kind, "message": error.message})
                         continue
                 return chat_completion(finished, requested)
+        if model_refused or skipped_for_model:
+            raise PlanDoorError(404, "model_not_on_plan", f"{model_slug} is not on the plan")
         raise PlanDoorError(429, "plans_busy", "every signed-in plan is resting; use the Gateway")
 
     @staticmethod
@@ -430,27 +507,85 @@ class PlanDoor:
         text = answer.read().decode("utf-8", "replace").lower()
         return "model" in text and ("not supported" in text or "does not exist" in text or "unsupported" in text)
 
-    def models(self) -> list[str]:
-        """The models the signed-in plan offers, from Codex's own list, kept ten minutes."""
-        now = self._clock()
-        if self._models and now - self._models[0] < MODELS_CACHE_SECONDS:
-            return self._models[1]
-        pool = self._pool_loader()
-        entry = pool.select() if pool is not None else None
-        if entry is None:
-            raise PlanDoorError(429, "plans_busy", "no signed-in plan is available")
-        with self._client_factory() as client:
-            answer = client.get(f"{CODEX_BASE_URL}/models", params={"client_version": "1.0.0"}, headers=self._headers_for(entry.runtime_api_key))
+    def _fetch_entry_models(self, client: httpx.Client, pool: Any, entry: Any) -> tuple[str, frozenset[str] | None, int | None]:
+        """Fetch one ready account's Codex model slugs; never raises on per-account network/JSON errors."""
+        try:
+            answer = client.get(
+                f"{CODEX_BASE_URL}/models",
+                params={"client_version": "1.0.0"},
+                headers=self._headers_for(entry.runtime_api_key),
+                timeout=MODELS_ACCOUNT_TIMEOUT,
+            )
+            if answer.status_code == 401:
+                try:
+                    fresh = pool.try_refresh_matching(credential_id=entry.id)
+                except Exception:  # noqa: BLE001 — one broken refresh must not abort other accounts
+                    fresh = None
+                if fresh is not None:
+                    answer = client.get(
+                        f"{CODEX_BASE_URL}/models",
+                        params={"client_version": "1.0.0"},
+                        headers=self._headers_for(fresh.runtime_api_key),
+                        timeout=MODELS_ACCOUNT_TIMEOUT,
+                    )
+        except httpx.HTTPError:
+            return entry.id, None, None
         if answer.status_code != 200:
-            raise PlanDoorError(502, "plan_error", f"the plan's model list answered {answer.status_code}")
-        data = answer.json()
-        slugs = sorted({
+            return entry.id, None, answer.status_code
+        try:
+            data = answer.json()
+        except ValueError:
+            return entry.id, None, answer.status_code
+        slugs = frozenset(
             item["slug"].strip()
             for item in (data.get("models") if isinstance(data, dict) else None) or []
             if isinstance(item, dict) and isinstance(item.get("slug"), str) and item["slug"].strip()
-        })
-        self._models = (now, slugs)
-        return slugs
+        )
+        if not slugs:
+            return entry.id, None, answer.status_code
+        return entry.id, slugs, 200
+
+    def models(self) -> list[str]:
+        """The models the signed-in plans offer, unioned across every ready account, kept ten minutes."""
+        now = self._clock()
+        with self._cache_lock:
+            if self._models_cache and now - self._models_cache[0] < MODELS_CACHE_SECONDS:
+                return self._models_cache[1]
+        with self._models_refresh_lock:
+            now = self._clock()
+            with self._cache_lock:
+                if self._models_cache and now - self._models_cache[0] < MODELS_CACHE_SECONDS:
+                    return self._models_cache[1]
+            pool = self._pool_loader()
+            candidates = self._ready_entries(pool)
+            if not candidates:
+                raise PlanDoorError(429, "plans_busy", "no signed-in plan is available")
+            union: set[str] = set()
+            account_models: dict[str, frozenset[str]] = {}
+            last_status: int | None = None
+            succeeded = 0
+            with self._client_factory() as client:
+                if len(candidates) == 1:
+                    results = [self._fetch_entry_models(client, pool, candidates[0])]
+                else:
+                    with ThreadPoolExecutor(max_workers=min(len(candidates), CONCURRENT_CALLS)) as executor:
+                        results = list(executor.map(lambda item: self._fetch_entry_models(client, pool, item), candidates))
+            for entry_id, slugs, status in results:
+                if slugs is None:
+                    if status is not None:
+                        last_status = status
+                    continue
+                succeeded += 1
+                account_models[entry_id] = slugs
+                union.update(slugs)
+            if not succeeded:
+                if last_status is None:
+                    raise PlanDoorError(502, "plan_unreachable", "the plan could not be reached")
+                raise PlanDoorError(502, "plan_error", f"the plan's model list answered {last_status}")
+            sorted_slugs = sorted(union)
+            with self._cache_lock:
+                self._models_cache = (now, sorted_slugs, account_models)
+            return sorted_slugs
 
     def accounts(self) -> dict[str, Any]:
         """How many plans are signed in, how many can take a call now, and each one's state.

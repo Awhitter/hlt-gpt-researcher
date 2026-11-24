@@ -62,6 +62,10 @@ class FakePool:
     def mark_exhausted_and_rotate(self, *, status_code, credential_id, error_context=None, **_):
         self.resting.append((credential_id, status_code))
         self.contexts.append(error_context or {})
+        entry = next((e for e in self._entries if e.id == credential_id), None)
+        if entry is not None:
+            entry.last_status = "exhausted"
+            entry.last_error_reset_at = time.time() + 3600
         return self.select()
 
     def try_refresh_matching(self, *, credential_id, **_):
@@ -350,6 +354,153 @@ def test_the_model_list_comes_from_the_plan_and_is_kept():
     assert door.models() == ["gpt-5.6-luna", "gpt-5.6-sol"]
     assert door.models() == ["gpt-5.6-luna", "gpt-5.6-sol"]
     assert len(seen) == 1
+
+
+def test_mixed_tier_pool_unions_models_and_routes_frontier_calls_past_limited_accounts():
+    pool = FakePool(["resting-pro", "plus", "pro"])
+    pool.mark_exhausted_and_rotate(status_code=429, credential_id="resting-pro")
+    seen = []
+
+    def answer(request: httpx.Request):
+        auth = request.headers["Authorization"]
+        if request.method == "GET":
+            if auth == "Bearer token-plus":
+                return httpx.Response(200, json={"models": [{"slug": "gpt-6-luna"}, {"slug": "gpt-5.6-terra"}]})
+            if auth == "Bearer token-pro":
+                return httpx.Response(200, json={"models": [{"slug": "gpt-6.1-sol"}, {"slug": "gpt-6-astra"}, {"slug": "gpt-6-luna"}]})
+            raise AssertionError(f"resting account should not be queried: {auth}")
+        if auth == "Bearer token-plus":
+            return httpx.Response(400, json={"detail": "The 'gpt-6.1-sol' model is not supported."})
+        return httpx.Response(200, text=finished("answered by pro"))
+
+    door = make_door(pool, answer, seen)
+    assert door.models() == ["gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]
+    assert [r.headers["Authorization"] for r in seen] == ["Bearer token-plus", "Bearer token-pro"]
+
+    # Cached per-account capability skips the limited account immediately for gpt-6.1-sol without resting it.
+    seen.clear()
+    result = door.complete({**BODY, "model": "openai/gpt-6.1-sol"})
+    assert result["choices"][0]["message"]["content"] == "answered by pro"
+    assert [r.headers["Authorization"] for r in seen] == ["Bearer token-pro"]
+    assert pool.resting == [("resting-pro", 429)]
+
+
+def test_complete_rotates_past_404_model_refusal_without_resting_account():
+    pool = FakePool(["plus", "pro"])
+    seen = []
+
+    def answer(request: httpx.Request):
+        if request.headers["Authorization"] == "Bearer token-plus":
+            return httpx.Response(400, json={"detail": "The 'gpt-6.1-sol' model is not supported."})
+        return httpx.Response(200, text=finished("from pro"))
+
+    door = make_door(pool, answer, seen)
+    result = door.complete({**BODY, "model": "openai/gpt-6.1-sol"})
+    assert result["choices"][0]["message"]["content"] == "from pro"
+    assert [r.headers["Authorization"] for r in seen] == ["Bearer token-plus", "Bearer token-pro"]
+    # The limited account was NOT rested, so it can still answer models it supports.
+    assert pool.resting == []
+
+
+def test_models_survives_one_failing_account_and_refreshes_stale_401():
+    pool = FakePool(["stale", "broken", "timeout", "html", "empty", "healthy"])
+    seen = []
+
+    def answer(request: httpx.Request):
+        auth = request.headers["Authorization"]
+        if auth == "Bearer token-stale":
+            return httpx.Response(401, json={"error": {"code": "token_expired"}})
+        if auth == "Bearer fresh-stale":
+            return httpx.Response(200, json={"models": [{"slug": "gpt-6-astra"}]})
+        if auth == "Bearer token-broken":
+            return httpx.Response(502, text="bad gateway")
+        if auth == "Bearer token-timeout":
+            raise httpx.ReadTimeout("timed out")
+        if auth == "Bearer token-html":
+            return httpx.Response(200, text="<html>challenge</html>")
+        if auth == "Bearer token-empty":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, json={"models": [{"slug": "gpt-6.1-sol"}]})
+
+    door = make_door(pool, answer, seen)
+    assert door.models() == ["gpt-6-astra", "gpt-6.1-sol"]
+    assert pool.refreshes == ["stale"]
+    # An empty 200 never poisons account capability into skipping that account forever.
+    assert door._known_models("empty") is None
+
+
+def test_models_wraps_around_selected_and_skips_resting_accounts_after_selected():
+    pool = FakePool(["early-pro", "plus", "resting-later"])
+    pool.mark_exhausted_and_rotate(status_code=429, credential_id="resting-later")
+    # Simulate non-index-0 select (e.g. round_robin or deferred refresh) selecting "plus" first.
+    pool.select = lambda: pool.entries()[1]
+    seen = []
+
+    def answer(request: httpx.Request):
+        auth = request.headers["Authorization"]
+        if auth == "Bearer token-plus":
+            return httpx.Response(200, json={"models": [{"slug": "gpt-6-luna"}]})
+        if auth == "Bearer token-early-pro":
+            return httpx.Response(200, json={"models": [{"slug": "gpt-6.1-sol"}]})
+        raise AssertionError(f"resting account should not be queried: {auth}")
+
+    door = make_door(pool, answer, seen)
+    assert door.models() == ["gpt-6-luna", "gpt-6.1-sol"]
+    assert [r.headers["Authorization"] for r in seen] == ["Bearer token-plus", "Bearer token-early-pro"]
+
+
+def test_when_pro_accounts_are_429_and_plus_is_ready_frontier_returns_404_not_429():
+    now = [0.0]
+    pool = FakePool(["plus", "pro"])
+
+    def answer(request: httpx.Request):
+        auth = request.headers["Authorization"]
+        if request.method == "GET":
+            slugs = [{"slug": "gpt-6-luna"}] if auth == "Bearer token-plus" else [{"slug": "gpt-6.1-sol"}]
+            return httpx.Response(200, json={"models": slugs})
+        if auth == "Bearer token-pro":
+            return httpx.Response(429, json={"error": {"code": "usage_limit_reached"}})
+        return httpx.Response(200, text=finished("from plus"))
+
+    door = PlanDoor(
+        pool_loader=lambda: pool,
+        client_factory=lambda: httpx.Client(transport=httpx.MockTransport(answer)),
+        headers_for=lambda token: {"Authorization": f"Bearer {token}"},
+        to_input=plain_input,
+        clamp_effort=lambda effort, _slug: effort,
+        clock=lambda: now[0],
+    )
+    assert door.models() == ["gpt-6-luna", "gpt-6.1-sol"]
+    # Pro hits 429 while Plus is still ready for gpt-6-luna: return 404 (not 429) so Katailyst does not rest the whole door.
+    with pytest.raises(PlanDoorError) as caught:
+        door.complete({**BODY, "model": "openai/gpt-6.1-sol"})
+    assert caught.value.status == 404
+    assert pool.resting == [("pro", 429)]
+    # Plus still serves gpt-6-luna immediately.
+    assert door.complete({**BODY, "model": "openai/gpt-6-luna"})["choices"][0]["message"]["content"] == "from plus"
+    # Per-account capability cache expires after MODELS_CACHE_SECONDS.
+    now[0] = door_module.MODELS_CACHE_SECONDS + 1
+    assert door._known_models("plus") is None
+
+
+def test_dead_entry_after_terminal_refresh_is_not_overwritten_as_exhausted():
+    pool = FakePool(["revoked", "healthy"])
+
+    def terminal_refresh(*, credential_id, **_):
+        entry = next(e for e in pool.entries() if e.id == credential_id)
+        entry.last_status = "dead"
+        return None
+
+    pool.try_refresh_matching = terminal_refresh
+
+    def answer(request: httpx.Request):
+        if request.headers["Authorization"] == "Bearer token-revoked":
+            return httpx.Response(401, json={"error": {"code": "token_expired"}})
+        return httpx.Response(200, text=finished("from healthy"))
+
+    assert make_door(pool, answer).complete(BODY)["choices"][0]["message"]["content"] == "from healthy"
+    assert pool.resting == []
+    assert pool.entries()[0].last_status == "dead"
 
 
 fastapi = pytest.importorskip("fastapi")
