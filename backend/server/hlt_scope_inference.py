@@ -122,17 +122,38 @@ def _tiebreak_model() -> str:
     return "gpt-4o-mini"
 
 
+def _plan_tiebreak_model() -> str:
+    explicit = os.getenv("HLT_SCOPE_INFERENCE_MODEL")
+    if explicit:
+        return explicit
+    fast = os.getenv("FAST_LLM", "")
+    if fast.startswith("vercel:openai/"):
+        return fast.split(":", 1)[1]
+    if fast.startswith("openai:"):
+        return fast.split(":", 1)[1]
+    return "gpt-4o-mini"
+
+
+def _parse_tiebreak_scopes(content: str, candidates: list[str]) -> set[str] | None:
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        return None
+    scopes = parsed.get("scopes")
+    if not isinstance(scopes, list):
+        return None
+    return {scope for scope in scopes if scope in candidates}
+
+
 def _llm_tiebreak(task: str, candidates: list[str]) -> set[str] | None:
     """One fast-model call deciding which weak-signal scopes the query needs.
 
+    Tries Alec's $0/call ChatGPT Plan Door first when ``HLT_PLAN_DOOR_TOKEN`` is
+    configured, then falls back to ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL``.
     Returns None (caller falls back to heuristics-only, dropping weak
     candidates) when disabled, unconfigured, or on any failure.
     """
 
-    if _env_flag_disabled("HLT_SCOPE_INFERENCE_LLM"):
-        return None
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or not candidates:
+    if _env_flag_disabled("HLT_SCOPE_INFERENCE_LLM") or not candidates:
         return None
 
     descriptions = {
@@ -154,6 +175,27 @@ def _llm_tiebreak(task: str, candidates: list[str]) -> set[str] | None:
         "the query clearly benefits from; return an empty list when public web "
         "research alone is enough."
     )
+
+    try:
+        from gpt_researcher.llm_provider.plan_door_client import try_plan_door_chat_sync
+
+        plan_content = try_plan_door_chat_sync(
+            [{"role": "user", "content": prompt}],
+            model=_plan_tiebreak_model(),
+            kwargs={"response_format": {"type": "json_object"}, "reasoning_effort": "low"},
+            timeout_seconds=_LLM_TIMEOUT_SECONDS,
+            bare_openai_ok=True,
+        )
+        if plan_content is not None:
+            parsed_scopes = _parse_tiebreak_scopes(plan_content, candidates)
+            if parsed_scopes is not None:
+                return parsed_scopes
+    except Exception as error:  # noqa: BLE001 - tiebreak must never break a run
+        logger.warning("Scope-inference plan door tiebreak failed: %s", type(error).__name__)
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
 
     base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     payload = json.dumps(
@@ -178,11 +220,7 @@ def _llm_tiebreak(task: str, candidates: list[str]) -> set[str] | None:
         with urllib.request.urlopen(request, timeout=_LLM_TIMEOUT_SECONDS) as response:  # noqa: S310 - configured LLM host
             body = json.loads(response.read().decode("utf-8"))
         content = body["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        scopes = parsed.get("scopes")
-        if not isinstance(scopes, list):
-            return None
-        return {scope for scope in scopes if scope in candidates}
+        return _parse_tiebreak_scopes(content, candidates)
     except Exception as error:  # noqa: BLE001 - tiebreak must never break a run
         logger.warning("Scope-inference LLM tiebreak failed: %s", type(error).__name__)
         return None
