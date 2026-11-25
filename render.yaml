@@ -71,6 +71,10 @@ services:
         sync: false
       - key: AI_GATEWAY_API_KEY
         sync: false
+      - key: HLT_PLAN_DOOR_URL
+        value: https://hlt-agent-plans.onrender.com/plan/v1
+      - key: HLT_PLAN_DOOR_TOKEN
+        sync: false
       - key: FIRECRAWL_API_KEY
         sync: false
       - key: KATAILYST2_MCP_TOKEN
@@ -148,6 +152,10 @@ services:
       - key: MCP_AUTH_TOKEN
         sync: false
       - key: AI_GATEWAY_API_KEY
+        sync: false
+      - key: HLT_PLAN_DOOR_URL
+        value: https://hlt-agent-plans.onrender.com/plan/v1
+      - key: HLT_PLAN_DOOR_TOKEN
         sync: false
       - key: FIRECRAWL_API_KEY
         sync: false

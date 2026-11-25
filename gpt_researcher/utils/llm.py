@@ -150,8 +150,9 @@ async def create_chat_completion(
             model_parameters=model_parameters,
         ) as observation:
             try:
+                call_kwargs = {**kwargs, "_skip_plan_door": True} if (attempt > 1 and llm_provider == "vercel") else kwargs
                 response = await provider.get_chat_response(
-                    messages, stream, websocket, **kwargs
+                    messages, stream, websocket, **call_kwargs
                 )
             except Exception as exc:
                 last_exception = exc
@@ -192,6 +193,7 @@ async def create_chat_completion(
                     continue
                 break
 
+            served_by = getattr(provider, "last_served_by", None)
             update_observation(
                 observation,
                 output=response if record_io else None,
@@ -199,11 +201,12 @@ async def create_chat_completion(
                     **attempt_metadata,
                     "status": "completed",
                     "response_chars": len(str(response)),
+                    **({"served_by": served_by} if served_by else {}),
                 },
             )
 
         if cost_callback:
-            llm_costs = estimate_llm_cost(str(messages), response)
+            llm_costs = 0.0 if served_by == "plan" else estimate_llm_cost(str(messages), response)
             cost_callback(llm_costs)
 
         return response
@@ -256,6 +259,32 @@ async def construct_subtopics(
             provider_kwargs['max_tokens'] = config.smart_token_limit
 
         provider = get_llm(config.smart_llm_provider, **provider_kwargs)
+
+        if config.smart_llm_provider == "vercel":
+            from gpt_researcher.llm_provider.vercel_gateway import validate_gateway_options
+            validate_gateway_options(kwargs)
+            from gpt_researcher.llm_provider.plan_door_client import try_plan_door_chat
+
+            rendered = prompt.format(
+                task=task,
+                data=data,
+                subtopics=subtopics,
+                max_subtopics=config.max_subtopics,
+            )
+            plan_model = kwargs.get("model") or provider._configured_model_name() or config.smart_llm_model
+            plan_text = await try_plan_door_chat(
+                [{"role": "user", "content": rendered}],
+                model=plan_model,
+                kwargs=kwargs,
+                llm=provider.llm,
+            )
+            if plan_text is not None:
+                try:
+                    return parser.parse(plan_text)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Plan door subtopics response failed to parse; falling back to Gateway"
+                    )
 
         model = provider.llm
 

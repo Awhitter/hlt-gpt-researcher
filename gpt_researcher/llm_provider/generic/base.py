@@ -106,6 +106,27 @@ class GenericLLMProvider:
         self.provider = provider
         self.chat_logger = ChatLogger(chat_log) if chat_log else None
         self.verbose = verbose
+        self.last_served_by: str | None = None
+
+    def _configured_model_name(self) -> str | None:
+        for attr in ("model_name", "model"):
+            value = getattr(self.llm, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    async def _try_vercel_plan_door(self, messages, kwargs: dict[str, Any]) -> str | None:
+        if self.provider != "vercel":
+            return None
+        from gpt_researcher.llm_provider.vercel_gateway import validate_gateway_options
+        validate_gateway_options(kwargs)
+        if kwargs.pop("_skip_plan_door", False):
+            return None
+        from gpt_researcher.llm_provider.plan_door_client import try_plan_door_chat
+
+        override_model = kwargs.get("model") or kwargs.get("model_name")
+        model = override_model if isinstance(override_model, str) and override_model.strip() else self._configured_model_name()
+        return await try_plan_door_chat(messages, model=model, kwargs=kwargs, llm=self.llm)
     @classmethod
     def from_provider(cls, provider: str, chat_log: str | None = None, verbose: bool=True, **kwargs: Any):
         if provider == "openai":
@@ -299,15 +320,17 @@ class GenericLLMProvider:
 
 
     async def get_chat_response(self, messages, stream, websocket=None, **kwargs):
-        if self.provider == "vercel":
-            from gpt_researcher.llm_provider.vercel_gateway import validate_gateway_options
-            validate_gateway_options(kwargs)
+        self.last_served_by = None
         if not stream:
-            # Getting output from the model chain using ainvoke for asynchronous invoking
-            output = await self.llm.ainvoke(messages, **kwargs)
-
-            res = output.content
-
+            plan_res = await self._try_vercel_plan_door(messages, kwargs)
+            if plan_res is not None:
+                self.last_served_by = "plan"
+                res = plan_res
+            else:
+                # Getting output from the model chain using ainvoke for asynchronous invoking
+                output = await self.llm.ainvoke(messages, **kwargs)
+                self.last_served_by = "gateway" if self.provider == "vercel" else self.provider
+                res = output.content
         else:
             res = await self.stream_response(messages, websocket, **kwargs)
 
@@ -317,9 +340,16 @@ class GenericLLMProvider:
         return res
 
     async def stream_response(self, messages, websocket=None, **kwargs):
-        if self.provider == "vercel":
-            from gpt_researcher.llm_provider.vercel_gateway import validate_gateway_options
-            validate_gateway_options(kwargs)
+        self.last_served_by = None
+        plan_res = await self._try_vercel_plan_door(messages, kwargs)
+        if plan_res is not None:
+            self.last_served_by = "plan"
+            parts = plan_res.split("\n")
+            for idx, part in enumerate(parts):
+                chunk = f"{part}\n" if idx < len(parts) - 1 else part
+                if chunk:
+                    await self._send_output(chunk, websocket)
+            return plan_res
         paragraph = ""
         response = ""
 
@@ -337,6 +367,7 @@ class GenericLLMProvider:
         if paragraph:
             await self._send_output(paragraph, websocket)
 
+        self.last_served_by = "gateway" if self.provider == "vercel" else self.provider
         return response
 
     async def _send_output(self, content, websocket=None):

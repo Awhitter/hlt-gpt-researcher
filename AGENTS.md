@@ -176,6 +176,12 @@ alternative. Use `vercel:<provider>/<model>` for `FAST_LLM`, `SMART_LLM`,
 `STRATEGIC_LLM` and `EMBEDDING`, with a dedicated `AI_GATEWAY_API_KEY`.
 The `vercel` provider pins `https://ai-gateway.vercel.sh/v1` and refuses
 credential/endpoint overrides; missing Gateway credentials fail closed.
+When `HLT_PLAN_DOOR_TOKEN` is configured on internal HLT services (`hlt-research-api`,
+`hlt-research-mcp`), eligible `vercel:openai/*` chat calls try Alec's `$0/call` ChatGPT
+Plan Door (`gpt_researcher/llm_provider/plan_door_client.py`, default `HLT_PLAN_DOOR_URL=https://hlt-agent-plans.onrender.com/plan/v1`)
+first after `validate_gateway_options`, failing open to Vercel AI Gateway on any refusal,
+limit, or error; embeddings (`memory/embeddings.py`) and explicit ZDR/non-OpenAI calls stay
+strictly on Gateway.
 Operator proxy and SDK organization/project settings remain separate; use the
 presence-only deployment preflight in `docs/usage/START-HERE.md`.
 It does not read a direct OpenAI/Anthropic credential or silently switch to
