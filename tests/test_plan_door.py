@@ -538,6 +538,18 @@ def test_the_door_answers_plain_and_streamed_calls(monkeypatch):
     assert streamed.text.endswith("data: [DONE]\n\n")
     accounts = client.get("/plan/v1/accounts", headers=auth).json()
     assert (accounts["signedIn"], accounts["available"]) == (1, 1)
+    assert (accounts["callsRunning"], accounts["callCapacity"], accounts["lastFailure"]) == (0, door_module.CONCURRENT_CALLS, None)
+
+
+def test_accounts_reports_the_last_miss_by_kind_status_and_time_only(monkeypatch):
+    door = make_door(FakePool(["a"]), lambda _r: httpx.Response(429, json={"error": {"message": "secret detail"}}))
+    client = _app(door, monkeypatch)
+    auth = {"Authorization": "Bearer door-secret"}
+    assert client.post("/plan/v1/chat/completions", json=BODY, headers=auth).status_code == 429
+    failure = client.get("/plan/v1/accounts", headers=auth).json()["lastFailure"]
+    assert set(failure) == {"kind", "status", "at"}
+    assert (failure["kind"], failure["status"]) == ("plans_busy", 429)
+    assert failure["at"].endswith("Z")
 
 
 def test_a_busy_plan_is_a_429_the_caller_can_fall_back_on(monkeypatch):

@@ -385,6 +385,16 @@ class PlanDoor:
         self._models_refresh_lock = threading.Lock()
         # Bundled (fetched_at, union_slugs, per_account_slugs) so per-account capability expires with the union.
         self._models_cache: tuple[float, list[str], dict[str, frozenset[str]]] | None = None
+        # The last call the door refused or could not serve: its kind, status and when. Never a message body.
+        self.last_failure: dict[str, Any] | None = None
+
+    def note_failure(self, kind: str, status: int | None) -> None:
+        """Remember the last refused or failed call, so Katailyst's Health line can say when the plans last missed."""
+        self.last_failure = {
+            "kind": kind,
+            "status": status,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
 
     def _known_models(self, entry_id: str) -> frozenset[str] | None:
         now = self._clock()
@@ -763,15 +773,18 @@ def install(app: Any, door: PlanDoor | None = None, *, keeper: bool | None = Non
             return refusal(PlanDoorError(400, "invalid_request", "the body must be an object"))
         if lane.available_tokens < 1:
             # 503, not 429: the plans are not resting, the door is full, so Katailyst keeps asking it.
+            door.note_failure("door_full", 503)
             return refusal(PlanDoorError(503, "door_full", "the door is answering as many calls as it takes at once"))
         started = time.monotonic()
         try:
             completion = await anyio.to_thread.run_sync(door.complete, body, limiter=lane)
         except PlanDoorError as error:
             logger.info("plan door: %s (%s) after %.1fs", error.kind, error.status, time.monotonic() - started)
+            door.note_failure(error.kind, error.status)
             return refusal(error)
         except httpx.HTTPError as error:
             logger.warning("plan door: the plan could not be reached (%s)", type(error).__name__)
+            door.note_failure("plan_unreachable", 502)
             return refusal(PlanDoorError(502, "plan_unreachable", "the plan could not be reached"))
         logger.info("plan door: %s answered in %.1fs", completion["model"], time.monotonic() - started)
         if body.get("stream") is True:
@@ -794,6 +807,13 @@ def install(app: Any, door: PlanDoor | None = None, *, keeper: bool | None = Non
     async def plan_accounts(authorization: str | None = Header(default=None)):
         if (shut := closed(authorization)) is not None:
             return shut
-        return JSONResponse(await run_in_threadpool(door.accounts))
+        summary = await run_in_threadpool(door.accounts)
+        # How busy the door is (a call past the capacity is refused as door_full) and its last miss.
+        return JSONResponse({
+            **summary,
+            "callsRunning": int(lane.borrowed_tokens),
+            "callCapacity": CONCURRENT_CALLS,
+            "lastFailure": door.last_failure,
+        })
 
     return door

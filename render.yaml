@@ -39,13 +39,16 @@ services:
       - key: REPORT_STORE_PATH
         value: /var/data/reports.json
       # Models run on the Vercel AI Gateway with a dedicated AI_GATEWAY_API_KEY
-      # (switched 7 Nov 2026; AGENTS.md "Hosted model route").
+      # (switched 7 Nov 2026; AGENTS.md "Hosted model route"). Since #184 each chat
+      # call asks Alec's ChatGPT plans first (HLT_PLAN_DOOR_URL below) at $0 a call.
+      # 25 Nov 2026 (Alec: "the OpenAI GPT 6.2 top end model with my subscription"):
+      # GPT-6.2 Astra writes and plans the report, GPT-6.2 Sol does the quick steps.
       - key: FAST_LLM
-        value: vercel:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.2-sol
       - key: SMART_LLM
-        value: vercel:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.2-astra
       - key: STRATEGIC_LLM
-        value: vercel:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.2-astra
       - key: EMBEDDING
         value: vercel:openai/text-embedding-3-small
       # Firecrawl is the production search and scraper.
@@ -126,12 +129,13 @@ services:
         value: /var/data/outputs
       - key: REPORT_STORE_PATH
         value: /var/data/reports.json
+      # Same tiers as hlt-research-api (25 Nov 2026), plans first.
       - key: FAST_LLM
-        value: vercel:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.2-sol
       - key: SMART_LLM
-        value: vercel:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.2-astra
       - key: STRATEGIC_LLM
-        value: vercel:openai/gpt-6.1-sol
+        value: vercel:openai/gpt-6.2-astra
       - key: EMBEDDING
         value: vercel:openai/text-embedding-3-small
       - key: RETRIEVER
