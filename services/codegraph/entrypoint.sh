@@ -27,4 +27,9 @@ if [[ "$INTERVAL_HOURS" != "0" ]]; then
   ) &
 fi
 
+# Reindex-only credentials stay in the background reindex subshells above; strip
+# them before exec'ing the MCP server so query subprocesses never inherit them.
+unset KATAILYST2_MCP_TOKEN KATAILYST_MCP_TOKEN GITHUB_TOKEN GH_TOKEN \
+  SENTRY_DSN CODEGRAPH_PREBUILT_GRAPH_TOKEN CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE
+
 exec python /app/server.py

@@ -38,7 +38,7 @@ ENV PORT=8080
 ENV GITNEXUS_MCP_READ_ONLY=1
 
 RUN mkdir -p /data/gitnexus /data/repos \
-    && chmod +x /app/entrypoint.sh /app/reindex.sh
+    && chmod +x /app/entrypoint.sh /app/reindex.sh /app/mint_github_token.py /app/sentry_checkin.py /app/sync_prebuilt_graph.py
 
 # Import/auth/native-module proof only; never starts the server or reindexer.
 RUN python /app/assert_runtime.py

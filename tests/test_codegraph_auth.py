@@ -148,11 +148,17 @@ def test_public_health_says_degraded_on_a_full_disk_or_a_stuck_run(tmp_path, mon
     assert json.loads(asyncio.run(server.health_check(None)).body)["status"] == "degraded"
 
 
-def _run_reindex(repos: Path, tmp_path: Path, **env: str) -> subprocess.CompletedProcess:
+def _run_reindex(
+    repos: Path,
+    tmp_path: Path,
+    *,
+    gitnexus_script: str | None = None,
+    **env: str,
+) -> subprocess.CompletedProcess:
     # Never invoke an installed graph CLI or load a model during shell proofs.
     tools = tmp_path / "bin"
     tools.mkdir(exist_ok=True)
-    _env_spy(tools, "gitnexus", 'printf "%s\\n" "$*" >> "$GITNEXUS_TEST_CALLS"')
+    _env_spy(tools, "gitnexus", gitnexus_script or 'printf "%s\\n" "$*" >> "$GITNEXUS_TEST_CALLS"')
     return subprocess.run(
         ["bash", str(Path(server.__file__).with_name("reindex.sh"))],
         env={
@@ -162,10 +168,13 @@ def _run_reindex(repos: Path, tmp_path: Path, **env: str) -> subprocess.Complete
             "CODEGRAPH_FORCE_REINDEX": "1",
             "GITHUB_TOKEN": "",
             "GH_TOKEN": "",
-            # Never reach the real Katailyst from a test.
+            # Never reach the real Katailyst or Sentry from a test.
             "KATAILYST2_MCP_TOKEN": "",
             "KATAILYST_MCP_TOKEN": "",
             "KATAILYST2_MCP_URL": "http://127.0.0.1:9/mcp",
+            "SENTRY_DSN": "",
+            "CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE": "",
+            "CODEGRAPH_PREBUILT_GRAPH_TOKEN": "",
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
             "GITNEXUS_TEST_CALLS": str(tmp_path / "gitnexus-calls"),
             **env,
@@ -1586,3 +1595,561 @@ def test_mint_dry_run_shows_the_request_and_calls_nothing(tmp_path):
     many = json.loads(_run_mint("--dry-run", *(f"repo{n}" for n in range(10))).stdout)
     assert len(many["arguments"]["repositories"]) == 8
     assert [request["repositories"] for request in many["furtherRequests"]] == [["repo8", "repo9"]]
+
+
+# --- Wave 3: 9-repo expansion, memory-safe structural indexing, Sentry cron monitor ---
+
+sentry_checkin = _load("hlt_codegraph_sentry_checkin", SERVICE_DIR / "sentry_checkin.py")
+sync_prebuilt_graph = _load("hlt_codegraph_sync_prebuilt_graph", SERVICE_DIR / "sync_prebuilt_graph.py")
+
+
+def _default_repos_from_reindex_sh() -> list[tuple[str, str]]:
+    text = (SERVICE_DIR / "reindex.sh").read_text(encoding="utf-8")
+    start = text.index("DEFAULT_REPOS=(")
+    end = text.index(")", start)
+    entries: list[tuple[str, str]] = []
+    for line in text[start:end].splitlines():
+        stripped = line.strip()
+        if stripped.startswith('"') and "|" in stripped:
+            slug, full = stripped.strip('"').split("|", 1)
+            entries.append((slug, full))
+    return entries
+
+
+def test_default_repo_list_covers_all_nine_active_hlt_repos_and_batches_cleanly():
+    default_entries = _default_repos_from_reindex_sh()
+    slugs = [slug for slug, _ in default_entries]
+    expected_slugs = {
+        "hlt-gpt-researcher",
+        "mmm2",
+        "katailyst2",
+        "ebb",
+        "scrapervault",
+        "nursing-mastery",
+        "design-registry",
+        "hlt-map",
+        "mira",
+    }
+    assert set(slugs) == expected_slugs
+    assert set(server.REPO_GITHUB) == expected_slugs
+    assert server._repo_key("Awhitter/Design-registry") == "design-registry"
+    assert server._repo_key("Awhitter/hlt-map") == "hlt-map"
+    assert server._repo_key("Awhitter/Mira") == "mira"
+    assert server._repo_key("Awhitter/the-vault") == "scrapervault"
+    assert server._repo_key("evidence-based-business") == "ebb"
+
+    # Dry-run of all 9 default repos splits into <=8 per Katailyst mint request.
+    names = [full.split("/", 1)[1] for _, full in default_entries]
+    dry = json.loads(_run_mint("--dry-run", *names).stdout)
+    assert len(dry["arguments"]["repositories"]) == 8
+    assert [req["repositories"] for req in dry["furtherRequests"]] == [names[8:]]
+
+
+def test_structural_analyze_applies_heap_cap_and_allows_empty_source_only_override(tmp_path):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    checkout = repos / "katailyst2"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(checkout)], check=True)
+    env_dump = tmp_path / "analyze-env.txt"
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        gitnexus_script=(
+            'if [ "$1" = analyze ]; then '
+            f'printf "%s\\n%s\\n%s\\n" "$NODE_OPTIONS" "$GITNEXUS_WORKER_POOL_SIZE" '
+            '"${GITHUB_TOKEN:-}:${CODEGRAPH_MCP_TOKEN:-}:${SENTRY_DSN:-}:${CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE:-}" '
+            f'> {shlex.quote(str(env_dump))}; fi\n'
+            'printf "%s\\n" "$*" >> "$GITNEXUS_TEST_CALLS"'
+        ),
+        CODEGRAPH_REPOS="katailyst2|example/katailyst2",
+        # Explicit empty string must override default monolith source-only list.
+        CODEGRAPH_SOURCE_ONLY_REPOS="",
+        CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB="768",
+        NODE_OPTIONS="--enable-source-maps --max-old-space-size=640",
+        CODEGRAPH_MIN_FREE_MB="0",
+        GITHUB_TOKEN="gh-secret-must-not-leak",
+        CODEGRAPH_MCP_TOKEN="mcp-secret-must-not-leak",
+    )
+    assert result.returncode == 0, result.stderr
+    lines = env_dump.read_text().splitlines()
+    assert lines[0] == "--enable-source-maps --max-old-space-size=768"
+    assert lines[1] == "1"
+    assert lines[2] == ":::"  # all service secrets stripped before gitnexus analyze
+    assert (checkout / ".hlt-indexed-at").exists()
+    assert not (checkout / ".hlt-source-ready-at").exists()
+    assert not (checkout / ".hlt-graph-in-progress").exists()
+
+
+def test_failed_or_timed_out_graph_build_falls_back_to_source_only_without_poisoning_health(
+    tmp_path, monkeypatch
+):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    for slug in ("slow", "healthy"):
+        subprocess.run(["git", "clone", "-q", str(upstream), str(repos / slug)], check=True)
+    # Preserve an older structural graph on `slow`.
+    old_graph = repos / "slow" / ".gitnexus"
+    old_graph.mkdir()
+    (old_graph / "graph.db").write_text("older-graph")
+    (repos / "slow" / ".hlt-indexed-at").write_text("2026-08-06T06:18:27Z\n")
+    old_mtime = time.time() - 90 * 24 * 3600
+    os.utime(repos / "slow" / ".hlt-indexed-at", (old_mtime, old_mtime))
+
+    slow_script = 'if [ "$1" = analyze ] && [ "$(basename "$PWD")" = slow ]; then sleep 30; fi'
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        gitnexus_script=slow_script,
+        CODEGRAPH_REPOS="slow|example/slow,healthy|example/healthy",
+        CODEGRAPH_SOURCE_ONLY_REPOS="",
+        CODEGRAPH_GRAPH_TIMEOUT_S="1",
+        CODEGRAPH_MIN_FREE_MB="0",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "timed out after 1s for slow" in result.stderr
+    # Older graph preserved; fresh source ready; healthy repo still got structural index.
+    assert (old_graph / "graph.db").read_text() == "older-graph"
+    assert (repos / "slow" / ".hlt-source-ready-at").exists()
+    assert (repos / "slow" / ".hlt-graph-error").exists()
+    assert not (repos / "slow" / ".hlt-index-error").exists()
+    assert not (repos / "slow" / ".hlt-graph-in-progress").exists()
+    assert (repos / "healthy" / ".hlt-indexed-at").exists()
+
+    # Public /health stays ok and names zero repositories.
+    monkeypatch.setattr(server, "REPOS_DIR", str(repos))
+    monkeypatch.setenv("CODEGRAPH_MIN_FREE_MB", "0")
+    health = json.loads(asyncio.run(server.health_check(None)).body)
+    assert health == {"status": "ok", "service": "hlt-codegraph"}
+    assert "slow" not in json.dumps(health)
+
+    # Authenticated /readiness shows source mode, older structural date, and graphError.
+    slow_ready = server._repo_readiness("slow")
+    assert slow_ready["status"] == "ready"
+    assert slow_ready["mode"] == "source"
+    assert slow_ready["structuralIndexedAt"] == "2026-08-06T06:18:27Z"
+    assert "timed out" in slow_ready["graphError"]
+    assert slow_ready["error"] is None
+
+    # A restart within FRESH_HOURS (FORCE=0) must NOT thrash-retry the timed-out graph build.
+    retry = _run_reindex(
+        repos,
+        tmp_path,
+        gitnexus_script=slow_script,
+        CODEGRAPH_FORCE_REINDEX="0",
+        CODEGRAPH_REPOS="slow|example/slow",
+        CODEGRAPH_SOURCE_ONLY_REPOS="",
+        CODEGRAPH_GRAPH_TIMEOUT_S="1",
+        CODEGRAPH_MIN_FREE_MB="0",
+    )
+    assert retry.returncode == 0, retry.stderr
+    assert "still fresh, skipping" in retry.stdout
+
+
+def test_interrupted_graph_in_progress_marker_prevents_oom_crash_loop(tmp_path):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    checkout = repos / "demo"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(checkout)], check=True)
+    # Simulate container OOM kill leaving a fresh `.hlt-graph-in-progress` behind.
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (checkout / ".hlt-graph-in-progress").write_text(f"{now}\n")
+
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="demo|example/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="",
+        CODEGRAPH_FORCE_REINDEX="0",
+        CODEGRAPH_MIN_FREE_MB="0",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "possible OOM" in result.stderr
+    assert not (checkout / ".hlt-graph-in-progress").exists()
+    assert (checkout / ".hlt-source-ready-at").exists()
+    assert "possible OOM" in (checkout / ".hlt-graph-error").read_text()
+    # gitnexus analyze was skipped (only `list` at end of reindex.sh ran).
+    assert (tmp_path / "gitnexus-calls").read_text() == "list\n"
+
+
+@pytest.mark.parametrize(
+    ("dsn", "expected"),
+    [
+        (
+            "https://abc123key@o450123.ingest.us.sentry.io/987654",
+            {"origin": "https://o450123.ingest.us.sentry.io", "project_id": "987654", "public_key": "abc123key"},
+        ),
+        (
+            "https://pub@sentry.io/42",
+            {"origin": "https://sentry.io", "project_id": "42", "public_key": "pub"},
+        ),
+        ("", None),
+        ("http://abc@o1.ingest.sentry.io/123", None),
+        ("https://abc:secret@o1.ingest.sentry.io/123", None),
+        ("https://abc@evil-sentry.io.example.com/123", None),
+        ("https://abc@o1.ingest.sentry.io/not-digits", None),
+        ("https://abc@.sentry.io/123", None),
+        ("https://abc@a..sentry.io/123", None),
+        ("https://abc@o1.ingest.sentry.io/123?foo=bar", None),
+        ("https://abc@o1.ingest.sentry.io/123#frag", None),
+        ("https://@o1.ingest.sentry.io/123", None),
+        ("not-a-url", None),
+    ],
+)
+def test_sentry_target_validates_strict_https_sentry_io_dsns(dsn, expected):
+    assert sentry_checkin.sentry_target(dsn) == expected
+
+
+def test_sentry_checkin_envelope_contract_and_error_isolation(capsys):
+    dsn = "https://pubKeySecret999@o450123.ingest.us.sentry.io/42001"
+    env = {
+        "SENTRY_DSN": dsn,
+        "RENDER_GIT_COMMIT": "ABCDEF1234567",
+        "CODEGRAPH_REINDEX_HOURS": "24",
+    }
+    cid = "0123456789abcdef0123456789abcdef"
+    payload = sentry_checkin.build_checkin_payload("ok", check_in_id=cid, duration=14.2, env=env)
+    assert payload == {
+        "check_in_id": cid,
+        "monitor_slug": "hlt-codegraph-reindex",
+        "status": "ok",
+        "environment": "production",
+        "release": "abcdef1234567",
+        "duration": 14.2,
+        "monitor_config": {
+            "schedule": {"type": "interval", "value": 24, "unit": "hour"},
+            "checkin_margin": 120,
+            "max_runtime": 60,
+            "failure_issue_threshold": 1,
+            "recovery_threshold": 1,
+            "timezone": "UTC",
+        },
+    }
+    raw = sentry_checkin.build_envelope(payload, now=datetime(2026, 11, 26, 15, 0, 0, tzinfo=timezone.utc))
+    lines = raw.decode("utf-8").splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[0]) == {"sent_at": "2026-11-26T15:00:00.000000Z"}
+    assert json.loads(lines[1]) == {"type": "check_in"}
+    assert json.loads(lines[2])["monitor_slug"] == "hlt-codegraph-reindex"
+
+    captured = {}
+
+    class _FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):  # noqa: ANN002
+            return False
+
+    class _FakeOpener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            captured["url"] = req.full_url
+            captured["content_type"] = req.get_header("Content-type")
+            captured["body"] = req.data
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+    assert sentry_checkin.send_checkin("in_progress", check_in_id=cid, env=env, opener=_FakeOpener()) is True
+    assert captured["url"] == "https://o450123.ingest.us.sentry.io/api/42001/envelope/?sentry_key=pubKeySecret999&sentry_version=7"
+    assert captured["content_type"] == "application/x-sentry-envelope"
+    assert json.loads(captured["body"].decode("utf-8").splitlines()[2])["status"] == "in_progress"
+
+    # Delivery error must never raise or leak DSN/key in stderr.
+    class _FailingOpener:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            raise OSError(f"cannot connect to {req.full_url}")
+
+    assert sentry_checkin.send_checkin("error", check_in_id=cid, duration=3.0, env=env, opener=_FailingOpener()) is False
+    err = capsys.readouterr().err
+    assert "pubKeySecret999" not in err and dsn not in err
+    assert "sentry check-in warning" in err
+
+
+def test_reindex_emits_sentry_in_progress_and_terminal_status_and_strips_dsn_from_children(tmp_path):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    checkout = repos / "demo"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(checkout)], check=True)
+
+    dsn = "https://dsnSecretToken777@o1.ingest.sentry.io/999"
+    sentry_log = tmp_path / "sentry-calls.log"
+    helper = tmp_path / "fake_sentry.py"
+    helper.write_text(
+        "import os, sys\n"
+        f"with open({str(sentry_log)!r}, 'a') as fh:\n"
+        "    fh.write(' '.join(sys.argv[1:]) + ' has_dsn=' + str(bool(os.environ.get('SENTRY_DSN'))) + '\\n')\n"
+        "sys.exit(int(os.environ.get('FAKE_SENTRY_EXIT', '0')))\n"
+    )
+    child_dsn_log = tmp_path / "child-dsn.log"
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    real_git = shlex.quote(shutil.which("git"))
+    git_wrap = tools / "git"
+    git_wrap.write_text(
+        "#!/bin/sh\n"
+        f'if [ -n "${{SENTRY_DSN:-}}" ]; then echo "LEAKED" >> {shlex.quote(str(child_dsn_log))}; fi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    git_wrap.chmod(0o755)
+
+    # 1. Successful refresh (even when Sentry helper exits 1, reindex must still succeed).
+    ok_res = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="demo|example/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+        CODEGRAPH_MIN_FREE_MB="0",
+        SENTRY_DSN=dsn,
+        CODEGRAPH_SENTRY_HELPER=str(helper),
+        FAKE_SENTRY_EXIT="1",
+    )
+    assert ok_res.returncode == 0, ok_res.stderr
+    assert dsn not in ok_res.stdout + ok_res.stderr
+    assert not child_dsn_log.exists()
+    events = sentry_log.read_text().splitlines()
+    assert len(events) == 2
+    assert events[0].startswith("in_progress --check-in-id ") and events[0].endswith(" has_dsn=True")
+    assert events[1].startswith("ok --check-in-id ") and "--duration " in events[1] and events[1].endswith(" has_dsn=True")
+    assert events[0].split()[2] == events[1].split()[2]  # matching check_in_id
+
+    # 2. Failed refresh emits `in_progress` -> `error`.
+    sentry_log.unlink()
+    subprocess.run(["git", "-C", str(checkout), "remote", "set-url", "origin", str(tmp_path / "missing.git")], check=True)
+    fail_res = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="demo|example/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="demo",
+        CODEGRAPH_MIN_FREE_MB="0",
+        SENTRY_DSN=dsn,
+        CODEGRAPH_SENTRY_HELPER=str(helper),
+    )
+    assert fail_res.returncode == 1
+    fail_events = sentry_log.read_text().splitlines()
+    assert len(fail_events) == 2
+    assert fail_events[0].startswith("in_progress --check-in-id ")
+    assert fail_events[1].startswith("error --check-in-id ")
+    assert fail_events[0].split()[2] == fail_events[1].split()[2]
+
+
+def _make_tar_gz(entries: list[tuple[str, bytes | None, str | None]]) -> bytes:
+    """Build an in-memory .tar.gz with (name, file_bytes_or_None, symlink_target_or_None)."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data, link in entries:
+            info = tarfile.TarInfo(name=name)
+            if link is not None:
+                info.type = tarfile.SYMTYPE
+                info.linkname = link
+                tar.addfile(info)
+            elif data is None:
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            else:
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_prebuilt_graph_tarball_extraction_is_atomic_and_rejects_unsafe_members(tmp_path):
+    repo = tmp_path / "katailyst2"
+    repo.mkdir()
+    existing = repo / ".gitnexus"
+    existing.mkdir()
+    (existing / "graph.db").write_text("old-graph")
+
+    # Unsafe archives must be refused without touching existing `.gitnexus`.
+    for bad_entries in [
+        [("../escape.txt", b"bad", None)],
+        [("/etc/passwd", b"bad", None)],
+        [("README.md", b"outside-gitnexus", None)],
+        [(".gitnexus/link", None, "/etc/passwd")],
+        [(".gitnexus/", None, None)],  # empty
+    ]:
+        archive = _make_tar_gz(bad_entries)
+        with pytest.raises(ValueError):
+            sync_prebuilt_graph.extract_safe_gitnexus_tarball(archive, repo)
+        assert (existing / "graph.db").read_text() == "old-graph"
+
+    # Valid archive swaps atomically.
+    good = _make_tar_gz([(".gitnexus/graph.db", b"fresh-ubicloud-graph", None)])
+    count = sync_prebuilt_graph.extract_safe_gitnexus_tarball(good, repo)
+    assert count == 1
+    assert (repo / ".gitnexus" / "graph.db").read_text() == "fresh-ubicloud-graph"
+
+    assert sync_prebuilt_graph.validate_url("https://storage.example.com/graphs/katailyst2.tar.gz") is None
+    assert sync_prebuilt_graph.validate_url("http://127.0.0.1:8080/katailyst2.tar.gz") is None
+    assert sync_prebuilt_graph.validate_url("http://storage.example.com/katailyst2.tar.gz") is not None
+    assert sync_prebuilt_graph.validate_url("https://user:pass@storage.example.com/a.tar.gz") is not None
+
+    # Uncompressed bomb beyond max_extracted_bytes is refused without touching existing graph.
+    bomb = _make_tar_gz([(".gitnexus/big.bin", b"A" * 4096, None)])
+    with pytest.raises(ValueError, match="extracted size limit"):
+        sync_prebuilt_graph.extract_safe_gitnexus_tarball(bomb, repo, max_extracted_bytes=1024)
+    assert (repo / ".gitnexus" / "graph.db").read_text() == "fresh-ubicloud-graph"
+
+    # Control chars in member names and non-finite Sentry durations are handled safely.
+    bad_ctrl = _make_tar_gz([(".gitnexus/a\nb", b"x", None)])
+    with pytest.raises(ValueError):
+        sync_prebuilt_graph.extract_safe_gitnexus_tarball(bad_ctrl, repo)
+    nan_payload = sentry_checkin.build_checkin_payload("ok", duration=float("nan"))
+    assert "duration" not in nan_payload
+
+
+def test_server_child_env_strips_secrets_and_repo_overview_rejects_traversal(monkeypatch):
+    for key in server._CHILD_REDACTED_ENV_KEYS:
+        monkeypatch.setenv(key, f"secret-{key}")
+    child_env = server._safe_child_env()
+    for key in server._CHILD_REDACTED_ENV_KEYS:
+        assert key not in child_env
+
+    bad = json.loads(server.repo_overview("../etc"))
+    assert bad == {"error": "Repository is not in the active HLT index."}
+
+
+def test_structural_recovery_clears_previous_graph_error_and_source_stamp(tmp_path, monkeypatch):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    checkout = repos / "demo"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(checkout)], check=True)
+    (checkout / ".hlt-source-ready-at").write_text("2026-11-25T00:00:00Z\n")
+    (checkout / ".hlt-graph-error").write_text("2026-11-25T00:00:00Z previous fallback\n")
+
+    result = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="demo|example/demo",
+        CODEGRAPH_SOURCE_ONLY_REPOS="",
+        CODEGRAPH_FORCE_REINDEX="1",
+        CODEGRAPH_MIN_FREE_MB="0",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (checkout / ".hlt-indexed-at").exists()
+    assert not (checkout / ".hlt-source-ready-at").exists()
+    assert not (checkout / ".hlt-graph-error").exists()
+
+    monkeypatch.setattr(server, "REPOS_DIR", str(repos))
+    ready = server._repo_readiness("demo")
+    assert ready["status"] == "ready"
+    assert ready["mode"] == "structural"
+    assert "graphError" not in ready
+
+
+def test_prebuilt_graph_sync_strips_token_from_other_children_and_falls_back_on_error(tmp_path):
+    upstream = tmp_path / "upstream"
+    _create_source_repo(upstream)
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    checkout = repos / "katailyst2"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(checkout)], check=True)
+
+    token = "prebuilt-secret-token-888"
+    sync_log = tmp_path / "sync-calls.log"
+    helper = tmp_path / "fake_sync.py"
+    helper.write_text(
+        "import os, sys\n"
+        f"with open({str(sync_log)!r}, 'a') as fh:\n"
+        "    fh.write(' '.join(sys.argv[1:])"
+        " + ' has_token=' + str(os.environ.get('CODEGRAPH_PREBUILT_GRAPH_TOKEN') == "
+        f"{token!r})"
+        " + ' has_url=' + str(bool(os.environ.get('CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE'))) + '\\n')\n"
+        "sys.exit(int(os.environ.get('FAKE_SYNC_EXIT', '0')))\n"
+    )
+    leaked_log = tmp_path / "git-token-leak.log"
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    real_git = shlex.quote(shutil.which("git"))
+    git_wrap = tools / "git"
+    git_wrap.write_text(
+        "#!/bin/sh\n"
+        f'if [ -n "${{CODEGRAPH_PREBUILT_GRAPH_TOKEN:-}}${{CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE:-}}" ]; then echo LEAK >> {shlex.quote(str(leaked_log))}; fi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    git_wrap.chmod(0o755)
+
+    ok_res = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="katailyst2|example/katailyst2",
+        CODEGRAPH_SOURCE_ONLY_REPOS="katailyst2",
+        CODEGRAPH_MIN_FREE_MB="0",
+        CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE="https://storage.example.com/{slug}.tar.gz?sig=secret999",
+        CODEGRAPH_PREBUILT_GRAPH_TOKEN=token,
+        CODEGRAPH_PREBUILT_GRAPH_HELPER=str(helper),
+    )
+    assert ok_res.returncode == 0, ok_res.stderr
+    assert token not in ok_res.stdout + ok_res.stderr
+    assert "sig=secret999" not in ok_res.stdout + ok_res.stderr
+    assert not leaked_log.exists()
+    sync_line = sync_log.read_text()
+    assert "has_token=True" in sync_line and "has_url=True" in sync_line
+    assert "--url-template" not in sync_line  # URL template passed via env, never argv
+    assert (checkout / ".hlt-indexed-at").exists()
+
+    # On restart with FORCE=0, freshness guard must recognize `.hlt-indexed-at` and skip re-sync.
+    sync_log.unlink()
+    fresh_res = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_FORCE_REINDEX="0",
+        CODEGRAPH_REPOS="katailyst2|example/katailyst2",
+        CODEGRAPH_SOURCE_ONLY_REPOS="katailyst2",
+        CODEGRAPH_MIN_FREE_MB="0",
+        CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE="https://storage.example.com/{slug}.tar.gz",
+        CODEGRAPH_PREBUILT_GRAPH_TOKEN=token,
+        CODEGRAPH_PREBUILT_GRAPH_HELPER=str(helper),
+    )
+    assert fresh_res.returncode == 0, fresh_res.stderr
+    assert "still fresh, skipping" in fresh_res.stdout
+    assert not sync_log.exists()
+
+    # If prebuilt sync fails, reindex still succeeds in source-only mode.
+    (checkout / ".hlt-indexed-at").unlink()
+    fb_res = _run_reindex(
+        repos,
+        tmp_path,
+        CODEGRAPH_REPOS="katailyst2|example/katailyst2",
+        CODEGRAPH_SOURCE_ONLY_REPOS="katailyst2",
+        CODEGRAPH_MIN_FREE_MB="0",
+        CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE="https://storage.example.com/{slug}.tar.gz",
+        CODEGRAPH_PREBUILT_GRAPH_TOKEN=token,
+        CODEGRAPH_PREBUILT_GRAPH_HELPER=str(helper),
+        FAKE_SYNC_EXIT="1",
+    )
+    assert fb_res.returncode == 0, fb_res.stderr
+    assert (checkout / ".hlt-source-ready-at").exists()
+    assert not (checkout / ".hlt-indexed-at").exists()
+
+
+def test_sentry_checkin_is_not_emitted_when_reindex_lock_is_held(tmp_path):
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    sentry_log = tmp_path / "sentry.log"
+    helper = tmp_path / "fake_sentry.py"
+    helper.write_text(f"open({str(sentry_log)!r}, 'a').write('called\\n')\n")
+    with (repos / ".hlt-reindex.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = _run_reindex(
+            repos,
+            tmp_path,
+            CODEGRAPH_REPOS="demo|example/demo",
+            SENTRY_DSN="https://abc@o1.ingest.sentry.io/123",
+            CODEGRAPH_SENTRY_HELPER=str(helper),
+        )
+    assert result.returncode == 0
+    assert not sentry_log.exists()

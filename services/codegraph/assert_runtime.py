@@ -39,7 +39,13 @@ console.log(JSON.stringify({gitnexus: pkg.version, treeSitter: 'loaded', cliBin:
 """]))
     assert native["gitnexus"] == "1.6.11", native
 
+    import sentry_checkin
     import server
+    import sync_prebuilt_graph
+
+    assert sentry_checkin.sentry_target("http://bad@evil.example/1") is None
+    assert sync_prebuilt_graph.validate_url("http://evil.example/a.tar.gz") is not None
+    assert {"design-registry", "hlt-map", "mira"}.issubset(server.REPO_GITHUB)
 
     versions = {name: metadata.version(name) for name in
                 ("mcp", "starlette", "uvicorn", "python-dotenv")}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "UTC",
+  "schedule": [
+    "before 6am on Monday"
+  ],
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 4,
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "description": "Group non-major Python updates weekly",
+      "matchManagers": [
+        "pip_requirements",
+        "pep621"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "python non-major dependencies"
+    },
+    {
+      "description": "Keep MCP Python SDK below v2 while FastMCP lives in mcp.server.fastmcp",
+      "matchFileNames": [
+        "requirements.txt",
+        "pyproject.toml",
+        "services/codegraph/requirements.txt"
+      ],
+      "matchPackageNames": [
+        "mcp"
+      ],
+      "allowedVersions": "<2.0.0"
+    },
+    {
+      "description": "Group non-major Next.js frontend updates weekly",
+      "matchFileNames": [
+        "frontend/nextjs/**"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "frontend non-major dependencies"
+    },
+    {
+      "description": "Group GitHub Actions updates weekly",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Hold major Docker base image bumps for explicit review",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

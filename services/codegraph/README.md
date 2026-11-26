@@ -1,12 +1,20 @@
 # HLT Codegraph MCP (GitNexus)
 
-Keeps six estate checkouts current (Mastery Research, katailyst2, the Vault,
-nursing-mastery, MMM2, Evidence-Based-Business) and serves their code over
-streamable HTTP to Mastery Research's code scope and to Katailyst agents. Every
-repo refreshes its code daily as source only: GitNexus graph rebuilds of the large
-repos ran the 2 GB plan out of memory, which had left five of them frozen at
-Aug-Sep copies until 8 Nov 2026. Older graphs stay on disk and still answer the
-structural tools; `/readiness` shows their date as `structuralIndexedAt`.
+Keeps nine estate checkouts current (Mastery Research, katailyst2, the Vault,
+nursing-mastery, MMM2, Evidence-Based-Business, Design-registry, hlt-map, Mira)
+and serves their code over streamable HTTP to Mastery Research's code scope and
+to Katailyst agents. Every repo refreshes its code daily; the six smaller/medium
+repos build structural GitNexus graphs sequentially with a per-repo heap cap,
+timeout, crash-loop guard, and automatic source-only fallback, while the three
+large monoliths (`katailyst2`, `nursing-mastery`, `scrapervault`) default to
+source-only on the 2 GB Render plan so native tree-sitter/SQLite memory cannot
+cgroup-OOM the container. Older graphs stay on disk and still answer the
+structural tools; `/readiness` shows their date as `structuralIndexedAt` (and
+any fallback reason as `graphError`). Upgrade `hlt-codegraph` to Render Pro
+(4 GB) or Pro Plus (8 GB), clear `CODEGRAPH_SOURCE_ONLY_REPOS=""`, and bump
+`CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB` (e.g. `2048`) — or sync prebuilt `.gitnexus`
+tarballs via `CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE` — to build fresh graphs
+for the three monoliths too.
 `HLT-Master/hlt-web-service` left the default list on 8 Nov 2026 because the
 GitHub account can no longer read it; add it back through `CODEGRAPH_REPOS` with
 a token that can.
@@ -48,7 +56,7 @@ file before making a behavior claim.
 | `/mcp` | bearer | the tool surface |
 
 `/health` is deliberately bare. Render's ipAllowList is `0.0.0.0/0`, so
-anything it returns is world-readable, and index truth names five private
+anything it returns is world-readable, and index truth names nine private
 repositories and their commit SHAs. If `CODEGRAPH_MCP_TOKEN` is unset the
 service **fails closed**: every path except `/health` returns 503.
 `tests/test_codegraph_auth.py` pins both.
@@ -64,7 +72,12 @@ service **fails closed**: every path except `/health` returns 503.
 | `CODEGRAPH_MCP_TOKEN` | Bearer auth for `/mcp` and `/readiness`; unset ⇒ 503 |
 | `CODEGRAPH_REPOS` | Optional `slug\|org/repo,...` override |
 | `CODEGRAPH_REINDEX_HOURS` | Background reindex interval (default 24; `0` off) |
-| `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools but not GitNexus (default: all six). Remove a slug to rebuild its graph again, only on a plan that can hold the rebuild |
+| `CODEGRAPH_SOURCE_ONLY_REPOS` | CSV checkouts refreshed for source tools without running local `gitnexus analyze` (default: `katailyst2,nursing-mastery,scrapervault`, the three 8k–15k-file monoliths on the 2 GB Render plan). Set explicitly to empty string `""` on a 4–8 GB Render plan to enable structural builds for all nine default repos |
+| `CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB` | Per-repo Node V8 `--max-old-space-size` cap applied to each sequential `gitnexus analyze` subprocess (default `512` for 2 GB Render; bump to `1536`–`3072` on a 4–8 GB Render plan). Paired with single-worker parser limits (`GITNEXUS_WORKER_POOL_SIZE=1`, `GITNEXUS_PARSE_CHUNK_CONCURRENCY=1`) |
+| `CODEGRAPH_GRAPH_TIMEOUT_S` | Per-repo wall-clock timeout in seconds for `gitnexus analyze` (default `300`; `0` disables). On expiry, the entire process group is terminated (`SIGTERM` -> `SIGKILL`) so worker children never leak memory |
+| `CODEGRAPH_GRAPH_FALLBACK_SOURCE_ONLY` | `1` (default) falls back cleanly to source-only if a single repo's `gitnexus analyze` fails, times out, or leaves a recent `.hlt-graph-in-progress` crash marker: preserves any existing `.gitnexus`, records `graphError` on `/readiness`, continues the remaining repos, and keeps public `/health` `ok`. Set `0` to treat graph build failures as hard refresh failures |
+| `CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE` | Optional `https://.../{slug}.tar.gz` URL template for syncing prebuilt `.gitnexus` graph archives (e.g. from a weekly Ubicloud `workflow_dispatch` build) into source-only repos without running `gitnexus analyze` inside the 2 GB Render container. `sync_prebuilt_graph.py` refuses non-HTTPS (except localhost), redirects, symlinks, and path traversal, and atomically swaps `.gitnexus` while preserving the existing graph on failure. Optional bearer header via `CODEGRAPH_PREBUILT_GRAPH_TOKEN` (stripped from other child environments) and size cap via `CODEGRAPH_PREBUILT_GRAPH_MAX_MB` (default `512`) |
+| `SENTRY_DSN` | Optional HTTPS `sentry.io` DSN. When set, `reindex.sh` emits lightweight zero-dependency Sentry Cron Monitor check-in envelopes (`in_progress` -> `ok`/`error`) on monitor `hlt-codegraph-reindex` (24h interval, 120m margin, 60m max runtime) via `sentry_checkin.py`. Best-effort: never fails a refresh, refuses redirects, strips `SENTRY_DSN` from child environments, and never logs the DSN or key. Optional overrides: `CODEGRAPH_SENTRY_MONITOR_SLUG`, `SENTRY_ENVIRONMENT` |
 | `CODEGRAPH_SKIP_REPOS` | CSV repos left completely untouched (code and graph frozen). Empty by default; use only to protect a checkout during recovery |
 | `CODEGRAPH_SKIP_INDEX_ON_BOOT` | `1` to skip boot reindex |
 | `CODEGRAPH_MIN_FREE_MB` | Free-space reserve (default 1024). Refresh prunes unused cached Git objects; if the reserve is still unmet, it preserves the checkout/index and reports failure. Unknown disk readings never trigger destructive recovery. `/health` uses the same threshold |

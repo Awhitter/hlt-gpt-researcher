@@ -17,6 +17,9 @@ DEFAULT_REPOS=(
   # GitHub App knows only the current one.
   "scrapervault|Awhitter/the-vault"
   "nursing-mastery|Awhitter/nursing-mastery"
+  "design-registry|Awhitter/Design-registry"
+  "hlt-map|Awhitter/hlt-map"
+  "mira|Awhitter/Mira"
 )
 # HLT-Master/hlt-web-service left the list on 8 Nov 2026: the Awhitter account can no
 # longer see it ("Repository not found"), so every run failed and /health stayed
@@ -29,17 +32,29 @@ DEFAULT_REPOS=(
 # a repository the App does not cover. Git gets the key from the environment of each
 # git command, never from the remote URL, so no checkout on the disk keeps a copy.
 # Until 8 Nov 2026 the key was baked into each clone's origin URL.
+# Drop every credential from the exported environment at once so git, gitnexus,
+# and helper subprocesses never inherit keys meant for another component.
+unset GITHUB_PAT
 GITHUB_PAT="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+unset GITHUB_TOKEN GH_TOKEN CODEGRAPH_MCP_TOKEN GITNEXUS_AUTH_TOKEN
 export GIT_TERMINAL_PROMPT=0
-# The Katailyst key can mint tokens, so no child of this run may inherit it. It is
-# read once into a shell variable that is never exported (unset first: a variable
-# that arrived through the environment stays exported), and both environment names
-# are dropped before anything else starts. Only the mint helper gets it, in that
-# one command's environment.
 unset KATAILYST_KEY
 KATAILYST_KEY="${KATAILYST2_MCP_TOKEN:-${KATAILYST_MCP_TOKEN:-}}"
 unset KATAILYST2_MCP_TOKEN KATAILYST_MCP_TOKEN
-MINT_HELPER="${CODEGRAPH_MINT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mint_github_token.py}"
+unset SENTRY_DSN_VAL
+SENTRY_DSN_VAL="${SENTRY_DSN:-}"
+unset SENTRY_DSN
+unset PREBUILT_GRAPH_TOKEN_VAL
+PREBUILT_GRAPH_TOKEN_VAL="${CODEGRAPH_PREBUILT_GRAPH_TOKEN:-}"
+unset CODEGRAPH_PREBUILT_GRAPH_TOKEN
+unset PREBUILT_GRAPH_URL_TEMPLATE
+PREBUILT_GRAPH_URL_TEMPLATE="${CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE:-}"
+unset CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MINT_HELPER="${CODEGRAPH_MINT_HELPER:-$SCRIPT_DIR/mint_github_token.py}"
+SENTRY_HELPER="${CODEGRAPH_SENTRY_HELPER:-$SCRIPT_DIR/sentry_checkin.py}"
+PREBUILT_GRAPH_HELPER="${CODEGRAPH_PREBUILT_GRAPH_HELPER:-$SCRIPT_DIR/sync_prebuilt_graph.py}"
 MINT_STATE=""      # ok | partial | unset | failed | unused, once the first refresh needs GitHub
 # What the mint helper said for each repository it was asked about, index by index.
 MINT_NAMES=()      # "awhitter/katailyst2", lower case
@@ -58,61 +73,72 @@ AUTH_RECORDS=""    # "slug:source:why:ok|refused|failed,..." for the status line
 AUTH_ERROR_PATTERN='could not read Username|Authentication failed|Invalid username or password|returned error: 40[13]|terminal prompts disabled'
 REPOS_SPEC="${CODEGRAPH_REPOS:-}"
 
-# NOTE: do NOT add a --max-old-space-size cap here expecting it to prevent the
-# OOM. The service already runs with NODE_OPTIONS=--max-old-space-size=640 and
-# the container still died using OVER 2GB (2026-08-06), so the memory is NOT in
-# V8's old space — it is native: tree-sitter parsers, SQLite, and gitnexus'
-# worker processes. A heap cap cannot bound those, and adding one here is worse
-# than useless because it reads like a fix.
-#
-# What actually stops the outage is the freshness guard below: the OOM kills the
-# whole container (indexer and MCP server share it), Render restarts, and the
-# boot reindex used to immediately re-run the work that caused the OOM.
-#
-# And the indexer CANNOT be moved to a cron job, which is the obvious next idea:
-# Render disks are "accessible by only a single service instance" and "you can't
-# add a disk to a cron job service", so a separate service has nowhere to write
-# the index this one serves. Indexing has to live here, which means the only
-# levers are the size of the work and the size of the plan.
+# NOTE on memory safety under 2 GB Render (lesson from 2026-08-06):
+# A V8 --max-old-space-size cap ALONE cannot prevent cgroup OOMs on giant repos:
+# native memory (tree-sitter C parsers, SQLite/Kuzu buffers, and worker processes)
+# sits outside V8 old space. Render disks also attach to a single service instance
+# (cron jobs cannot share the disk). So safe structural indexing uses four layers:
+#   1. Keep the three 8k-15k-file monoliths (katailyst2, nursing-mastery, scrapervault)
+#      in default CODEGRAPH_SOURCE_ONLY_REPOS on the 2 GB plan (or feed them prebuilt
+#      tarballs via CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE; clear the list on 4-8 GB).
+#   2. Cap each sequential `gitnexus analyze` subprocess with
+#      CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB (default 512 MB) and single-worker parser limits.
+#   3. Bound every `gitnexus analyze` with CODEGRAPH_GRAPH_TIMEOUT_S (default 300 s)
+#      and kill its entire process group on timeout so worker children never leak RAM.
+#   4. Cleanly fall back to source-only if a single repo's graph build fails, times out,
+#      or leaves a recent `.hlt-graph-in-progress` crash marker (never blocking other
+#      repos, never erasing an older `.gitnexus`, and never poisoning `/health`).
 
-# Repos to leave alone entirely. A repo whose FULL rebuild does not fit in the
-# container is unrecoverable once gitnexus sets its incrementalInProgress flag:
-# every later run is forced down the full-rebuild path and OOMs the container,
-# taking the MCP server with it. Listing it here keeps its last good index on
-# disk and served, at the cost of that index going stale — a stale answer beats
-# a daily outage. Remove the entry once the plan can hold the rebuild.
+# Repos to leave alone entirely. Listing a slug here keeps its last good checkout and
+# graph untouched on disk, at the cost of going stale. Empty by default.
 SKIP_REPOS="${CODEGRAPH_SKIP_REPOS:-}"
-# Every default repo refreshes as source only. GitNexus rebuilds of the five large
-# repos ran the 2 GB container out of memory, so they had sat on CODEGRAPH_SKIP_REPOS
-# with their code frozen at Aug-Sep copies. Source tools need current code more than
-# a graph; remove a slug from this list to rebuild its graph again.
-SOURCE_ONLY_REPOS="${CODEGRAPH_SOURCE_ONLY_REPOS:-hlt-gpt-researcher,katailyst2,nursing-mastery,scrapervault,mmm2,ebb}"
+# Default source-only list protects the 2 GB Render container from the three largest
+# repos while unfreezing daily structural graph builds for the six smaller/medium repos
+# (hlt-gpt-researcher, design-registry, hlt-map, mira, ebb, mmm2). Uses `-` (not `:-`)
+# so setting CODEGRAPH_SOURCE_ONLY_REPOS="" explicitly enables structural graphs for all.
+SOURCE_ONLY_REPOS="${CODEGRAPH_SOURCE_ONLY_REPOS-katailyst2,nursing-mastery,scrapervault}"
 
-is_skipped() {
-  local slug="$1"
-  [[ -z "$SKIP_REPOS" ]] && return 1
+GRAPH_MAX_OLD_SPACE_MB="${CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB:-512}"
+[[ "$GRAPH_MAX_OLD_SPACE_MB" =~ ^[1-9][0-9]*$ ]] || GRAPH_MAX_OLD_SPACE_MB=512
+GRAPH_TIMEOUT_S="${CODEGRAPH_GRAPH_TIMEOUT_S:-300}"
+[[ "$GRAPH_TIMEOUT_S" =~ ^[0-9]+$ ]] || GRAPH_TIMEOUT_S=300
+GRAPH_FALLBACK_SOURCE_ONLY="${CODEGRAPH_GRAPH_FALLBACK_SOURCE_ONLY:-1}"
+
+in_csv_list() {
+  local needle="$1" csv="$2"
+  [[ -z "$csv" ]] && return 1
+  local -a entries=()
   local entry
-  IFS=',' read -ra _skips <<< "$SKIP_REPOS"
-  for entry in "${_skips[@]}"; do
-    [[ "$(echo "$entry" | xargs)" == "$slug" ]] && return 0
+  IFS=',' read -ra entries <<< "$csv"
+  for entry in "${entries[@]}"; do
+    # Pure-bash trim avoids subshells and xargs quote errors under set -e.
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [[ "$entry" == "$needle" ]] && return 0
   done
   return 1
 }
 
+is_skipped() {
+  in_csv_list "$1" "$SKIP_REPOS"
+}
+
 is_source_only() {
-  local slug="$1"
-  local entry
-  IFS=',' read -ra _source_only <<< "$SOURCE_ONLY_REPOS"
-  for entry in "${_source_only[@]}"; do
-    [[ "$(echo "$entry" | xargs)" == "$slug" ]] && return 0
-  done
-  return 1
+  in_csv_list "$1" "$SOURCE_ONLY_REPOS"
 }
 
 freshness_stamp() {
   local slug="$1"
   if is_source_only "$slug"; then
-    echo "$REPOS_DIR/$slug/.hlt-source-ready-at"
+    local src="$REPOS_DIR/$slug/.hlt-source-ready-at"
+    local idx="$REPOS_DIR/$slug/.hlt-indexed-at"
+    # Prebuilt graph sync on a source-only repo writes `.hlt-indexed-at` and removes
+    # `.hlt-source-ready-at`; prefer whichever timestamp exists (or is newer).
+    if [[ -f "$idx" && ( ! -f "$src" || "$idx" -nt "$src" ) ]]; then
+      echo "$idx"
+    else
+      echo "$src"
+    fi
   else
     echo "$REPOS_DIR/$slug/.hlt-indexed-at"
   fi
@@ -155,6 +181,34 @@ else
   fi
   echo "[codegraph] cannot acquire the reindex lock" >&2
   exit "$lock_status"
+fi
+
+# Lock acquired: emit optional Sentry Cron Monitor check-ins (`in_progress` -> `ok`/`error`)
+# when SENTRY_DSN is set. Skipped concurrent runs exit above and emit nothing.
+SENTRY_CHECKIN_ID=""
+SENTRY_START_EPOCH="$(date -u +%s)"
+sentry_finish() {
+  local rc=$?
+  if [[ -n "$SENTRY_DSN_VAL" && -n "$SENTRY_CHECKIN_ID" ]]; then
+    local end_epoch duration status="ok"
+    end_epoch="$(date -u +%s)"
+    duration=$(( end_epoch - SENTRY_START_EPOCH ))
+    (( duration < 0 )) && duration=0
+    [[ "$rc" -eq 0 ]] || status="error"
+    SENTRY_DSN="$SENTRY_DSN_VAL" python3 "$SENTRY_HELPER" "$status" \
+      --check-in-id "$SENTRY_CHECKIN_ID" --duration "$duration" || true
+  fi
+  SENTRY_DSN_VAL=""
+  GITHUB_PAT=""
+  PREBUILT_GRAPH_TOKEN_VAL=""
+  PREBUILT_GRAPH_URL_TEMPLATE=""
+}
+trap sentry_finish EXIT
+if [[ -n "$SENTRY_DSN_VAL" ]]; then
+  SENTRY_CHECKIN_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null || true)"
+  if [[ -n "$SENTRY_CHECKIN_ID" ]]; then
+    SENTRY_DSN="$SENTRY_DSN_VAL" python3 "$SENTRY_HELPER" in_progress --check-in-id "$SENTRY_CHECKIN_ID" || true
+  fi
 fi
 
 # Empty when df can't say; an unknown reading never triggers a reclaim.
@@ -221,13 +275,8 @@ echo "[codegraph] checked saved Git origins in $checked_origins retained checkou
 
 echo "[codegraph] free space before reindex: $(free_mb) MB"
 
-is_fresh() {
-  local slug="$1"
-  local stamp
-  stamp="$(freshness_stamp "$slug")"
-  [[ -f "$REPOS_DIR/$slug/.hlt-index-error" ]] && return 1
-  [[ "$FORCE" == "1" ]] && return 1
-  [[ "$FRESH_HOURS" == "0" ]] && return 1
+is_stamp_fresh() {
+  local stamp="$1"
   [[ -f "$stamp" ]] || return 1
   # ENOSPC can truncate a stamp and prevent the error marker from being written.
   # Its recent mtime alone must never turn that failed refresh into a fresh one.
@@ -237,6 +286,116 @@ is_fresh() {
   local age_s
   age_s=$(( $(date -u +%s) - $(date -u -r "$stamp" +%s 2>/dev/null || echo 0) ))
   (( age_s < FRESH_HOURS * 3600 ))
+}
+
+is_fresh() {
+  local slug="$1"
+  local stamp
+  stamp="$(freshness_stamp "$slug")"
+  [[ -f "$REPOS_DIR/$slug/.hlt-index-error" ]] && return 1
+  [[ "$FORCE" == "1" ]] && return 1
+  [[ "$FRESH_HOURS" == "0" ]] && return 1
+  if is_stamp_fresh "$stamp"; then
+    return 0
+  fi
+  if is_source_only "$slug" && is_stamp_fresh "$REPOS_DIR/$slug/.hlt-indexed-at"; then
+    return 0
+  fi
+  # When a structural repo fell back to source-only in this cycle, treat its fresh
+  # source stamp as current until the next cycle or FORCE=1 so restarts never thrash.
+  if ! is_source_only "$slug" && [[ -f "$REPOS_DIR/$slug/.hlt-graph-error" ]] && is_stamp_fresh "$REPOS_DIR/$slug/.hlt-source-ready-at"; then
+    return 0
+  fi
+  return 1
+}
+
+build_node_options() {
+  local cap="$1" existing="${NODE_OPTIONS:-}" out="" skip_next=0 tok
+  local -a toks=()
+  if [[ -n "$existing" ]]; then
+    IFS=$' \t\n' read -ra toks <<< "$existing"
+  fi
+  if [[ ${#toks[@]} -gt 0 ]]; then
+    for tok in "${toks[@]}"; do
+      if [[ "$skip_next" == "1" ]]; then
+        skip_next=0
+        continue
+      fi
+      case "$tok" in
+        --max-old-space-size=*) continue ;;
+        --max-old-space-size) skip_next=1; continue ;;
+        *) out="${out:+$out }$tok" ;;
+      esac
+    done
+  fi
+  printf '%s' "${out:+$out }--max-old-space-size=${cap}"
+}
+
+run_gitnexus_analyze() {
+  local slug="$1" dest="$2"
+  local progress_file="$dest/.hlt-graph-in-progress"
+  local graph_error_file="$dest/.hlt-graph-error"
+  # Crash-loop guard: a recent in-progress marker means a prior analyze died abruptly
+  # (e.g. Linux cgroup OOM killed the container). Fall back to source-only this cycle.
+  if [[ "$FORCE" != "1" && "$FRESH_HOURS" != "0" && -f "$progress_file" ]] && is_stamp_fresh "$progress_file"; then
+    rm -f "$progress_file"
+    if [[ "$GRAPH_FALLBACK_SOURCE_ONLY" == "1" ]]; then
+      { date -u +"%Y-%m-%dT%H:%M:%SZ previous structural build interrupted (possible OOM); fell back to source-only" > "$graph_error_file"; } 2>/dev/null || true
+      echo "[codegraph] WARNING: previous gitnexus analyze for $slug did not finish (possible OOM); keeping fresh source checkout (source-only fallback)" >&2
+      return 2
+    fi
+    return 1
+  fi
+
+  { date -u +"%Y-%m-%dT%H:%M:%SZ" > "$progress_file"; } 2>/dev/null || true
+  local node_opts rc=0
+  node_opts="$(build_node_options "$GRAPH_MAX_OLD_SPACE_MB")"
+  echo "[codegraph] analyzing $slug (max-old-space=${GRAPH_MAX_OLD_SPACE_MB}MB, timeout=${GRAPH_TIMEOUT_S}s)"
+  NODE_OPTIONS="$node_opts" \
+    GITNEXUS_WORKER_POOL_SIZE="${GITNEXUS_WORKER_POOL_SIZE:-1}" \
+    GITNEXUS_PARSE_CHUNK_CONCURRENCY="${GITNEXUS_PARSE_CHUNK_CONCURRENCY:-1}" \
+    GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES="${GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES:-4194304}" \
+    python3 - "$dest" "$GRAPH_TIMEOUT_S" <<'PY' || rc=$?
+import os, signal, subprocess, sys
+dest = sys.argv[1]
+timeout_s = int(sys.argv[2])
+proc = subprocess.Popen(
+    ["gitnexus", "analyze", "--skip-agents-md", "--skip-skills"],
+    cwd=dest,
+    stdin=subprocess.DEVNULL,
+    start_new_session=True,
+)
+try:
+    code = proc.wait(timeout=timeout_s if timeout_s > 0 else None)
+    # Translate negative POSIX signal numbers (e.g. -9 from OOM killer) to 128+sig (137).
+    sys.exit((128 - code) if code < 0 else code)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    sys.exit(124)
+PY
+  rm -f "$progress_file"
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$GRAPH_FALLBACK_SOURCE_ONLY" == "1" ]]; then
+    local why="gitnexus analyze failed (exit $rc)"
+    [[ "$rc" -eq 124 ]] && why="gitnexus analyze timed out after ${GRAPH_TIMEOUT_S}s"
+    { date -u +"%Y-%m-%dT%H:%M:%SZ $why; fell back to source-only" > "$graph_error_file"; } 2>/dev/null || true
+    echo "[codegraph] WARNING: $why for $slug; keeping fresh source checkout (source-only fallback)" >&2
+    return 2
+  fi
+  return 1
 }
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -425,11 +584,13 @@ git_net() {
   return "$rc"
 }
 
+REPO_REFRESH_MODE=""
 clone_or_update() {
   local slug="$1"
   local full="$2"
   local dest="$REPOS_DIR/$slug"
   local url="https://github.com/${full}.git"
+  REPO_REFRESH_MODE=""
   select_github_auth "$full"
   say_github_auth "$slug"
 
@@ -460,19 +621,37 @@ clone_or_update() {
   fi
 
   if is_source_only "$slug"; then
+    if [[ -n "$PREBUILT_GRAPH_URL_TEMPLATE" ]] && ! disk_low; then
+      # Pass URL template and optional bearer via per-command env only (never in argv).
+      if CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE="$PREBUILT_GRAPH_URL_TEMPLATE" \
+         CODEGRAPH_PREBUILT_GRAPH_TOKEN="$PREBUILT_GRAPH_TOKEN_VAL" \
+         python3 "$PREBUILT_GRAPH_HELPER" --slug "$slug" --dest "$dest"; then
+        REPO_REFRESH_MODE="structural"
+        return 0
+      fi
+    fi
     echo "[codegraph] source checkout ready for $slug (structural indexing disabled)"
+    REPO_REFRESH_MODE="source"
   else
     if disk_low; then
       echo "[codegraph] low disk after fetch; retaining $slug's existing index" >&2
       return 1
     fi
-    echo "[codegraph] analyzing $slug"
-    (cd "$dest" && gitnexus analyze --skip-agents-md --skip-skills) || return 1
+    local analyze_rc=0
+    run_gitnexus_analyze "$slug" "$dest" || analyze_rc=$?
+    if [[ "$analyze_rc" -eq 0 ]]; then
+      REPO_REFRESH_MODE="structural"
+    elif [[ "$analyze_rc" -eq 2 ]]; then
+      REPO_REFRESH_MODE="graph-fallback"
+    else
+      return 1
+    fi
   fi
 }
 
 FAILED_REPOS=()
 PAUSED_REPOS=()
+GRAPH_FALLBACK_REPOS=()
 # Oldest last-indexed time among paused repos, or "never".
 PAUSED_SINCE=""
 
@@ -506,17 +685,38 @@ index_repo() {
     return
   fi
   if is_fresh "$slug"; then
-    echo "[codegraph] $slug refreshed $(cat "$(freshness_stamp "$slug")") — still fresh, skipping"
+    local fresh_at=""
+    if is_stamp_fresh "$(freshness_stamp "$slug")"; then
+      fresh_at="$(cat "$(freshness_stamp "$slug")")"
+    elif [[ -f "$REPOS_DIR/$slug/.hlt-source-ready-at" ]]; then
+      fresh_at="$(cat "$REPOS_DIR/$slug/.hlt-source-ready-at") (source-only fallback)"
+    fi
+    echo "[codegraph] $slug refreshed $fresh_at — still fresh, skipping"
     return
   fi
   AUTH_SOURCE=""
   AUTH_WHY=""
   AUTH_REPO_REFUSED=""
-  if clone_or_update "$slug" "$full" &&
-     { date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(freshness_stamp "$slug")"; } 2>/dev/null; then
-    note_github_auth "$slug" ok
-    rm -f "$REPOS_DIR/$slug/.hlt-index-error"
-    echo "[codegraph] indexed $slug"
+  if clone_or_update "$slug" "$full"; then
+    local stamp_target="$REPOS_DIR/$slug/.hlt-source-ready-at"
+    [[ "$REPO_REFRESH_MODE" == "structural" ]] && stamp_target="$REPOS_DIR/$slug/.hlt-indexed-at"
+    if { date -u +"%Y-%m-%dT%H:%M:%SZ" > "$stamp_target"; } 2>/dev/null; then
+      note_github_auth "$slug" ok
+      rm -f "$REPOS_DIR/$slug/.hlt-index-error"
+      if [[ "$REPO_REFRESH_MODE" == "structural" ]]; then
+        rm -f "$REPOS_DIR/$slug/.hlt-source-ready-at" "$REPOS_DIR/$slug/.hlt-graph-error"
+      elif [[ "$REPO_REFRESH_MODE" == "source" ]]; then
+        rm -f "$REPOS_DIR/$slug/.hlt-graph-error"
+      elif [[ "$REPO_REFRESH_MODE" == "graph-fallback" ]]; then
+        GRAPH_FALLBACK_REPOS+=("$slug")
+      fi
+      echo "[codegraph] indexed $slug"
+    else
+      note_github_auth "$slug" failed
+      { date -u +"%Y-%m-%dT%H:%M:%SZ indexing failed" > "$REPOS_DIR/$slug/.hlt-index-error"; } 2>/dev/null || true
+      echo "[codegraph] FAILED to index $slug ($full); continuing" >&2
+      FAILED_REPOS+=("$slug")
+    fi
   else
     if [[ -n "$AUTH_REPO_REFUSED" ]]; then
       note_github_auth "$slug" refused
@@ -536,13 +736,21 @@ if [[ ${#REPO_SLUGS[@]} -gt 0 ]]; then
 fi
 MINT_TOKENS=()
 AUTH_TOKEN=""
+GITHUB_PAT=""
 KATAILYST_KEY=""
+PREBUILT_GRAPH_TOKEN_VAL=""
+PREBUILT_GRAPH_URL_TEMPLATE=""
 
 # Which key each refreshed repository used and why, for the status line. /health
 # turns it into a plain reason: settings and counts, never a value or a name.
 AUTH_DETAIL=""
 if [[ -n "$AUTH_RECORDS" ]]; then
   AUTH_DETAIL="github-auth mint=${MINT_STATE:-unused}${AUTH_REFUSED:+ refused=$AUTH_REFUSED} repos=$AUTH_RECORDS"
+fi
+GRAPH_FALLBACK_DETAIL=""
+if [[ ${#GRAPH_FALLBACK_REPOS[@]} -gt 0 ]]; then
+  echo "[codegraph] structural build fell back to source-only for ${#GRAPH_FALLBACK_REPOS[@]} repo(s): ${GRAPH_FALLBACK_REPOS[*]}" >&2
+  GRAPH_FALLBACK_DETAIL="graph-fallback=${#GRAPH_FALLBACK_REPOS[@]}"
 fi
 
 if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
@@ -555,9 +763,13 @@ if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
   exit 1
 elif [[ ${#PAUSED_REPOS[@]} -gt 0 ]]; then
   echo "[codegraph] reindex finished; paused: ${PAUSED_REPOS[*]}"
-  write_status paused "${#PAUSED_REPOS[@]} $PAUSED_SINCE${AUTH_DETAIL:+ $AUTH_DETAIL}"
+  write_status paused "${#PAUSED_REPOS[@]} $PAUSED_SINCE${AUTH_DETAIL:+ $AUTH_DETAIL}${GRAPH_FALLBACK_DETAIL:+ $GRAPH_FALLBACK_DETAIL}"
 else
-  write_status ok "$AUTH_DETAIL"
+  STATUS_DETAIL="$AUTH_DETAIL"
+  if [[ -n "$GRAPH_FALLBACK_DETAIL" ]]; then
+    STATUS_DETAIL="${STATUS_DETAIL:+$STATUS_DETAIL }$GRAPH_FALLBACK_DETAIL"
+  fi
+  write_status ok "$STATUS_DETAIL"
 fi
 echo "[codegraph] free space after reindex: $(free_mb) MB"
 
