@@ -46,6 +46,13 @@ REPO_GITHUB = {
     "katailyst2": "Awhitter/katailyst2",
     "mmm2": "Awhitter/MMM2",
     "ebb": "Awhitter/evidence-based-business",
+    "design-registry": "Awhitter/Design-registry",
+    "hlt-map": "Awhitter/hlt-map",
+    "mira": "Awhitter/Mira",
+}
+_REPO_ALIASES = {
+    "the-vault": "scrapervault",
+    "evidence-based-business": "ebb",
 }
 # Every tool only reads checkouts and graphs on this disk. Saying so lets Katailyst's
 # MCP door (tool:hlt-codegraph-mcp) run them on its read lane without an approval.
@@ -73,9 +80,30 @@ def _allowed_hosts() -> list[str]:
     return hosts
 
 
-def _run_gitnexus(args: list[str], timeout: int = 120) -> str:
-    env = os.environ.copy()
+_CHILD_REDACTED_ENV_KEYS = frozenset(
+    {
+        "CODEGRAPH_MCP_TOKEN",
+        "GITNEXUS_AUTH_TOKEN",
+        "KATAILYST2_MCP_TOKEN",
+        "KATAILYST_MCP_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "SENTRY_DSN",
+        "CODEGRAPH_PREBUILT_GRAPH_TOKEN",
+        "CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE",
+    }
+)
+
+
+def _safe_child_env() -> dict[str, str]:
+    """Environment for git/gitnexus subprocesses with all service secrets stripped."""
+    env = {k: v for k, v in os.environ.items() if k not in _CHILD_REDACTED_ENV_KEYS}
     env["GITNEXUS_HOME"] = GITNEXUS_HOME
+    return env
+
+
+def _run_gitnexus(args: list[str], timeout: int = 120) -> str:
+    env = _safe_child_env()
     try:
         completed = subprocess.run(
             ["gitnexus", *args],
@@ -112,6 +140,7 @@ def _git(repo_path: str, *args: str) -> str | None:
             capture_output=True,
             text=True,
             timeout=15,
+            env=_safe_child_env(),
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -137,24 +166,41 @@ def _repo_readiness(repo: str) -> dict[str, Any]:
     indexed_file = Path(path) / ".hlt-indexed-at"
     source_ready_file = Path(path) / ".hlt-source-ready-at"
     error_file = Path(path) / ".hlt-index-error"
-    if error_file.exists():
-        result["error"] = error_file.read_text(encoding="utf-8").strip()[:500]
-        result["status"] = "unavailable"
-        return result
+    graph_error_file = Path(path) / ".hlt-graph-error"
+    try:
+        if error_file.exists():
+            result["error"] = error_file.read_text(encoding="utf-8").strip()[:500]
+            result["status"] = "unavailable"
+            return result
+    except OSError:
+        pass
+    try:
+        if graph_error_file.exists():
+            graph_err = graph_error_file.read_text(encoding="utf-8").strip()[:500]
+            if graph_err:
+                result["graphError"] = graph_err
+    except OSError:
+        pass
     # A repo whose graph is frozen but whose code refreshes is a source repo:
     # report the newer source time, and keep the graph's date visible.
-    if source_ready_file.exists() and (
-        not indexed_file.exists()
-        or source_ready_file.stat().st_mtime >= indexed_file.stat().st_mtime
-    ):
-        if indexed_file.exists():
-            result["structuralIndexedAt"] = indexed_file.read_text(encoding="utf-8").strip() or None
-        indexed_file = source_ready_file
-        result["mode"] = "source"
-    if not indexed_file.exists() or not result["commitSha"]:
-        result["error"] = "This repository has not completed an index run."
+    try:
+        source_exists = source_ready_file.exists()
+        indexed_exists = indexed_file.exists()
+        if source_exists and (
+            not indexed_exists
+            or source_ready_file.stat().st_mtime >= indexed_file.stat().st_mtime
+        ):
+            if indexed_exists:
+                result["structuralIndexedAt"] = indexed_file.read_text(encoding="utf-8").strip() or None
+            indexed_file = source_ready_file
+            result["mode"] = "source"
+        if not indexed_file.exists() or not result["commitSha"]:
+            result["error"] = "This repository has not completed an index run."
+            return result
+        indexed_at = indexed_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        result["error"] = "Index status changed during read; retry."
         return result
-    indexed_at = indexed_file.read_text(encoding="utf-8").strip()
     result["indexedAt"] = indexed_at
     try:
         age = datetime.now(timezone.utc) - datetime.fromisoformat(indexed_at.replace("Z", "+00:00"))
@@ -174,10 +220,12 @@ mcp = FastMCP(
     name="HLT Codegraph",
     instructions=(
         "Source and structural code intelligence for HLT estate repos (Mastery "
-        "Research, mmm2, katailyst2, ebb, scrapervault, nursing-mastery). Each "
-        "repo's code refreshes daily; graph rebuilds are off by default because "
-        "they exceed this service's memory, so structural answers can be older "
-        "than the code (see /readiness structuralIndexedAt). "
+        "Research, mmm2, katailyst2, ebb, scrapervault, nursing-mastery, "
+        "design-registry, hlt-map, mira). Each repo's code refreshes daily; "
+        "smaller repos build structural GitNexus graphs sequentially with memory "
+        "and timeout guards while large monoliths stay source-only on the 2 GB "
+        "plan (or sync prebuilt graphs), so structural answers can be older than "
+        "the code (see /readiness structuralIndexedAt and graphError). "
         "For implementation questions, "
         "use search_source to find real files, read_source to inspect the exact "
         "current lines, and cite the returned immutable URLs. Use query/context/"
@@ -222,7 +270,8 @@ _SOURCE_EXCLUDED_PREFIXES = (
 
 
 def _repo_key(value: str) -> str:
-    return value.strip().split("/")[-1].lower()
+    key = value.strip().split("/")[-1].lower()
+    return _REPO_ALIASES.get(key, key)
 
 
 def _source_repo_keys(repo: str | None) -> list[str]:
@@ -455,17 +504,20 @@ def trace(from_symbol: str, to_symbol: str, repo: str | None = None) -> str:
 @mcp.tool(annotations=READ_ONLY)
 def repo_overview(repo: str) -> str:
     """Plain-English overview: path on disk plus gitnexus status for one repo."""
-    path = os.path.join(REPOS_DIR, repo)
+    repo_key = _repo_key(repo)
+    if repo_key not in REPO_GITHUB:
+        return json.dumps({"error": "Repository is not in the active HLT index."})
+    path = os.path.join(REPOS_DIR, repo_key)
     status = _run_gitnexus(["status"], timeout=60)
     listing = _run_gitnexus(["list"], timeout=60)
     return json.dumps(
         {
-            "repo": repo,
+            "repo": repo_key,
             "path": path,
             "exists": os.path.isdir(path),
             "status": status,
             "registry": listing,
-            "readiness": _repo_readiness(repo),
+            "readiness": _repo_readiness(repo_key),
         }
     )
 
@@ -532,7 +584,7 @@ def recent_changes(
     Note the clone here is `--depth=1`, so `git log` has no history — the
     CHANGELOG file is the record, and it is the better one anyway.
     """
-    repo_key = repo.strip().lower()
+    repo_key = _repo_key(repo)
     if repo_key not in REPO_GITHUB:
         return json.dumps({"error": f"Unknown repo {repo!r}.", "known": sorted(REPO_GITHUB)})
 

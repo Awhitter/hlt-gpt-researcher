@@ -62,7 +62,7 @@ services:
         value: "0.5"
       - key: KATAILYST2_MCP_URL
         value: https://katailyst.com/mcp
-      # Code scope reads the hlt-codegraph sidecar (current code of six repos).
+      # Code scope reads the hlt-codegraph sidecar (current code of nine repos).
       # The GitHub MCP fallback was removed on 8 Nov 2026: its token was dead.
       - key: CODEGRAPH_MCP_URL
         value: https://hlt-codegraph.onrender.com/mcp
@@ -200,11 +200,22 @@ services:
         value: "1"
       - key: CODEGRAPH_REINDEX_HOURS
         value: "24"
-      # Every repo refreshes its code daily. GitNexus graph rebuilds are off: they
-      # ran this 2 GB plan out of memory, which had left five repos frozen at
-      # Aug-Sep copies under CODEGRAPH_SKIP_REPOS (cleared 8 Nov 2026).
+      # Every repo refreshes its code daily (9 active HLT repos). The six
+      # smaller/medium repos (hlt-gpt-researcher, design-registry, hlt-map,
+      # mira, ebb, mmm2) build structural GitNexus graphs sequentially with
+      # per-repo heap cap, timeout, and automatic source-only fallback.
+      # The three large monoliths (8k-15k files: katailyst2, nursing-mastery,
+      # scrapervault) stay source-only on the 2 GB standard plan to prevent
+      # native tree-sitter/SQLite cgroup OOMs; clear this list (empty string)
+      # and raise CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB (e.g. 2048) once upgraded
+      # to a 4-8 GB plan, or feed prebuilt tarballs via
+      # CODEGRAPH_PREBUILT_GRAPH_URL_TEMPLATE.
       - key: CODEGRAPH_SOURCE_ONLY_REPOS
-        value: hlt-gpt-researcher,katailyst2,nursing-mastery,scrapervault,mmm2,ebb
+        value: katailyst2,nursing-mastery,scrapervault
+      - key: CODEGRAPH_GRAPH_MAX_OLD_SPACE_MB
+        value: "512"
+      - key: CODEGRAPH_GRAPH_TIMEOUT_S
+        value: "300"
       # Cap parser memory: worker pool defaults to host cores (up to 16) and
       # NODE_OPTIONS applies to every node process (main + each worker), so
       # keep 1 worker with small heaps or analyze OOMs the 2GB container.
@@ -213,12 +224,18 @@ services:
       - key: GITNEXUS_PARSE_CHUNK_CONCURRENCY
         value: "1"
       - key: NODE_OPTIONS
-        value: "--max-old-space-size=640"
+        value: "--max-old-space-size=512"
       - key: GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES
         value: "4194304"
+      - key: KATAILYST2_MCP_TOKEN
+        sync: false
       - key: GITHUB_TOKEN
         sync: false
       - key: CODEGRAPH_MCP_TOKEN
+        sync: false
+      # Optional Sentry Cron Monitor DSN for `hlt-codegraph-reindex` check-ins
+      # (zero-dependency HTTPS envelope, 24h interval, 120m margin).
+      - key: SENTRY_DSN
         sync: false
 
   # One HLT Slack agent. AGENT_ID picks which persona boots: `cleo` (product
