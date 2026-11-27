@@ -4,6 +4,8 @@
 > AGENTS.md spec (agents.md, formalized 2025) — the de-facto agent README adopted
 > by Cursor, Claude Code, OpenAI, Sourcegraph, Factory.
 
+**Read it before you remove it (Alec, 27 Nov).** Before you delete, fold, close, archive or merge away anything (files, code, branches, Board plans and posts, Library blocks, docs, data), read each in full with what sits around it. A title, date, count or "nothing uses it" is not reading. Once it is read and finished, clean it up and say why; until then, leave it.
+
 ## Shared work
 
 Keep substantive work visible on the [Logbook](https://katailyst2.vercel.app/board).
