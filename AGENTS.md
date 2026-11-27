@@ -6,6 +6,8 @@
 
 **Read it before you remove it (Alec, 27 Nov).** Before you delete, fold, close, archive or merge away anything (files, code, branches, Board plans and posts, Library blocks, docs, data), read each in full with what sits around it. A title, date, count or "nothing uses it" is not reading. Once it is read and finished, clean it up and say why; until then, leave it.
 
+**Lead by being informed (Alec, 27 Nov).** "The only way you can lead things is if you understand what they are." Before substantial work, draw the Well several times in a row, a different question each time (the task, the audience, who does it best, the method, past mistakes), and open what fits. Read the files and tree around the change in full, the recent commits and the Board, then plan and make the call. No waiting to be told, no swinging on a guess. His bar, in his words: `prompt:twelve-out-of-ten-add-on`.
+
 ## Shared work
 
 Keep substantive work visible on the [Logbook](https://katailyst2.vercel.app/board).
